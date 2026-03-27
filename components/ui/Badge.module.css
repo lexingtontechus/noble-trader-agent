@@ -1,0 +1,40 @@
+.badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.long {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.short {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.ok {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.blocked {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.warn {
+  background: var(--amber-dim);
+  color: var(--amber);
+}
+
+.default {
+  background: var(--surface2);
+  color: var(--muted);
+  border: 1px solid var(--border-accent);
+}

@@ -1,0 +1,51 @@
+.sectionLabel {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+  margin-top: 18px;
+}
+
+.sectionLabel:first-child {
+  margin-top: 0;
+}
+
+.row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.row1 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.calcBtn {
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: #0b0c0f;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font-main);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 16px;
+  letter-spacing: 0.02em;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.calcBtn:hover {
+  opacity: 0.9;
+}
+
+.calcBtn:active {
+  transform: scale(0.98);
+}
