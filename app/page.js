@@ -1,9 +1,16 @@
-import { auth } from '@clerk/nextjs/server'
-import { redirect } from 'next/navigation'
-import RiskManagerClient from '../components/RiskManagerClient'
+"use client";
 
-export default async function HomePage() {
-  const { userId } = await auth()
-  if (!userId) redirect('/sign-in')
-  return <RiskManagerClient />
+import { Show } from "@clerk/nextjs";
+import RiskManagerClient from "./riskmanager/RiskManagerClient";
+//import AuthScreen from "../components/AuthScreen";
+
+export default function Home() {
+  return (
+    <div className="">
+      <Show when="signed-out">Risk Manager</Show>
+      <Show when="signed-in">
+        <RiskManagerClient />
+      </Show>
+    </div>
+  );
 }

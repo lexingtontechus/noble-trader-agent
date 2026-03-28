@@ -1,0 +1,145 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@plugin "daisyui" {
+  themes: noble --default;
+}
+
+@plugin "daisyui/theme" {
+  name: "noble";
+  default: true;
+  prefersdark: false;
+  color-scheme: "dark";
+  --color-base-100: oklch(28.822% 0.022 277.508);
+  --color-base-200: oklch(26.805% 0.02 277.508);
+  --color-base-300: oklch(24.787% 0.019 277.508);
+  --color-base-content: oklch(97.747% 0.007 106.545);
+  --color-primary: oklch(63% 0.237 25.331);
+  --color-primary-content: oklch(15.092% 0.036 346.812);
+  --color-secondary: oklch(87% 0.169 91.605);
+  --color-secondary-content: oklch(14.84% 0.029 301.883);
+  --color-accent: oklch(62% 0.214 259.815);
+  --color-accent-content: oklch(16.678% 0.024 66.558);
+  --color-neutral: oklch(39.445% 0.032 275.524);
+  --color-neutral-content: oklch(87.889% 0.006 275.524);
+  --color-info: oklch(88.263% 0.093 212.846);
+  --color-info-content: oklch(17.652% 0.018 212.846);
+  --color-success: oklch(87.099% 0.219 148.024);
+  --color-success-content: oklch(17.419% 0.043 148.024);
+  --color-warning: oklch(95.533% 0.134 112.757);
+  --color-warning-content: oklch(19.106% 0.026 112.757);
+  --color-error: oklch(68.22% 0.206 24.43);
+  --color-error-content: oklch(13.644% 0.041 24.43);
+  --radius-selector: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 2rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/*Hide Clerk Elements */
+.cl-footerAction,
+.cl-footerAction__signIn {
+  display: none;
+  color: black;
+}
+/*Hide Clerk MyAccount Billing Elements */
+.cl-navbarButtonText__billing {
+  display: none;
+  color: black;
+}
+.cl-navbarButton__billing,
+.cl-button__billing {
+  display: none;
+  color: black;
+}
+/*Hide Clerk Add Additional Email*/
+.cl-internal-hd6eiz,
+.cl-internal-eukaea,
+.cl-profileSectionPrimaryButton,
+.cl-profileSectionPrimaryButton__emailAddresses,
+.cl-button__emailAddresses {
+  display: none;
+  color: black;
+}
+
+.blurple {
+  color: oklch(98.7% 0.026 102.212); /*e0e3ff;*/
+  background-color: oklch(57.7% 0.209 273.9);
+}
+
+.lightblurple {
+  color: oklch(57.7% 0.209 273.9);
+  background-color: oklch(92.2% 0.038 280.8);
+}
+
+.helio-primary-button {
+  color: oklch(12.9% 0.042 264.695);
+}
+.rounded-full {
+  border-radius: calc(infinity * 1px);
+}
+
+/*---break--- */
+
+/*---break--- */
+
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  /*  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);*/
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.637 0.237 25.331);
+  --primary-foreground: oklch(0.971 0.013 17.38);
+  /*--secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);*/
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  /* --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);*/
+  --destructive: oklch(0.704 0.191 22.216);
+  /* --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);*/
+  /* --ring: oklch(0.637 0.237 25.331);*/
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  /*  --sidebar: oklch(0.21 0.006 285.885);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.637 0.237 25.331);
+  --sidebar-primary-foreground: oklch(0.971 0.013 17.38);
+  --sidebar-accent: oklch(0.274 0.006 286.033);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.637 0.237 25.331);*/
+}
+
+:root {
+  --bg: oklch(15.5% 0.007 271);
+  --surface: oklch(19.6% 0.011 268.1);
+  --surface2: oklch(24% 0.016 269);
+  --border: oklch(100% 0 NaN / 0.07);
+  --border-accent: oklch(100% 0 NaN / 0.15);
+  --text: oklch(95.5% 0.006 264.5);
+  --muted: oklch(55.1% 0.023 264.4);
+  --accent: oklch(90.8% 0.201 123);
+  --accent-dim: oklch(90.8% 0.201 123 / 0.12);
+  --accent-dim2: oklch(90.8% 0.201 123 / 0.06);
+  --green: oklch(72.3% 0.192 149.6);
+  --green-dim: oklch(72.3% 0.192 149.6 / 0.12);
+  --red: oklch(63.7% 0.208 25.3);
+  --red-dim: oklch(63.7% 0.208 25.3 / 0.12);
+  --amber: oklch(76.9% 0.165 70.1);
+  --amber-dim: oklch(76.9% 0.165 70.1 / 0.12);
+  --blue: oklch(62.3% 0.188 259.8);
+  --blue-dim: oklch(62.3% 0.188 259.8 / 0.12);
+  --font-main: var(--font-syne), "Syne", sans-serif;
+  --font-mono: var(--font-ibm-mono), "IBM Plex Mono", monospace;
+}

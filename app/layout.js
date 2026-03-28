@@ -1,32 +1,37 @@
-import { ClerkProvider } from '@clerk/nextjs'
-import { IBM_Plex_Mono, Syne } from 'next/font/google'
-import '../styles/globals.css'
+import { ClerkProvider } from "@clerk/nextjs";
+import { IBM_Plex_Mono, Syne } from "next/font/google";
+import "./globals.css";
+//import "../styles/globals.css";
+import Header from "../components/Header";
 
 const syne = Syne({
-  subsets: ['latin'],
-  weight: ['400', '500', '700'],
-  variable: '--font-syne',
-  display: 'swap',
-})
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  variable: "--font-syne",
+  display: "swap",
+});
 
 const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500'],
-  variable: '--font-ibm-mono',
-  display: 'swap',
-})
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-ibm-mono",
+  display: "swap",
+});
 
 export const metadata = {
-  title: 'Noble Trading — Risk Manager',
-  description: 'Dynamic Masaniello + Markov Regime Engine',
-}
+  title: "Noble Trading Risk Manager",
+  description: "By Noble Trading App",
+};
 
 export default function RootLayout({ children }) {
   return (
     <ClerkProvider>
       <html lang="en" className={`${syne.variable} ${ibmPlexMono.variable}`}>
-        <body>{children}</body>
+        <body>
+          <Header />
+          <div className="container mx-auto p-8">{children}</div>
+        </body>
       </html>
     </ClerkProvider>
-  )
+  );
 }

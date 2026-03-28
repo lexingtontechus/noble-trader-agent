@@ -3,22 +3,26 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.0.0",
+    "@clerk/nextjs": "^7.0.7",
     "@supabase/supabase-js": "^2.45.0",
+    "@tailwindcss/postcss": "^4.2.2",
     "chart.js": "^4.4.1",
-    "next": "^15.1.0",
-    "react": "^18.3.1",
+    "daisyui": "^5.5.19",
+    "next": "^16.2.1",
+    "postcss": "^8.5.8",
+    "react": "^19.2.4",
     "react-chartjs-2": "^5.2.0",
-    "react-dom": "^18.3.1"
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
-    "eslint": "^8.57.0",
-    "eslint-config-next": "^15.1.0"
+    "eslint": "^10.1.0",
+    "eslint-config-next": "^16.2.1"
   }
 }
