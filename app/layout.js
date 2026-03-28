@@ -3,6 +3,7 @@ import { IBM_Plex_Mono, Syne } from "next/font/google";
 import "./globals.css";
 //import "../styles/globals.css";
 import Header from "../components/Header";
+import Footer from "../components/Footer";
 
 const syne = Syne({
   subsets: ["latin"],
@@ -30,6 +31,7 @@ export default function RootLayout({ children }) {
         <body>
           <Header />
           <div className="container mx-auto p-8">{children}</div>
+          <Footer />
         </body>
       </html>
     </ClerkProvider>

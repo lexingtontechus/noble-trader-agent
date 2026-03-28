@@ -102,7 +102,7 @@ export default function Header() {
         <Show when="signed-out">
           <SignInButton forceRedirectUrl="/riskmanager">
             <div className="btn btn-secondary rounded-full font-bold uppercase">
-              Members
+              Login
             </div>
           </SignInButton>
         </Show>
