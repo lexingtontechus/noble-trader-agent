@@ -110,11 +110,9 @@ export default function Header() {
           {/* <UserButton />*/}
           <ul className="menu menu-horizontal px-1">
             <li className="px-2">
-              <Link href="/history">
-                <div className="btn btn-secondary text-sm border-rounded">
-                  History
-                </div>
-              </Link>
+              <div className="btn btn-secondary text-sm border-rounded">
+                <Link href="/history">History</Link>
+              </div>
             </li>
             <li>
               <UserButton>
