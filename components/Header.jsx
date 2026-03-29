@@ -108,25 +108,36 @@ export default function Header() {
         </Show>
         <Show when="signed-in">
           {/* <UserButton />*/}
-          <UserButton>
-            {/* user?.publicMetadata.role == "admin" &&) */}
-            <UserButton.MenuItems>
-              {user?.publicMetadata.role == "admin" && (
-                <UserButton.Link
-                  label="Admin"
-                  labelIcon={<IconAdmin />}
-                  href="/admin"
-                  forceRedirectUrl="/admin"
-                />
-              )}
-              {/*  <UserButton.Link
+          <ul className="menu menu-horizontal px-1">
+            <li className="px-2">
+              <Link href="/history">
+                <div className="btn btn-secondary text-sm border-rounded">
+                  History
+                </div>
+              </Link>
+            </li>
+            <li>
+              <UserButton>
+                {/* user?.publicMetadata.role == "admin" &&) */}
+                <UserButton.MenuItems>
+                  {user?.publicMetadata.role == "admin" && (
+                    <UserButton.Link
+                      label="Admin"
+                      labelIcon={<IconAdmin />}
+                      href="/admin"
+                      forceRedirectUrl="/admin"
+                    />
+                  )}
+                  {/*  <UserButton.Link
                 label="Portal"
                 labelIcon={<IconPortal />}
                 href="/portal"
             />*/}
-              <UserButton.Action label="manageAccount" />
-            </UserButton.MenuItems>
-          </UserButton>
+                  <UserButton.Action label="manageAccount" />
+                </UserButton.MenuItems>
+              </UserButton>
+            </li>
+          </ul>
         </Show>
       </div>
     </div>
