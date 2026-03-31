@@ -31,7 +31,9 @@
   transition: color 0.15s;
 }
 
-.backLink:hover { color: var(--accent); }
+.backLink:hover {
+  color: var(--accent);
+}
 
 .pageTitleGroup {
   display: flex;
@@ -125,7 +127,7 @@
 }
 
 .mainGrid.withDetail {
-  grid-template-columns: 1fr 420px;
+  grid-template-columns: 1fr;
 }
 
 @media (max-width: 1100px) {

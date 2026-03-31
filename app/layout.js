@@ -2,7 +2,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { IBM_Plex_Mono, Syne } from "next/font/google";
 import "./globals.css";
 //import "../styles/globals.css";
-import Header from "../components/Header";
+import AppHeader from "../components/AppHeader";
 import Footer from "../components/Footer";
 
 const syne = Syne({
@@ -29,8 +29,8 @@ export default function RootLayout({ children }) {
     <ClerkProvider>
       <html lang="en" className={`${syne.variable} ${ibmPlexMono.variable}`}>
         <body>
-          <Header />
-          <div className="container mx-auto p-8">{children}</div>
+          <AppHeader />
+          <div className="container mx-auto">{children}</div>
           <Footer />
         </body>
       </html>

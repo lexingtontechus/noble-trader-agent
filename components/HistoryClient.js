@@ -158,29 +158,34 @@ export default function HistoryClient() {
       <div
         className={`${styles.mainGrid} ${selectedRow ? styles.withDetail : ""}`}
       >
-        <HistoryTable
-          rows={rows}
-          loading={loading}
-          error={error}
-          page={page}
-          totalPages={totalPages}
-          selectedId={selectedRow?.id}
-          onSelectRow={handleSelectRow}
-          goTo={goTo}
-          total={total}
-        />
-
-        {selectedRow && (
-          <HistoryDetail
-            logRow={selectedRow}
-            factor={selectedFactor}
-            loading={detailLoading}
-            onClose={() => {
-              setSelectedRow(null);
-              setSelectedFactor(null);
-            }}
-          />
-        )}
+        <div className="">
+          <div className="mb-4">
+            <HistoryTable
+              rows={rows}
+              loading={loading}
+              error={error}
+              page={page}
+              totalPages={totalPages}
+              selectedId={selectedRow?.id}
+              onSelectRow={handleSelectRow}
+              goTo={goTo}
+              total={total}
+            />
+          </div>
+          <div>
+            {selectedRow && (
+              <HistoryDetail
+                logRow={selectedRow}
+                factor={selectedFactor}
+                loading={detailLoading}
+                onClose={() => {
+                  setSelectedRow(null);
+                  setSelectedFactor(null);
+                }}
+              />
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
