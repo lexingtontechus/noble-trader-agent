@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Config{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Loaded Configuration (secrets redacted)</h2>
+    <div class="refresh-note">
+        Hash: <code>{{ config_hash }}</code> &middot; Environment: {{ environment }}
+    </div>
+    <pre>{{ config_json }}</pre>
+</div>
+
+<div class="card">
+    <h2>Configuration Notes</h2>
+    <ul style="color: #8b949e; padding-left: 20px; line-height: 1.8;">
+        <li>Secrets are shown as <code>&lt;redacted:Nchars&gt;</code> or <code>secret:...</code> placeholders.</li>
+        <li>Edit <code>config/default.yaml</code> to change non-secret values.</li>
+        <li>Edit <code>.env</code> to change secret values (API keys, Redis URLs, etc.).</li>
+        <li>Changes require a restart (config is loaded at startup).</li>
+        <li>See <code>docs/roadmap.md</code> §3 for documentation of every parameter.</li>
+    </ul>
+</div>
+
+{% endblock %}

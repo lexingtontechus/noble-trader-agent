@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Status{% endblock %}
+
+{% block meta %}
+<meta name="auto-refresh" content="true" data-interval="10">
+{% endblock %}
+
+{% block content %}
+
+<!-- Overall status -->
+<div class="card">
+    <h2>Overall: {{ status.overall }}</h2>
+    <div class="refresh-note">Last checked: {{ status.checked_at[:19] }}Z &middot; auto-refreshing every 10s</div>
+</div>
+
+<!-- Subsystem status -->
+<div class="card">
+    <h2>Subsystem Connections</h2>
+    {% for subsystem in status.subsystems %}
+    <div class="subsystem">
+        <div>
+            <div class="subsystem-name">{{ subsystem.name }}</div>
+            <div class="subsystem-detail">{{ subsystem.detail }}</div>
+            {% if subsystem.url %}
+            <div class="subsystem-url">{{ subsystem.url }}</div>
+            {% endif %}
+            {% if subsystem.channel %}
+            <div class="subsystem-url">channel: {{ subsystem.channel }}</div>
+            {% endif %}
+            {% if subsystem.path %}
+            <div class="subsystem-url">path: {{ subsystem.path }}</div>
+            {% endif %}
+            {% if subsystem.wallet_preview %}
+            <div class="subsystem-url">wallet: {{ subsystem.wallet_preview }}</div>
+            {% endif %}
+            {% if subsystem.account %}
+            <div class="subsystem-url">
+                account: {{ subsystem.account.number }} ·
+                equity: ${{ subsystem.account.equity }} ·
+                cash: ${{ subsystem.account.cash }} ·
+                buying power: ${{ subsystem.account.buying_power }}
+            </div>
+            {% endif %}
+        </div>
+        <div>
+            <span class="badge badge-{{ subsystem.status }}">{{ subsystem.status }}</span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Ingest stats -->
+<div class="card">
+    <h2>Heartbeat Ingest Stats</h2>
+    {% if stats and stats.total > 0 %}
+    <div class="grid grid-3">
+        <div class="stat">
+            <div class="stat-value">{{ stats.total }}</div>
+            <div class="stat-label">Total Heartbeats</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ stats.accepted }}</div>
+            <div class="stat-label">Accepted</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ stats.rejected }}</div>
+            <div class="stat-label">Rejected</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ stats.last_hour }}</div>
+            <div class="stat-label">Last Hour</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ stats.regime_shifts }}</div>
+            <div class="stat-label">Regime Shifts</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ stats.by_symbol | length }}</div>
+            <div class="stat-label">Symbols Seen</div>
+        </div>
+    </div>
+
+    {% if stats.by_symbol %}
+    <h3 style="margin-top: 24px;">By Symbol (top 10)</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Count</th>
+                <th>Last Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in stats.by_symbol %}
+            <tr>
+                <td><strong>{{ row.symbol }}</strong></td>
+                <td>{{ row.count }}</td>
+                <td class="timestamp" data-timestamp="{{ row.last_seen }}">{{ row.last_seen[:19] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if stats.by_signal %}
+    <h3 style="margin-top: 24px;">By Signal Direction</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Signal</th>
+                <th>Count</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in stats.by_signal %}
+            <tr>
+                <td class="signal-{{ row.signal }}">{{ row.signal }}</td>
+                <td>{{ row.count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% else %}
+    <div class="empty">
+        No heartbeats received yet. Run <code>platform ingest</code> to start subscribing
+        to Noble Trader heartbeats, or <code>platform backfill</code> to pull historical data.
+    </div>
+    {% endif %}
+</div>
+
+<!-- Recent heartbeats -->
+<div class="card">
+    <h2>Recent Heartbeats (last 20)</h2>
+    {% if recent_heartbeats %}
+    <table>
+        <thead>
+            <tr>
+                <th>Received</th>
+                <th>Symbol</th>
+                <th>Signal</th>
+                <th>Regime</th>
+                <th>Conf</th>
+                <th>Entry</th>
+                <th>Stop</th>
+                <th>TP</th>
+                <th>Brick</th>
+                <th>Kelly</th>
+                <th>P_win</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for hb in recent_heartbeats %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ hb.ts_received }}">{{ hb.ts_received[:19] }}</td>
+                <td><strong>{{ hb.symbol }}</strong></td>
+                <td class="signal-{{ hb.signal }}">{{ hb.signal }}</td>
+                <td>{{ hb.regime }}</td>
+                <td>{{ "%.3f" | format(hb.regime_conf) if hb.regime_conf else "-" }}</td>
+                <td>{{ hb.entry_price }}</td>
+                <td>{{ hb.stop_loss }}</td>
+                <td>{{ hb.take_profit }}</td>
+                <td>{{ hb.brick_size }}</td>
+                <td>{{ "%.4f" | format(hb.effective_kelly) if hb.effective_kelly else "-" }}</td>
+                <td>{{ "%.3f" | format(hb.p_win) if hb.p_win else "-" }}</td>
+                <td>
+                    {% if hb.accepted %}
+                    <span class="badge badge-connected">ok</span>
+                    {% else %}
+                    <span class="badge badge-error" title="{{ hb.reject_reason }}">{{ hb.reject_reason or "rejected" }}</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="refresh-note">
+        <a href="/heartbeats">View all heartbeats &rarr;</a>
+    </div>
+    {% else %}
+    <div class="empty">
+        No heartbeats in DuckDB yet. Start the ingest pipeline with <code>platform ingest</code>.
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

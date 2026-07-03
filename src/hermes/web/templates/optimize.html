@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Optimization{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Simulation Runs (last 50)</h2>
+    <p style="color: #8b949e; font-size: 13px; margin-bottom: 16px;">
+        Entry/execution optimization results. Each row = one parameter combination tested
+        against the "blindly execute at market" baseline. Run with
+        <code>platform optimize --symbols BTC-PERP --days-back 90</code>.
+    </p>
+
+    {% if runs %}
+    <table>
+        <thead>
+            <tr>
+                <th>Started</th>
+                <th>Mode</th>
+                <th>Trigger</th>
+                <th>Symbols</th>
+                <th>Trades</th>
+                <th>Win%</th>
+                <th>Sharpe</th>
+                <th>Sortino</th>
+                <th>Calmar</th>
+                <th>Max DD</th>
+                <th>PF</th>
+                <th>Net PnL</th>
+                <th>Alpha (bps)</th>
+                <th>Deflated SR</th>
+                <th>Rigor</th>
+                <th>Accepted</th>
+                <th>Baseline</th>
+                <th>Beat?</th>
+                <th>Promoted</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ r.ts_started }}">{{ r.ts_started|string|truncate(19, true, '') }}</td>
+                <td>{{ r.mode }}</td>
+                <td>{{ r.triggered_by }}</td>
+                <td>{{ r.symbols|join(", ") }}</td>
+                <td>{{ r.n_trades }}</td>
+                <td>{{ "%.1f" | format(r.win_rate * 100) if r.win_rate else "0" }}%</td>
+                <td>{{ "%.3f" | format(r.sharpe) if r.sharpe else "0" }}</td>
+                <td>{{ "%.3f" | format(r.sortino) if r.sortino else "0" }}</td>
+                <td>{{ "%.3f" | format(r.calmar) if r.calmar else "0" }}</td>
+                <td>{{ "%.2f" | format(r.max_drawdown_pct) }}%</td>
+                <td>{{ "%.2f" | format(r.profit_factor) if r.profit_factor else "0" }}</td>
+                <td>${{ "%.2f" | format(r.net_pnl_usd) }}</td>
+                <td>{{ "%.1f" | format(r.entry_alpha_bps) if r.entry_alpha_bps else "0" }}</td>
+                <td>{{ "%.3f" | format(r.deflated_sharpe) if r.deflated_sharpe is not none else "-" }}</td>
+                <td>{{ r.rigor_checks_passed }}/6</td>
+                <td>
+                    {% if r.accepted %}<span class="badge badge-connected">YES</span>
+                    {% else %}<span class="badge badge-error">NO</span>{% endif %}
+                </td>
+                <td>{{ "%.3f" | format(r.baseline_sharpe) if r.baseline_sharpe else "-" }}</td>
+                <td>
+                    {% if r.beat_baseline %}<span class="badge badge-connected">YES</span>
+                    {% else %}<span class="badge badge-error">NO</span>{% endif %}
+                </td>
+                <td>
+                    {% if r.promoted_to_live %}<span class="badge badge-connected">LIVE</span>
+                    {% elif r.promoted_to_shadow %}<span class="badge badge-warn">SHADOW</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>
+                    {% if r.error %}<span class="badge badge-error">ERROR</span>
+                    {% else %}<span class="badge badge-connected">OK</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No simulation runs yet.
+        <br><br>
+        Run <code>platform optimize --symbols BTC-PERP --days-back 90 --n-trials 200</code>
+        to start the entry/execution optimization sweep.
+        <br><br>
+        Other commands:
+        <br>
+        <code>platform shadow --symbols BTC-PERP --duration-days 7</code> — shadow mode
+        <br>
+        <code>platform counterfactual --trade-id &lt;uuid&gt;</code> — counterfactual analysis
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Backtest{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Backtest Runs (last 20)</h2>
+    <p style="color: #8b949e; font-size: 13px; margin-bottom: 16px;">
+        Replays historical Noble Trader heartbeats through the full Hermes pipeline (L4→L5→L3).
+        Run with <code>platform backtest --symbols BTC-PERP --days-back 90</code>.
+    </p>
+
+    {% if runs %}
+    <table>
+        <thead>
+            <tr>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Mode</th>
+                <th>Symbols</th>
+                <th>Heartbeats</th>
+                <th>Signals</th>
+                <th>Approved</th>
+                <th>Orders</th>
+                <th>Fills</th>
+                <th>Initial</th>
+                <th>Final</th>
+                <th>Return</th>
+                <th>Net PnL</th>
+                <th>Max DD</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ r.ts_started }}">{{ r.ts_started|string|truncate(19, true, '') }}</td>
+                <td>{{ r.duration_sec }}s</td>
+                <td>{{ r.mode }}</td>
+                <td>{{ r.symbols|join(", ") }}</td>
+                <td>{{ r.n_heartbeats }}</td>
+                <td>{{ r.n_signals_produced }}</td>
+                <td>{{ r.n_signals_approved }}</td>
+                <td>{{ r.n_orders }}</td>
+                <td>{{ r.n_fills }}</td>
+                <td>${{ "%.0f" | format(r.initial_equity) }}</td>
+                <td>${{ "%.2f" | format(r.final_equity) }}</td>
+                <td {{ "%.2f" | format(r.total_return_pct) | float < 0 }}>{{ "%.2f" | format(r.total_return_pct) }}%</td>
+                <td>${{ "%.2f" | format(r.total_net_pnl) }}</td>
+                <td>{{ "%.2f" | format(r.max_drawdown_pct) }}%</td>
+                <td>
+                    {% if r.error %}<span class="badge badge-error">ERROR</span>
+                    {% else %}<span class="badge badge-connected">OK</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No backtest runs yet.
+        <br><br>
+        Run <code>platform backtest --symbols BTC-PERP --days-back 30</code> to replay
+        historical heartbeats through the Hermes pipeline.
+        <br><br>
+        After backtesting, run <code>platform rigor --symbols BTC-PERP</code> to check
+        statistical significance (walk-forward, Deflated Sharpe, Monte Carlo, bootstrap CI).
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

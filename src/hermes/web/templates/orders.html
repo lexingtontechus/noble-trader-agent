@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Orders{% endblock %}
+
+{% block meta %}
+<meta name="auto-refresh" content="true" data-interval="10">
+{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Orders (last 100)</h2>
+    {% if orders %}
+    <table>
+        <thead>
+            <tr>
+                <th>Created</th>
+                <th>Order ID</th>
+                <th>Symbol</th>
+                <th>Venue</th>
+                <th>Side</th>
+                <th>Type</th>
+                <th>Qty Req</th>
+                <th>Limit</th>
+                <th>Qty Filled</th>
+                <th>Avg Fill</th>
+                <th>Status</th>
+                <th>Algo</th>
+                <th>Fees</th>
+                <th>Slippage</th>
+                <th>Position</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for o in orders %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ o.ts_created }}">{{ o.ts_created|string|truncate(19, true, '') }}</td>
+                <td><code>{{ o.order_id|string|truncate(8, true, '') }}...</code></td>
+                <td><strong>{{ o.symbol }}</strong></td>
+                <td>{{ o.venue }}</td>
+                <td class="signal-{{ o.side }}">{{ o.side }}</td>
+                <td>{{ o.order_type }}</td>
+                <td>{{ "%.6f" | format(o.qty_requested) }}</td>
+                <td>{{ o.price_limit if o.price_limit else "-" }}</td>
+                <td>{{ "%.6f" | format(o.qty_filled) if o.qty_filled else "0" }}</td>
+                <td>{{ "%.2f" | format(o.avg_fill_price) if o.avg_fill_price else "-" }}</td>
+                <td>
+                    {% if o.status == 'filled' %}<span class="badge badge-connected">{{ o.status }}</span>
+                    {% elif o.status == 'canceled' or o.status == 'rejected' or o.status == 'expired' %}<span class="badge badge-error">{{ o.status }}</span>
+                    {% elif o.status == 'partial' %}<span class="badge badge-warn">{{ o.status }}</span>
+                    {% else %}<span class="badge badge-not_configured">{{ o.status }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ o.algo or "-" }}</td>
+                <td>${{ "%.4f" | format(o.total_fees) }}</td>
+                <td>${{ "%.4f" | format(o.total_slippage) }}</td>
+                <td>{% if o.position_id %}<code>{{ o.position_id|string|truncate(8, true, '') }}...</code>{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No orders yet.
+        <br><br>
+        Run <code>platform execute --equity 100000 --paper</code> to start the L3 Execution Engine.
+        Orders will appear here as risk decisions are received from L5.
+    </div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Fills (last 100)</h2>
+    {% if fills %}
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Fill ID</th>
+                <th>Order ID</th>
+                <th>Symbol</th>
+                <th>Venue</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Fee</th>
+                <th>Maker?</th>
+                <th>Arrival</th>
+                <th>Slip (bps)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for f in fills %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ f.ts }}">{{ f.ts|string|truncate(19, true, '') }}</td>
+                <td><code>{{ f.fill_id|string|truncate(8, true, '') }}...</code></td>
+                <td><code>{{ f.order_id|string|truncate(8, true, '') }}...</code></td>
+                <td><strong>{{ f.symbol }}</strong></td>
+                <td>{{ f.venue }}</td>
+                <td class="signal-{{ f.side }}">{{ f.side }}</td>
+                <td>{{ "%.6f" | format(f.qty) }}</td>
+                <td>{{ "%.2f" | format(f.price) }}</td>
+                <td>${{ "%.4f" | format(f.fee) }} {{ f.fee_currency }}</td>
+                <td>
+                    {% if f.is_maker %}<span class="badge badge-connected">MAKER</span>
+                    {% else %}<span class="badge badge-not_configured">TAKER</span>{% endif %}
+                </td>
+                <td>{{ "%.2f" | format(f.arrival_price) }}</td>
+                <td>{{ "%+.2f" | format(f.slippage_bps) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No fills yet. Fills appear when orders are executed by the paper trading engine.
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

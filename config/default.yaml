@@ -1,0 +1,281 @@
+# ============================================================
+# Hermes Trading Platform — Default Configuration
+# All values can be overridden via environment variables or .env
+# See roadmap §3 for full documentation of every parameter
+# ============================================================
+
+# === Environment ===
+environment: development                    # development | staging | production
+log_level: INFO                             # DEBUG | INFO | WARNING | ERROR
+
+# === Portfolio Allocation (§3.0) ===
+portfolio:
+  target_allocation:
+    equities:    0.50
+    crypto:      0.15
+    commodities: 0.20
+    forex:       0.15                      # reserved — unallocated until forex venue added
+
+  rebalance_threshold_drift_pct: 0.10
+  rebalance_frequency: on_drift            # on_drift | daily | weekly | monthly
+  rebalance_method: threshold              # threshold | target_weight | risk_parity
+
+  start_small: true
+  initial_symbols:
+    - { symbol: "AAPL",      venue: "alpaca",      asset_class: "equities" }
+    - { symbol: "BTC-PERP",  venue: "hyperliquid",  asset_class: "crypto" }
+    - { symbol: "ETH-PERP",  venue: "hyperliquid",  asset_class: "crypto" }
+    - { symbol: "GLD",       venue: "alpaca",      asset_class: "commodities" }
+
+# === Venue Registry (§3.0) ===
+venues:
+  alpaca:
+    enabled: true
+    asset_classes: ["equities", "commodities"]
+    credentials:
+      api_key:    "secret:alpaca.api_key"
+      api_secret: "secret:alpaca.api_secret"
+      base_url:   "secret:alpaca.base_url"
+      data_url:   "secret:alpaca.data_url"
+    rate_limit_per_min: 200
+    data_modes:
+      live: true
+      historical: true
+    features:
+      forex: false
+      options: false
+      shorting: true
+      leverage: 4.0
+
+  hyperliquid:
+    enabled: true
+    asset_classes: ["crypto"]
+    credentials:
+      wallet_address: "secret:hyperliquid.wallet_address"
+      private_key:    "secret:hyperliquid.private_key"
+      api_url:        "secret:hyperliquid.api_url"
+      vault_address:  "secret:hyperliquid.vault_address"
+    rate_limit_per_min: 1200
+    data_modes:
+      live: true
+      historical: true
+    features:
+      perps: true
+      spot: true
+      funding: true
+      post_only: true
+      reduce_only: true
+      max_leverage: 50.0
+
+  # Future venues (uncomment when added)
+  # oanda:
+  #   enabled: false
+  #   asset_classes: ["forex"]
+  #   credentials:
+  #     api_key:    "secret:oanda.api_key"
+  #     account_id: "secret:oanda.account_id"
+  #   features: { forex: true, leverage: 30.0 }
+
+# === Upstream — Noble Trader (§3.0) ===
+upstream:
+  noble_trader:
+    redis:
+      url:             "secret:noble_trader.redis_url"
+      channel:         "signal.raw.noble_trader"
+      consumer_group:  "hermes-l0"
+      staleness_ms:    30000                # reject heartbeats older than 30s
+    supabase:
+      url:                    "secret:supabase.url"
+      key:                    "secret:supabase.key"
+      sweep_result_table:     "nt_sweep_result"
+      regime_log_table:       "nt_regime_log"
+      backfill_on_startup:    true
+      backfill_lookback_days: 365
+
+# === Data Sources Policy (§3.0) ===
+data_sources:
+  policy: venue_native_only
+  prohibited_sources:
+    - yfinance
+    - alpha_vantage
+    - iex
+    - any_third_party_price_feed
+  fallback_behavior: fail_hard
+
+# === Account-Level Risk (§3.1) ===
+account:
+  max_portfolio_drawdown_pct: 0.15
+  daily_loss_limit_pct:       0.03
+  weekly_loss_limit_pct:      0.06
+  max_leverage_total:         2.0
+  max_gross_exposure_pct:     1.50
+  max_net_exposure_pct:       0.50
+  margin_usage_limit_pct:     0.70
+  min_cash_buffer_pct:        0.05
+
+# === Asset-Level Risk (§3.2) ===
+asset:
+  max_position_size_pct:      0.05
+  max_position_notional:      25000
+  max_asset_drawdown_pct:     0.08
+  max_concentration_pct:      0.15
+  sector_exposure_cap:        0.40
+  venue_exposure_cap:         0.60
+
+# === Signal & Entry/Execution (§3.3) ===
+signal:
+  staleness_ms:               30000
+  min_edge_estimate_bps:      5
+  reward_risk_min:            1.5
+  regime_filter_allowlist:    all_states
+  tail_risk_action_override:  more_conservative
+
+entry:
+  strategies:
+    calm_trend:         enter_now
+    choppy_range:       wait_for_brick_close
+    high_vol_breakout:  wait_for_pullback
+    regime_transition:  wait_for_retest
+    risk_off:           block
+    funding_stress:     block
+    liquidity_drained:  maker_only
+  brick_confirmation_count:    2
+  pullback_depth_brick_fraction: 0.5
+  signal_expiry_minutes:       30
+
+execution:
+  default_method:             limit_at_brick
+  large_size_threshold_usd:   10000
+  twap_n_bricks:              3
+  iceberg_child_pct:          10
+  limit_offset_bps:           0
+  post_only_preference:       true
+  max_slippage_bps:           20
+
+position_management:
+  trailing:
+    method:        brick_boundary          # brick_boundary | atr | percentage
+    atr_mult:      3.0
+    brick_count:   1
+  exit:
+    strategy:                  at_tp        # at_tp | trailing | brick_momentum | time_based
+    brick_momentum_threshold:  0.5
+  regime_exit:
+    trigger_states:            [risk_off, funding_stress]
+
+# === Circuit Breakers (§4) ===
+circuit_breakers:
+  volatility:
+    atr_baseline_lookback_days:  20
+    atr_current_window_minutes:  60
+    vol_mult_threshold:          2.5
+    k_constant:                  0.3
+    action_ladder:
+      level_1: reduce_size_50pct
+      level_2: block_new_entries
+      level_3: tighten_stops
+      level_4: liquidate
+  risk:
+    checks:
+      account_allocation:    true
+      risk_fraction:         true
+      risk_amount:           true
+      reward_risk:           true
+    var_confidence:          0.99
+    var_window_days:         1
+  kill_switch:
+    auto_triggers:
+      daily_loss_hit:        true
+      venue_disconnect_sec:  60
+      audit_log_failure:     true
+
+# === Autonomy Tiers (§3.5) ===
+autonomy:
+  tier_0:
+    approval: none
+    actions: [query_duckdb, run_backtest, generate_report, run_optimization]
+  tier_1:
+    approval: none
+    max_notional_usd: 5000
+    max_position_pct_of_equity: 0.02
+    requires_shadow_days: 7
+    requires_rigor_pass: 8
+    actions: [enter_trade, close_trade, adjust_stop]
+  tier_2:
+    approval: notify_only
+    max_size_change_pct: 50
+    requires_shadow_sharpe_pct: 80
+    notify_channels: [discord, email]
+    review_window_hours: 24
+    actions: [promote_config]
+  tier_3:
+    approval: required
+    max_notional_usd: 25000
+    or_novel_strategy: true
+    approval_timeout_hours: 4
+    on_timeout: skip
+    actions: [enter_large_trade, novel_strategy]
+  tier_4:
+    approval: human_only
+    blocks:
+      - changing_meta_regime_hmm_state_count
+      - disabling_circuit_breakers
+      - increasing_max_gross_exposure_beyond_2
+      - promoting_failed_rigor_config
+      - trading_in_blocked_regimes
+    actions: [structural_change]
+  active_hours:
+    timezone: America/Los_Angeles
+    start: "09:30"
+    end: "16:00"
+    crypto_24_7: true
+    degrade_outside_hours: true
+
+# === Meta-Regime Classifier (§2.2.1) ===
+meta_regime:
+  hmm_n_components: 7                      # 5 | 7 | 9
+  retrain_frequency_days: 30
+  confidence_floor: 0.55
+  thresholds:
+    risk_off_corr_threshold:           0.75
+    funding_stress_annualized_pct:     50.0
+    liquidity_depth_percentile:        10
+    transition_entropy_bits:           1.5
+
+# === Renko Simulation (§2.2.3) ===
+renko:
+  rolling_window_bricks: 500
+  simulation_multipliers: [0.5, 0.75, 1.0, 1.25, 1.5]   # offline analysis only
+
+# === DuckDB (§6) ===
+duckdb:
+  path: "secret:hermes.duckdb_path"
+  backup:
+    daily: true
+    backup_dir: ./backups
+    retention_days: 30
+  compaction:
+    weekly_vacuum: true
+    day_of_week: sunday
+
+# === Hermes Redis (internal pub/sub) ===
+hermes_redis:
+  url: "secret:hermes.redis_url"
+
+# === Notifications ===
+notifications:
+  discord:
+    webhook_url: "secret:discord.webhook_url"
+    enabled: false
+  telegram:
+    bot_token: "secret:telegram.bot_token"
+    enabled: false
+
+# === Logging ===
+logging:
+  level: INFO
+  format: json                               # json | text
+  output: stdout                             # stdout | file
+  file_path: ./logs/hermes.log
+  rotate_max_mb: 100
+  rotate_backup_count: 5

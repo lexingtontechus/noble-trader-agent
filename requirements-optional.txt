@@ -1,0 +1,14 @@
+# ============================================================
+# Hermes Trading Platform — Optional Dependencies
+# ============================================================
+# This file is GENERATED from pyproject.toml. Do not edit directly.
+# Regenerate with: python scripts/sync_requirements.py
+# Install only the extras you need.
+# ============================================================
+
+# --- supabase ---
+supabase>=2.5
+
+# --- venues ---
+alpaca-py>=0.20
+

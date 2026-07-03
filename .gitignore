@@ -1,0 +1,81 @@
+# ============================================================
+# Hermes Trading Platform — .gitignore
+# ============================================================
+
+# === Secrets — NEVER commit ===
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+*.p12
+
+# === Data — contains account state, PnL, trade history ===
+*.duckdb
+*.duckdb.wal
+data/
+*.parquet
+
+# === Logs ===
+logs/
+*.log
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# === Virtual environments ===
+.venv/
+venv/
+env/
+ENV/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Testing ===
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# === Type checking ===
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Hermes-specific ===
+.secrets.baseline.local
+backups/
+*.bak

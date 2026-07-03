@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Heartbeats{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Heartbeats</h2>
+
+    <form class="filter-form" method="get" action="/heartbeats">
+        <label>Symbol filter:</label>
+        <input type="text" name="symbol" value="{{ filter_symbol or '' }}" placeholder="e.g. BTC, AAPL (blank = all)">
+        <label>Limit:</label>
+        <select name="limit">
+            <option value="50" {% if limit == 50 %}selected{% endif %}>50</option>
+            <option value="100" {% if limit == 100 %}selected{% endif %}>100</option>
+            <option value="500" {% if limit == 500 %}selected{% endif %}>500</option>
+        </select>
+        <button type="submit">Apply</button>
+        <a href="/heartbeats">Clear</a>
+    </form>
+
+    <div class="refresh-note">Showing {{ total_shown }} heartbeats</div>
+</div>
+
+<div class="card">
+    {% if heartbeats %}
+    <table>
+        <thead>
+            <tr>
+                <th>Received</th>
+                <th>Upstream TS</th>
+                <th>Lag (ms)</th>
+                <th>Symbol</th>
+                <th>Signal</th>
+                <th>Regime</th>
+                <th>Conf</th>
+                <th>Shift?</th>
+                <th>Entry</th>
+                <th>Stop</th>
+                <th>TP</th>
+                <th>Brick</th>
+                <th>SL/TP Bricks</th>
+                <th>Kelly F</th>
+                <th>Eff Kelly</th>
+                <th>EV</th>
+                <th>EV/$</th>
+                <th>P_win</th>
+                <th>P_regime</th>
+                <th>P_imbal</th>
+                <th>P_markov</th>
+                <th>P_timesfm</th>
+                <th>Tail Risk</th>
+                <th>Tail Action</th>
+                <th>Aggression</th>
+                <th>Markov State</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for hb in heartbeats %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ hb.ts_received }}">{{ hb.ts_received[:19] }}</td>
+                <td class="timestamp" data-timestamp="{{ hb.ts_upstream }}">{{ hb.ts_upstream[:19] }}</td>
+                <td>{{ hb.lag_ms }}</td>
+                <td><strong>{{ hb.symbol }}</strong></td>
+                <td class="signal-{{ hb.signal }}">{{ hb.signal }}</td>
+                <td>{{ hb.regime }}</td>
+                <td>{{ "%.4f" | format(hb.regime_conf) if hb.regime_conf is not none else "-" }}</td>
+                <td>{% if hb.regime_shift %}<span class="badge badge-warn">SHIFT</span>{% else %}-{% endif %}</td>
+                <td>{{ hb.entry_price }}</td>
+                <td>{{ hb.stop_loss }}</td>
+                <td>{{ hb.take_profit }}</td>
+                <td>{{ hb.brick_size }}</td>
+                <td>{{ hb.sl_bricks }} / {{ hb.tp_bricks }}</td>
+                <td>{{ "%.4f" | format(hb.kelly_f) if hb.kelly_f is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.effective_kelly) if hb.effective_kelly is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.ev) if hb.ev is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.ev_per_dollar) if hb.ev_per_dollar is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.p_win) if hb.p_win is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.p_regime) if hb.p_regime is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.p_imbalance) if hb.p_imbalance is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.p_markov) if hb.p_markov is not none else "-" }}</td>
+                <td>{{ "%.4f" | format(hb.p_timesfm) if hb.p_timesfm is not none else "-" }}</td>
+                <td>{{ "%.2f" | format(hb.tail_risk_score) if hb.tail_risk_score is not none else "-" }}</td>
+                <td>{{ hb.tail_risk_action or "-" }}</td>
+                <td>{{ hb.aggression }}</td>
+                <td>{{ hb.markov_current_state }}</td>
+                <td>
+                    {% if hb.accepted %}
+                    <span class="badge badge-connected">ok</span>
+                    {% else %}
+                    <span class="badge badge-error" title="{{ hb.reject_reason }}">{{ hb.reject_reason or "rejected" }}</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No heartbeats found.
+        {% if filter_symbol %}
+        (Filter: symbol="{{ filter_symbol }}")
+        {% endif %}
+        <br><br>
+        Run <code>platform ingest</code> to start receiving heartbeats,
+        or <code>platform backfill</code> to pull historical data.
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

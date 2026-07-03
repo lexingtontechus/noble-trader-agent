@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; PnL Analytics{% endblock %}
+
+{% block meta %}
+<meta name="auto-refresh" content="true" data-interval="30">
+{% endblock %}
+
+{% block content %}
+
+{% if tear_sheet and tear_sheet.error %}
+<div class="card">
+    <h2>PnL Analytics</h2>
+    <div class="empty">
+        Insufficient data for tear sheet.
+        <br><br>
+        Run <code>platform risk</code> + <code>platform execute</code> to accumulate
+        account snapshots + realized trades, then re-visit this page.
+    </div>
+</div>
+{% elif tear_sheet and tear_sheet.summary %}
+
+<!-- Summary -->
+<div class="card">
+    <h2>PnL Tear Sheet</h2>
+    <div class="grid grid-3">
+        <div class="stat">
+            <div class="stat-value">${{ "%.2f" | format(tear_sheet.summary.final_equity) }}</div>
+            <div class="stat-label">Final Equity</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ tear_sheet.summary.n_trades }}</div>
+            <div class="stat-label">Total Trades</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ tear_sheet.summary.n_data_points }}</div>
+            <div class="stat-label">Data Points</div>
+        </div>
+    </div>
+    <div class="refresh-note">
+        Period: {{ tear_sheet.summary.period_start[:19] if tear_sheet.summary.period_start else "?" }} →
+        {{ tear_sheet.summary.period_end[:19] if tear_sheet.summary.period_end else "?" }}
+    </div>
+</div>
+
+<!-- Returns + Risk -->
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Returns</h2>
+        <table>
+            <tr><th>Total Return</th><td>{{ "%.2f" | format(tear_sheet.returns.total_return_pct) }}%</td></tr>
+            <tr><th>Annual Return</th><td>{{ "%.2f" | format(tear_sheet.returns.annual_return_pct) }}%</td></tr>
+            <tr><th>Avg Daily</th><td>{{ "%.2f" | format(tear_sheet.returns.avg_daily_return_bps) }} bps</td></tr>
+            <tr><th>Best Day</th><td>+{{ "%.2f" | format(tear_sheet.returns.best_day_bps) }} bps</td></tr>
+            <tr><th>Worst Day</th><td>{{ "%.2f" | format(tear_sheet.returns.worst_day_bps) }} bps</td></tr>
+            <tr><th>Positive Days</th><td>{{ "%.1f" | format(tear_sheet.returns.positive_days_pct) }}%</td></tr>
+        </table>
+    </div>
+    <div class="card">
+        <h2>Risk-Adjusted</h2>
+        <table>
+            <tr><th>Sharpe Ratio</th><td>{{ "%.3f" | format(tear_sheet.risk_adjusted.sharpe) }}</td></tr>
+            <tr><th>Sortino Ratio</th><td>{{ "%.3f" | format(tear_sheet.risk_adjusted.sortino) }}</td></tr>
+            <tr><th>Calmar Ratio</th><td>{{ "%.3f" | format(tear_sheet.risk_adjusted.calmar) }}</td></tr>
+            <tr><th>Omega Ratio</th><td>{{ "%.3f" | format(tear_sheet.risk_adjusted.omega) }}</td></tr>
+            <tr><th>VaR 95% (daily)</th><td>{{ "%.2f" | format(tear_sheet.risk_adjusted.var_95_daily_pct) }}%</td></tr>
+            <tr><th>CVaR 95% (daily)</th><td>{{ "%.2f" | format(tear_sheet.risk_adjusted.cvar_95_daily_pct) }}%</td></tr>
+            <tr><th>Volatility (ann)</th><td>{{ "%.2f" | format(tear_sheet.risk_adjusted.volatility_annualized_pct) }}%</td></tr>
+        </table>
+    </div>
+</div>
+
+<!-- Drawdown + Trading -->
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Drawdown</h2>
+        <table>
+            <tr><th>Max Drawdown</th><td>{{ "%.2f" | format(tear_sheet.drawdown.max_dd_pct) }}% (${{ "%.2f" | format(tear_sheet.drawdown.max_dd_usd) }})</td></tr>
+            <tr><th>Current Drawdown</th><td>{{ "%.2f" | format(tear_sheet.drawdown.current_dd_pct) }}%</td></tr>
+            <tr><th>Max DD Duration</th><td>{{ "%.1f" | format(tear_sheet.drawdown.max_dd_duration_hours) }}h</td></tr>
+            <tr><th>Underwater</th><td>{{ "%.1f" | format(tear_sheet.drawdown.underwater_pct) }}% of time</td></tr>
+            <tr><th>Ulcer Index</th><td>{{ "%.2f" | format(tear_sheet.drawdown.ulcer_index) }}</td></tr>
+        </table>
+    </div>
+    <div class="card">
+        <h2>Trading</h2>
+        <table>
+            <tr><th>Win Rate</th><td>{{ "%.1f" | format(tear_sheet.trading.win_rate_pct) }}%</td></tr>
+            <tr><th>Profit Factor</th><td>{{ "%.2f" | format(tear_sheet.trading.profit_factor) }}</td></tr>
+            <tr><th>Avg Win</th><td>${{ "%.2f" | format(tear_sheet.trading.avg_win_usd) }}</td></tr>
+            <tr><th>Avg Loss</th><td>${{ "%.2f" | format(tear_sheet.trading.avg_loss_usd) }}</td></tr>
+            <tr><th>Expectancy</th><td>${{ "%.2f" | format(tear_sheet.trading.expectancy_usd) }}</td></tr>
+            <tr><th>Avg R-Multiple</th><td>{{ "%.4f" | format(tear_sheet.trading.avg_r_multiple) }}</td></tr>
+            <tr><th>Total Net PnL</th><td>${{ "%.2f" | format(tear_sheet.trading.total_net_pnl) }}</td></tr>
+        </table>
+    </div>
+</div>
+
+<!-- By Regime -->
+{% if tear_sheet.trading.by_regime %}
+<div class="card">
+    <h2>PnL by Meta-Regime</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Regime</th>
+                <th>Trades</th>
+                <th>Win Rate</th>
+                <th>Total PnL</th>
+                <th>Avg PnL</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for regime, stats in tear_sheet.trading.by_regime.items() %}
+            <tr>
+                <td><strong>{{ regime }}</strong></td>
+                <td>{{ stats.n_trades }}</td>
+                <td>{{ "%.1f" | format(stats.win_rate) }}%</td>
+                <td>${{ "%.2f" | format(stats.total_pnl) }}</td>
+                <td>${{ "%.2f" | format(stats.avg_pnl) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Equity Curve (text representation) -->
+{% if equity_curve %}
+<div class="card">
+    <h2>Equity Curve ({{ equity_curve | length }} points)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Equity</th>
+                <th>Drawdown</th>
+                <th>Gross Exposure</th>
+                <th>Realized PnL</th>
+                <th>Unrealized PnL</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for point in equity_curve[-20:] %}  {# last 20 points #}
+            <tr>
+                <td class="timestamp">{{ point.ts|string|truncate(19, true, '') }}</td>
+                <td>${{ "%.2f" | format(point.equity_total) }}</td>
+                <td>{{ "%.2f" | format(point.drawdown_pct * 100) }}%</td>
+                <td>${{ "%.2f" | format(point.gross_exposure_usd) }}</td>
+                <td>${{ "%.2f" | format(point.realized_pnl) }}</td>
+                <td>${{ "%.2f" | format(point.unrealized_pnl) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="refresh-note">Showing last 20 of {{ equity_curve | length }} snapshots</div>
+</div>
+{% endif %}
+
+<!-- Realized PnL History -->
+{% if pnl_history %}
+<div class="card">
+    <h2>Realized PnL History (last {{ pnl_history | length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Symbol</th>
+                <th>Regime</th>
+                <th>Gross PnL</th>
+                <th>Fees</th>
+                <th>Slippage</th>
+                <th>Funding</th>
+                <th>Net PnL</th>
+                <th>Net (bps)</th>
+                <th>R-Multiple</th>
+                <th>Hold (min)</th>
+                <th>Direction</th>
+                <th>Timing</th>
+                <th>Regime PnL</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in pnl_history %}
+            <tr>
+                <td class="timestamp">{{ p.ts|string|truncate(19, true, '') }}</td>
+                <td><strong>{{ p.symbol }}</strong></td>
+                <td>{{ p.regime_at_close or "-" }}</td>
+                <td>${{ "%.2f" | format(p.gross_pnl) }}</td>
+                <td>${{ "%.2f" | format(p.fees_total) }}</td>
+                <td>${{ "%.2f" | format(p.slippage_cost) }}</td>
+                <td>${{ "%.2f" | format(p.funding_pnl) }}</td>
+                <td {{ "%.2f" | format(p.net_pnl) | float < 0 }}>${{ "%.2f" | format(p.net_pnl) }}</td>
+                <td>{{ "%.2f" | format(p.net_pnl_bps) }}</td>
+                <td>{{ "%.4f" | format(p.r_multiple) }}</td>
+                <td>{{ "%.1f" | format(p.hold_duration_sec / 60) }}</td>
+                <td>${{ "%.2f" | format(p.direction_pnl) if p.direction_pnl is not none else "-" }}</td>
+                <td>${{ "%.2f" | format(p.timing_pnl) if p.timing_pnl is not none else "-" }}</td>
+                <td>${{ "%.2f" | format(p.regime_pnl) if p.regime_pnl is not none else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% else %}
+<div class="card">
+    <h2>PnL Analytics</h2>
+    <div class="empty">
+        No PnL data yet.
+        <br><br>
+        Run <code>platform risk</code> + <code>platform execute</code> to start trading,
+        then <code>platform pnl</code> to generate a tear sheet.
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}

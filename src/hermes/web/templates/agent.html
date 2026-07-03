@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Agent{% endblock %}
+
+{% block content %}
+
+<!-- Decision Tree Reference -->
+<div class="card">
+    <h2>Hermes Agent Decision Tree</h2>
+    <pre style="font-size: 11px; line-height: 1.4;">
+                     ┌─────────────────────────────────┐
+                     │   Evaluate existing position     │
+                     └────────────┬────────────────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │   Position exists?          │
+                    └─────────────┬─────────────┘
+                           YES    │    NO
+                    ┌─────────────┘    └──────────────┐
+                    ▼                                  ▼
+         ┌──────────────────────┐          ┌───────────────────┐
+         │ Check SL: pnl ≤ -1%  │          │ Renko signal      │
+         │   → close (🛑)       │          │ present?          │
+         └──────────┬───────────┘          └────────┬──────────┘
+                    ▼                               │
+         ┌──────────────────────┐           NO      │      YES
+         │ Check TP: pnl ≥ 2.5% │          ┌────────┘       └────────┐
+         │   → close (💰)       │          ▼                        ▼
+         └──────────┬───────────┘  ┌───────────┐          ┌─────────────────┐
+                    ▼              │ Skip      │          │ Kelly sizing    │
+         ┌──────────────────────┐  │ (no entry)│          │ + Execute       │
+         │ Signal present?      │  └───────────┘          └─────────────────┘
+         └──────────┬───────────┘
+                    ▼
+         ┌──────────────────────────────────┐
+         │ Same direction?                  │
+         ├── YES + pnl>0 + fading → trail   │
+         ├── YES + pnl>4.5% → early profit  │
+         ├── YES + no exit → hold           │
+         ├── OPPOSITE + strong → flip close │
+         └── NO SIGNAL → hold, native stops │
+         └──────────────────────────────────┘
+    </pre>
+    <div style="margin-top: 12px; font-size: 12px; color: #8b949e;">
+        Thresholds: SL=-1%, TP=+2.5%, Early TP=+4.5%, Fading=2+ adverse bricks,
+        Flip=conviction≥0.7+regime confirms. All configurable.
+    </div>
+</div>
+
+<!-- Hypotheses -->
+<div class="card">
+    <h2>Hypotheses ({{ hypotheses | length }})</h2>
+    <p style="color: #8b949e; font-size: 13px; margin-bottom: 16px;">
+        Hermes generates improvement hypotheses from EOD analysis. Lifecycle:
+        proposed → backtested → shadow → live / rejected.
+        Run <code>platform agent --eod</code> to generate new hypotheses.
+    </p>
+
+    {% if hypotheses %}
+    <table>
+        <thead>
+            <tr>
+                <th>Created</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Confidence</th>
+                <th>Hypothesis</th>
+                <th>Rationale</th>
+                <th>Promoted</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for h in hypotheses %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ h.ts_created }}">{{ h.ts_created|string|truncate(19, true, '') }}</td>
+                <td><code>{{ h.hypothesis_id|string|truncate(8, true, '') }}...</code></td>
+                <td>
+                    {% if h.status == 'live' %}<span class="badge badge-connected">LIVE</span>
+                    {% elif h.status == 'shadow' %}<span class="badge badge-warn">SHADOW</span>
+                    {% elif h.status == 'backtested' %}<span class="badge badge-connected">TESTED</span>
+                    {% elif h.status == 'rejected' %}<span class="badge badge-error">REJECTED</span>
+                    {% else %}<span class="badge badge-not_configured">{{ h.status }}</span>{% endif %}
+                </td>
+                <td>{{ "%.2f" | format(h.confidence) if h.confidence else "0" }}</td>
+                <td>{{ h.hypothesis }}</td>
+                <td><small>{{ h.rationale|string|truncate(60, true, '...') if h.rationale else "-" }}</small></td>
+                <td>{{ h.promoted_at|string|truncate(19, true, '') if h.promoted_at else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No hypotheses yet.
+        <br><br>
+        Run <code>platform agent --eod</code> to generate hypotheses from trade analysis.
+    </div>
+    {% endif %}
+</div>
+
+<!-- Trade Journal -->
+<div class="card">
+    <h2>Trade Journal ({{ journal | length }})</h2>
+    <p style="color: #8b949e; font-size: 13px; margin-bottom: 16px;">
+        Postmortems for closed trades. Each entry includes entry thesis, exit reason,
+        PnL, R-multiple, automated postmortem, and actionable lessons.
+    </p>
+
+    {% if journal %}
+    <table>
+        <thead>
+            <tr>
+                <th>Closed</th>
+                <th>Symbol</th>
+                <th>Direction</th>
+                <th>Regime</th>
+                <th>Exit Reason</th>
+                <th>PnL</th>
+                <th>R-Multiple</th>
+                <th>Hold (min)</th>
+                <th>Postmortem</th>
+                <th>Lessons</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for j in journal %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ j.closed_at }}">{{ j.closed_at|string|truncate(19, true, '') if j.closed_at else "-" }}</td>
+                <td><strong>{{ j.symbol }}</strong></td>
+                <td class="signal-{{ 'buy' if j.direction == 'long' else 'sell' }}">{{ j.direction }}</td>
+                <td>{{ j.regime_tag or "-" }}</td>
+                <td>{{ j.exit_reason }}</td>
+                <td>${{ "%.2f" | format(j.exit_pnl) }}</td>
+                <td>{{ "%.4f" | format(j.exit_r_multiple) }}</td>
+                <td>{{ "%.1f" | format(j.hold_duration_sec / 60) if j.hold_duration_sec else "0" }}</td>
+                <td><details><summary>view</summary><pre style="font-size: 11px;">{{ j.postmortem }}</pre></details></td>
+                <td>
+                    {% if j.lessons %}
+                    <details><summary>{{ j.lessons | length }} lesson(s)</summary>
+                    <ul style="font-size: 11px; padding-left: 16px;">
+                        {% for lesson in j.lessons %}
+                        <li>{{ lesson }}</li>
+                        {% endfor %}
+                    </ul>
+                    </details>
+                    {% else %}-{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No trade journal entries yet.
+        <br><br>
+        Run <code>platform agent --eod</code> after closing trades to generate postmortems.
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

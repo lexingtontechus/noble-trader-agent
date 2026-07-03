@@ -1,0 +1,345 @@
+/* Hermes Dashboard — clean minimal styling */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  background: #0d1117;
+  color: #c9d1d9;
+  line-height: 1.5;
+  padding: 0;
+}
+
+a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* === Layout === */
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+header {
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  padding: 16px 0;
+}
+
+header .container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #f0f6fc;
+}
+
+header .meta {
+  font-size: 13px;
+  color: #8b949e;
+}
+
+nav {
+  display: flex;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+nav a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #c9d1d9;
+}
+
+nav a:hover {
+  background: #21262d;
+  text-decoration: none;
+}
+
+nav a.active {
+  background: #1f6feb;
+  color: #ffffff;
+}
+
+/* === Cards === */
+.card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #f0f6fc;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #21262d;
+}
+
+.card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f0f6fc;
+  margin-bottom: 8px;
+}
+
+/* === Status badges === */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-connected {
+  background: #1a7f37;
+  color: #ffffff;
+}
+
+.badge-error {
+  background: #da3633;
+  color: #ffffff;
+}
+
+.badge-not_configured {
+  background: #424a53;
+  color: #c9d1d9;
+}
+
+.badge-disabled {
+  background: #424a53;
+  color: #8b949e;
+}
+
+.badge-warn {
+  background: #9e6a03;
+  color: #ffffff;
+}
+
+/* === Grid === */
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.grid-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.grid-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+@media (max-width: 768px) {
+  .grid-2,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === Tables === */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th {
+  text-align: left;
+  padding: 8px 12px;
+  background: #21262d;
+  color: #f0f6fc;
+  font-weight: 600;
+  border-bottom: 1px solid #30363d;
+  white-space: nowrap;
+}
+
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #21262d;
+  color: #c9d1d9;
+  vertical-align: top;
+}
+
+tr:hover td {
+  background: #161b22;
+}
+
+/* === Subsystem item === */
+.subsystem {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid #21262d;
+}
+
+.subsystem:last-child {
+  border-bottom: none;
+}
+
+.subsystem-name {
+  font-weight: 600;
+  color: #f0f6fc;
+  font-size: 14px;
+}
+
+.subsystem-detail {
+  font-size: 12px;
+  color: #8b949e;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.subsystem-url {
+  font-size: 11px;
+  color: #6e7681;
+  font-family: "SF Mono", Menlo, monospace;
+  margin-top: 2px;
+}
+
+/* === Stats grid === */
+.stat {
+  text-align: center;
+  padding: 16px;
+  background: #0d1117;
+  border-radius: 6px;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #f0f6fc;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+/* === Code blocks === */
+pre {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c9d1d9;
+}
+
+code {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  color: #f0883e;
+}
+
+/* === Signal colors === */
+.signal-buy {
+  color: #3fb950;
+  font-weight: 600;
+}
+
+.signal-sell {
+  color: #f85149;
+  font-weight: 600;
+}
+
+.signal-neutral {
+  color: #8b949e;
+}
+
+/* === Refresh indicator === */
+.refresh-note {
+  font-size: 11px;
+  color: #6e7681;
+  text-align: right;
+  margin-top: 8px;
+}
+
+/* === Filter form === */
+.filter-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.filter-form input,
+.filter-form select {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.filter-form button {
+  background: #1f6feb;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.filter-form button:hover {
+  background: #388bfd;
+}
+
+/* === Empty state === */
+.empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: #6e7681;
+  font-style: italic;
+}
+
+/* === Timestamps === */
+.timestamp {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #6e7681;
+  white-space: nowrap;
+}
+
+/* === Footer === */
+footer {
+  margin-top: 40px;
+  padding: 16px 0;
+  border-top: 1px solid #21262d;
+  text-align: center;
+  color: #6e7681;
+  font-size: 12px;
+}

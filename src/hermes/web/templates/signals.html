@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Hermes Dashboard &middot; Signals{% endblock %}
+
+{% block meta %}
+<meta name="auto-refresh" content="true" data-interval="10">
+{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Blended Signals (L4 Output)</h2>
+    <p style="color: #8b949e; font-size: 13px; margin-bottom: 16px;">
+        Entry/execution decisions produced by Hermes's signal synthesizer.
+        Each row = one Noble Trader heartbeat processed through the 7-state meta-regime
+        classifier + renko pattern analysis + entry timing optimizer + sizing engine.
+    </p>
+
+    {% if signals %}
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Symbol</th>
+                <th>Direction</th>
+                <th>Meta Regime</th>
+                <th>Conf</th>
+                <th>Size Mult</th>
+                <th>Entry Strategy</th>
+                <th>Exec Method</th>
+                <th>Size (USD)</th>
+                <th>Size %</th>
+                <th>Risk $</th>
+                <th>Brick Pattern</th>
+                <th>Exp Alpha (bps)</th>
+                <th>NT Entry</th>
+                <th>NT Stop</th>
+                <th>NT Target</th>
+                <th>NT Kelly</th>
+                <th>Limit Price</th>
+                <th>Sizing Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in signals %}
+            <tr>
+                <td class="timestamp" data-timestamp="{{ s.ts_emitted }}">{{ s.ts_emitted|string|truncate(19, true, '') }}</td>
+                <td><strong>{{ s.symbol }}</strong></td>
+                <td class="signal-{{ s.direction }}">{{ s.direction }}</td>
+                <td>
+                    {% if s.meta_regime == 'risk_off' %}<span class="badge badge-error">{{ s.meta_regime }}</span>
+                    {% elif s.meta_regime == 'funding_stress' %}<span class="badge badge-error">{{ s.meta_regime }}</span>
+                    {% elif s.meta_regime == 'liquidity_drained' %}<span class="badge badge-warn">{{ s.meta_regime }}</span>
+                    {% elif s.meta_regime == 'regime_transition' %}<span class="badge badge-warn">{{ s.meta_regime }}</span>
+                    {% elif s.meta_regime == 'high_vol_breakout' %}<span class="badge badge-warn">{{ s.meta_regime }}</span>
+                    {% elif s.meta_regime == 'calm_trend' %}<span class="badge badge-connected">{{ s.meta_regime }}</span>
+                    {% else %}<span class="badge badge-not_configured">{{ s.meta_regime }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ "%.3f" | format(s.meta_regime_confidence) }}</td>
+                <td>{{ "%.2f" | format(s.sizing_multiplier) }}&times;</td>
+                <td>
+                    {% if s.entry_strategy == 'enter_now' %}<span class="badge badge-connected">{{ s.entry_strategy }}</span>
+                    {% elif s.entry_strategy == 'block' %}<span class="badge badge-error">{{ s.entry_strategy }}</span>
+                    {% elif s.entry_strategy == 'skip_entry' %}<span class="badge badge-error">{{ s.entry_strategy }}</span>
+                    {% elif s.entry_strategy == 'maker_only' %}<span class="badge badge-warn">{{ s.entry_strategy }}</span>
+                    {% else %}<span class="badge badge-not_configured">{{ s.entry_strategy }}</span>
+                    {% endif %}
+                </td>
+                <td><code>{{ s.execution_method }}</code></td>
+                <td>${{ "%.2f" | format(s.final_size_usd) }}</td>
+                <td>{{ "%.4f" | format(s.final_size_pct * 100) }}%</td>
+                <td>${{ "%.2f" | format(s.risk_amount_usd) }}</td>
+                <td>{{ s.brick_pattern }}</td>
+                <td>{{ "%+.1f" | format(s.expected_entry_alpha_bps) }}</td>
+                <td>{{ s.nt_entry_price }}</td>
+                <td>{{ s.nt_stop_price }}</td>
+                <td>{{ s.nt_target_price }}</td>
+                <td>{{ "%.4f" | format(s.nt_effective_kelly) }}</td>
+                <td>{{ s.limit_price if s.limit_price else "-" }}</td>
+                <td><small>{{ s.sizing_reason }}</small></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+        No blended signals yet.
+        <br><br>
+        Run <code>platform synthesize --symbols BTC-PERP,AAPL</code> to start the L4 signal synthesizer.
+        <br>
+        It consumes heartbeats from <code>platform ingest</code> and produces entry/execution decisions.
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

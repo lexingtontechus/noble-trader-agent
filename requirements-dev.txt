@@ -1,0 +1,16 @@
+# ============================================================
+# Hermes Trading Platform — Development Dependencies
+# ============================================================
+# This file is GENERATED from pyproject.toml. Do not edit directly.
+# Regenerate with: python scripts/sync_requirements.py
+# Includes runtime deps + dev/test/lint tools.
+# ============================================================
+
+-r requirements.txt
+
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-cov>=5.0
+detect-secrets>=1.4
+pre-commit>=3.7
+ruff>=0.5
