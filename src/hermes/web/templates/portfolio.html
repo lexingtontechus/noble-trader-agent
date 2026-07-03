@@ -1,116 +1,80 @@
 {% extends "base.html" %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
 
-{% block title %}Hermes Dashboard &middot; Portfolio{% endblock %}
+{% block title %}Hermes Dashboard · Portfolio{% endblock %}
 
 {% block meta %}
-<meta name="auto-refresh" content="true" data-interval="10">
+<meta http-equiv="refresh" content="10">
 {% endblock %}
 
 {% block content %}
 
-<!-- Portfolio metrics -->
-<div class="card">
-    <h2>Portfolio Metrics</h2>
-    {% if metrics and metrics.equity_total is defined %}
-    <div class="grid grid-3">
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.equity_total) }}</div>
-            <div class="stat-label">Equity Total</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.cash_usd) }}</div>
-            <div class="stat-label">Cash USD</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.cash_usdc) }}</div>
-            <div class="stat-label">Cash USDC</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ "%.4f" | format(metrics.leverage_gross) }}&times;</div>
-            <div class="stat-label">Gross Leverage</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ "%.4f" | format(metrics.leverage_net) }}&times;</div>
-            <div class="stat-label">Net Leverage</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ metrics.n_open_positions }}</div>
-            <div class="stat-label">Open Positions</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.gross_exposure_usd) }}</div>
-            <div class="stat-label">Gross Exposure</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.net_exposure_usd) }}</div>
-            <div class="stat-label">Net Exposure</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.long_exposure_usd) }}</div>
-            <div class="stat-label">Long Exposure</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">${{ "%.2f" | format(metrics.short_exposure_usd) }}</div>
-            <div class="stat-label">Short Exposure</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value {{ "%.2f" | format(metrics.realized_pnl + metrics.unrealized_pnl) | float < 0 }}" >${{ "%.2f" | format(metrics.realized_pnl + metrics.unrealized_pnl) }}</div>
-            <div class="stat-label">Total PnL</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value {{ "%.2f" | format(metrics.drawdown_pct * 100) | float > 5 }}" >{{ "%.2f" | format(metrics.drawdown_pct * 100) }}%</div>
-            <div class="stat-label">Drawdown</div>
-        </div>
-    </div>
+{# Portfolio metrics #}
+{% call card(title="Portfolio Metrics") %}
+{% if metrics and metrics.equity_total is defined %}
+{{ stat_grid([
+    {"value": "${:.2f}".format(metrics.equity_total), "label": "Equity Total", "color": "primary"},
+    {"value": "${:.2f}".format(metrics.cash_usd), "label": "Cash USD", "color": "neutral"},
+    {"value": "${:.2f}".format(metrics.cash_usdc), "label": "Cash USDC", "color": "neutral"},
+    {"value": "{:.4f}×".format(metrics.leverage_gross), "label": "Gross Leverage", "color": "info"},
+    {"value": "{:.4f}×".format(metrics.leverage_net), "label": "Net Leverage", "color": "info"},
+    {"value": metrics.n_open_positions, "label": "Open Positions", "color": "secondary"},
+    {"value": "${:.2f}".format(metrics.gross_exposure_usd), "label": "Gross Exposure", "color": "info"},
+    {"value": "${:.2f}".format(metrics.net_exposure_usd), "label": "Net Exposure", "color": "info"},
+    {"value": "${:.2f}".format(metrics.long_exposure_usd), "label": "Long Exposure", "color": "success"},
+    {"value": "${:.2f}".format(metrics.short_exposure_usd), "label": "Short Exposure", "color": "error"},
+    {"value": "${:.2f}".format(metrics.realized_pnl + metrics.unrealized_pnl), "label": "Total PnL", "color": "success" if (metrics.realized_pnl + metrics.unrealized_pnl) >= 0 else "error"},
+    {"value": "{:.2f}%".format(metrics.drawdown_pct * 100), "label": "Drawdown", "color": "error" if metrics.drawdown_pct * 100 > 5 else "warning"}
+]) }}
 
-    <h3 style="margin-top: 24px;">Detailed Breakdown</h3>
-    <table>
-        <tr>
-            <th>Realized PnL</th>
-            <td>${{ "%.2f" | format(metrics.realized_pnl) }}</td>
-            <th>Unrealized PnL</th>
-            <td>${{ "%.2f" | format(metrics.unrealized_pnl) }}</td>
-        </tr>
-        <tr>
-            <th>Funding PnL</th>
-            <td>${{ "%.2f" | format(metrics.funding_pnl) }}</td>
-            <th>Fees Paid</th>
-            <td>${{ "%.2f" | format(metrics.fees_paid) }}</td>
-        </tr>
-        <tr>
-            <th>Peak Equity</th>
-            <td>${{ "%.2f" | format(metrics.peak_equity) }}</td>
-            <th>Drawdown USD</th>
-            <td>${{ "%.2f" | format(metrics.drawdown_usd) }}</td>
-        </tr>
-        <tr>
-            <th>Time in DD</th>
-            <td>{{ metrics.time_in_dd_sec }}s</td>
-            <th>VaR 1d 99%</th>
-            <td>${{ "%.2f" | format(metrics.var_1d_99) if metrics.var_1d_99 is not none else "-" }}</td>
-        </tr>
-        <tr>
-            <th>CVaR 1d 99%</th>
-            <td>${{ "%.2f" | format(metrics.cvar_1d_99) if metrics.cvar_1d_99 is not none else "-" }}</td>
-            <th>N Venues</th>
-            <td>{{ metrics.n_venues }}</td>
-        </tr>
+<div class="divider">Detailed Breakdown</div>
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
+        <tbody>
+            <tr>
+                <th>Realized PnL</th>
+                <td>${{ "%.2f" | format(metrics.realized_pnl) }}</td>
+                <th>Unrealized PnL</th>
+                <td>${{ "%.2f" | format(metrics.unrealized_pnl) }}</td>
+            </tr>
+            <tr>
+                <th>Funding PnL</th>
+                <td>${{ "%.2f" | format(metrics.funding_pnl) }}</td>
+                <th>Fees Paid</th>
+                <td>${{ "%.2f" | format(metrics.fees_paid) }}</td>
+            </tr>
+            <tr>
+                <th>Peak Equity</th>
+                <td>${{ "%.2f" | format(metrics.peak_equity) }}</td>
+                <th>Drawdown USD</th>
+                <td>${{ "%.2f" | format(metrics.drawdown_usd) }}</td>
+            </tr>
+            <tr>
+                <th>Time in DD</th>
+                <td>{{ metrics.time_in_dd_sec }}s</td>
+                <th>VaR 1d 99%</th>
+                <td>${{ "%.2f" | format(metrics.var_1d_99) if metrics.var_1d_99 is not none else "-" }}</td>
+            </tr>
+            <tr>
+                <th>CVaR 1d 99%</th>
+                <td>${{ "%.2f" | format(metrics.cvar_1d_99) if metrics.cvar_1d_99 is not none else "-" }}</td>
+                <th>N Venues</th>
+                <td>{{ metrics.n_venues }}</td>
+            </tr>
+        </tbody>
     </table>
-    {% else %}
-    <div class="empty">
-        No portfolio snapshots yet.
-        <br><br>
-        Run <code>platform risk --equity 100000</code> to start the L5 Portfolio & Risk Engine.
-        Account snapshots will appear here every 60 seconds.
-    </div>
-    {% endif %}
 </div>
+{% else %}
+{{ empty_state(message="No portfolio snapshots yet.", hint="Run: platform risk --equity 100000") }}
+<p class="text-xs opacity-60 mt-2 text-center">Account snapshots will appear here every 60 seconds.</p>
+{% endif %}
+{% endcall %}
 
-<!-- Risk decisions -->
-<div class="card">
-    <h2>Risk Decisions (last 50)</h2>
-    {% if decisions %}
-    <table>
+{# Risk decisions #}
+{% call card(title="Risk Decisions (last 50)") %}
+{% if decisions %}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
         <thead>
             <tr>
                 <th>Timestamp</th>
@@ -129,12 +93,9 @@
         <tbody>
             {% for d in decisions %}
             <tr>
-                <td class="timestamp" data-timestamp="{{ d.ts }}">{{ d.ts|string|truncate(19, true, '') }}</td>
+                <td>{{ timestamp(d.ts) }}</td>
                 <td><code>{{ d.signal_id|string|truncate(8, true, '') }}...</code></td>
-                <td>
-                    {% if d.approved %}<span class="badge badge-connected">YES</span>
-                    {% else %}<span class="badge badge-error">NO</span>{% endif %}
-                </td>
+                <td>{{ status_badge("approved" if d.approved else "rejected") }}</td>
                 <td>${{ "%.2f" | format(d.requested_size_usd) }}</td>
                 <td>${{ "%.2f" | format(d.approved_size_usd) }}</td>
                 <td>{{ d.circuit_breaker_level }}</td>
@@ -147,14 +108,10 @@
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <div class="empty">
-        No risk decisions yet.
-        <br><br>
-        Run <code>platform risk --equity 100000</code> and <code>platform synthesize</code>
-        in separate terminals. Risk decisions will appear here as blended signals are evaluated.
-    </div>
-    {% endif %}
 </div>
+{% else %}
+{{ empty_state(message="No risk decisions yet.", hint="Run: platform risk --equity 100000 and platform synthesize") }}
+{% endif %}
+{% endcall %}
 
 {% endblock %}

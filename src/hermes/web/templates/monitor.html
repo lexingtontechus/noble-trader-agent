@@ -1,63 +1,44 @@
 {% extends "base.html" %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
 
-{% block title %}Hermes Dashboard &middot; Monitor{% endblock %}
+{% block title %}Hermes Dashboard · Monitor{% endblock %}
 
 {% block meta %}
-<meta name="auto-refresh" content="true" data-interval="10">
+<meta http-equiv="refresh" content="10">
 {% endblock %}
 
 {% block content %}
 
-<!-- Monitor status -->
-<div class="card">
-    <h2>Active Price Monitor</h2>
-    {% if monitor_running %}
-    <span class="badge badge-connected">running</span>
-    {% if live_data and live_data.stats %}
-    <div class="grid grid-3" style="margin-top: 16px;">
-        <div class="stat">
-            <div class="stat-value">{{ live_data.stats.ticks_processed }}</div>
-            <div class="stat-label">Ticks Processed</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ live_data.stats.books_processed }}</div>
-            <div class="stat-label">Books Processed</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ live_data.stats.bars_closed }}</div>
-            <div class="stat-label">Bars Closed</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ live_data.stats.events_emitted }}</div>
-            <div class="stat-label">Events Emitted</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ live_data.stats.funding_processed }}</div>
-            <div class="stat-label">Funding Updates</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ live_data.positions | length }}</div>
-            <div class="stat-label">Positions Watched</div>
-        </div>
-    </div>
-    {% endif %}
-    {% else %}
-    <div class="empty" style="padding: 20px;">
-        Monitor not running in this process.
-        <br>
-        Run <code>platform monitor --symbols BTC-PERP,AAPL</code> in a separate terminal.
-        <br><br>
-        The events below are from the DuckDB <code>price_monitor_events</code> table
-        (populated when the monitor is running).
-    </div>
-    {% endif %}
+{# Monitor status #}
+{% call card(title="Active Price Monitor") %}
+{% if monitor_running %}
+{{ status_badge("live") }}
+{% if live_data and live_data.stats %}
+<div class="mt-4">
+{{ stat_grid([
+    {"value": live_data.stats.ticks_processed, "label": "Ticks Processed", "color": "primary"},
+    {"value": live_data.stats.books_processed, "label": "Books Processed", "color": "info"},
+    {"value": live_data.stats.bars_closed, "label": "Bars Closed", "color": "secondary"},
+    {"value": live_data.stats.events_emitted, "label": "Events Emitted", "color": "success"},
+    {"value": live_data.stats.funding_processed, "label": "Funding Updates", "color": "warning"},
+    {"value": live_data.positions | length, "label": "Positions Watched", "color": "neutral"}
+]) }}
 </div>
+{% endif %}
+{% else %}
+{{ empty_state(message="Monitor not running in this process.", hint="Run: platform monitor --symbols BTC-PERP,AAPL") }}
+<p class="text-xs opacity-60 mt-2 text-center">
+    The events below are from the DuckDB <code class="text-primary">price_monitor_events</code> table
+    (populated when the monitor is running).
+</p>
+{% endif %}
+{% endcall %}
 
-<!-- Positions (if monitor running) -->
+{# Positions (if monitor running) #}
 {% if monitor_running and live_data and live_data.positions %}
-<div class="card">
-    <h2>Monitored Positions ({{ live_data.positions | length }})</h2>
-    <table>
+{% call card(title="Monitored Positions ({})".format(live_data.positions | length)) %}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
         <thead>
             <tr>
                 <th>Position ID</th>
@@ -74,27 +55,28 @@
             {% for p in live_data.positions %}
             <tr>
                 <td><code>{{ p.position_id[:8] }}...</code></td>
-                <td><strong>{{ p.symbol }}</strong></td>
-                <td class="signal-{{ 'buy' if p.direction == 'long' else 'sell' }}">{{ p.direction }}</td>
+                <td class="font-semibold">{{ p.symbol }}</td>
+                <td>{{ signal_badge(p.direction) }}</td>
                 <td>{{ p.qty }}</td>
                 <td>{{ p.entry_price }}</td>
                 <td>{{ p.stop_price }}</td>
                 <td>{{ p.target_price }}</td>
-                <td class="timestamp">{{ p.opened_at[:19] }}</td>
+                <td>{{ timestamp(p.opened_at) }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
+{% endcall %}
 {% endif %}
 
-<!-- Correlation matrix (if monitor running) -->
+{# Correlation matrix (if monitor running) #}
 {% if monitor_running and live_data and live_data.correlation_matrix %}
-<div class="card">
-    <h2>Correlation Matrix</h2>
-    {% set symbols = live_data.correlation_matrix.keys() | list %}
-    {% if symbols %}
-    <table>
+{% call card(title="Correlation Matrix") %}
+{% set symbols = live_data.correlation_matrix.keys() | list %}
+{% if symbols %}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
         <thead>
             <tr>
                 <th></th>
@@ -106,15 +88,15 @@
         <tbody>
             {% for sym_a in symbols %}
             <tr>
-                <td><strong>{{ sym_a }}</strong></td>
+                <td class="font-semibold">{{ sym_a }}</td>
                 {% for sym_b in symbols %}
                 {% set corr = live_data.correlation_matrix[sym_a][sym_b] %}
                 <td>
                     {% if corr is not none %}
-                    {% if corr > 0.75 %}<span style="color: #f85149;">{{ "%.3f" | format(corr) }}</span>
-                    {% elif corr > 0.5 %}<span style="color: #d29922;">{{ "%.3f" | format(corr) }}</span>
-                    {% elif corr < -0.5 %}<span style="color: #3fb950;">{{ "%.3f" | format(corr) }}</span>
-                    {% else %}{{ "%.3f" | format(corr) }}
+                    {% if corr > 0.75 %}<span class="text-error font-mono">{{ "%.3f" | format(corr) }}</span>
+                    {% elif corr > 0.5 %}<span class="text-warning font-mono">{{ "%.3f" | format(corr) }}</span>
+                    {% elif corr < -0.5 %}<span class="text-success font-mono">{{ "%.3f" | format(corr) }}</span>
+                    {% else %}<span class="font-mono">{{ "%.3f" | format(corr) }}</span>
                     {% endif %}
                     {% else %}
                     -
@@ -125,15 +107,16 @@
             {% endfor %}
         </tbody>
     </table>
-    {% endif %}
 </div>
 {% endif %}
+{% endcall %}
+{% endif %}
 
-<!-- Recent monitor events -->
-<div class="card">
-    <h2>Recent Monitor Events (last 50)</h2>
-    {% if events %}
-    <table>
+{# Recent monitor events #}
+{% call card(title="Recent Monitor Events (last 50)") %}
+{% if events %}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-xs">
         <thead>
             <tr>
                 <th>Timestamp</th>
@@ -152,17 +135,16 @@
         <tbody>
             {% for e in events %}
             <tr>
-                <td class="timestamp" data-timestamp="{{ e.ts }}">{{ e.ts[:19] }}</td>
-                <td><strong>{{ e.symbol }}</strong></td>
+                <td>{{ timestamp(e.ts) }}</td>
+                <td class="font-semibold">{{ e.symbol }}</td>
                 <td>{{ e.venue }}</td>
                 <td>
-                    {% if e.event_type == 'stop_hit' %}<span class="badge badge-error">{{ e.event_type }}</span>
-                    {% elif e.event_type == 'target_hit' %}<span class="badge badge-connected">{{ e.event_type }}</span>
-                    {% elif e.event_type == 'anomaly' %}<span class="badge badge-warn">{{ e.event_type }}</span>
-                    {% elif e.event_type == 'funding_spike' %}<span class="badge badge-warn">{{ e.event_type }}</span>
-                    {% elif e.event_type == 'pnl_warning' %}<span class="badge badge-warn">{{ e.event_type }}</span>
-                    {% else %}<span class="badge badge-not_configured">{{ e.event_type }}</span>
-                    {% endif %}
+                    {% if e.event_type == 'stop_hit' %}<span class="badge badge-error badge-xs">{{ e.event_type }}</span>
+                    {% elif e.event_type == 'target_hit' %}<span class="badge badge-success badge-xs">{{ e.event_type }}</span>
+                    {% elif e.event_type == 'anomaly' %}<span class="badge badge-warning badge-xs">{{ e.event_type }}</span>
+                    {% elif e.event_type == 'funding_spike' %}<span class="badge badge-warning badge-xs">{{ e.event_type }}</span>
+                    {% elif e.event_type == 'pnl_warning' %}<span class="badge badge-warning badge-xs">{{ e.event_type }}</span>
+                    {% else %}<span class="badge badge-ghost badge-xs">{{ e.event_type }}</span>{% endif %}
                 </td>
                 <td>{{ e.severity }}</td>
                 <td>{{ e.last_price }}</td>
@@ -170,19 +152,22 @@
                 <td>{{ "%.3f" | format(e.book_imbalance) if e.book_imbalance is not none else "-" }}</td>
                 <td>{{ "%.4f" | format(e.atr_14) if e.atr_14 is not none else "-" }}</td>
                 <td>{% if e.position_id %}<code>{{ e.position_id[:8] }}...</code>{% else %}-{% endif %}</td>
-                <td><details><summary>view</summary><pre>{{ e.payload }}</pre></details></td>
+                <td>
+                    <details class="collapse collapse-arrow">
+                        <summary class="collapse-title text-xs py-1 min-h-0">view</summary>
+                        <div class="collapse-content">
+                            {{ json_block(e.payload) }}
+                        </div>
+                    </details>
+                </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <div class="empty">
-        No monitor events in DuckDB yet.
-        <br><br>
-        Run <code>platform monitor --symbols BTC-PERP,AAPL</code> to start the Active Price Monitor.
-        Events will appear here as they're generated.
-    </div>
-    {% endif %}
 </div>
+{% else %}
+{{ empty_state(message="No monitor events in DuckDB yet.", hint="Run: platform monitor --symbols BTC-PERP,AAPL") }}
+{% endif %}
+{% endcall %}
 
 {% endblock %}

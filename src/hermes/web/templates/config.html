@@ -1,26 +1,25 @@
 {% extends "base.html" %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
 
-{% block title %}Hermes Dashboard &middot; Config{% endblock %}
+{% block title %}Hermes Dashboard · Config{% endblock %}
 
 {% block content %}
 
-<div class="card">
-    <h2>Loaded Configuration (secrets redacted)</h2>
-    <div class="refresh-note">
-        Hash: <code>{{ config_hash }}</code> &middot; Environment: {{ environment }}
-    </div>
-    <pre>{{ config_json }}</pre>
+{% call card(title="Loaded Configuration (secrets redacted)") %}
+<div class="text-xs opacity-50 mb-3">
+    Hash: <code class="text-primary">{{ config_hash }}</code> · Environment: {{ environment }}
 </div>
+{{ json_block(config_json) }}
+{% endcall %}
 
-<div class="card">
-    <h2>Configuration Notes</h2>
-    <ul style="color: #8b949e; padding-left: 20px; line-height: 1.8;">
-        <li>Secrets are shown as <code>&lt;redacted:Nchars&gt;</code> or <code>secret:...</code> placeholders.</li>
-        <li>Edit <code>config/default.yaml</code> to change non-secret values.</li>
-        <li>Edit <code>.env</code> to change secret values (API keys, Redis URLs, etc.).</li>
-        <li>Changes require a restart (config is loaded at startup).</li>
-        <li>See <code>docs/roadmap.md</code> §3 for documentation of every parameter.</li>
-    </ul>
-</div>
+{% call card(title="Configuration Notes") %}
+<ul class="list-disc pl-5 space-y-1 text-sm opacity-70">
+    <li>Secrets are shown as <code class="text-primary">&lt;redacted:Nchars&gt;</code> or <code class="text-primary">secret:...</code> placeholders.</li>
+    <li>Edit <code class="text-primary">config/default.yaml</code> to change non-secret values.</li>
+    <li>Edit <code class="text-primary">.env</code> to change secret values (API keys, Redis URLs, etc.).</li>
+    <li>Changes require a restart (config is loaded at startup).</li>
+    <li>See <code class="text-primary">docs/roadmap.md</code> §3 for documentation of every parameter.</li>
+</ul>
+{% endcall %}
 
 {% endblock %}

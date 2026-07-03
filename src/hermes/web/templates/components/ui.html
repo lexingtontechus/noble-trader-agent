@@ -1,0 +1,228 @@
+{#Reusable Jinja2 macro components for Hermes dashboard.
+These work like React/Vue components but server-side — no build system needed.
+
+Usage in templates:
+    {% from "components/ui.html" import card, stat_card, badge, table %}
+
+    {{ card(title="Status", body="All systems go") }}
+    {{ stat_card(value="100k", label="Equity") }}
+    {{ badge(text="connected", color="success") }}
+#}
+
+
+{# Card component
+   Usage (call block): {% call card(title="Title") %}content{% endcall %}
+   Usage (body arg):    {{ card(title="Title", body="Content", extra_class="bg-base-200") }}
+#}
+{% macro card(title="", body="", extra_class="", id="") %}
+<div class="card bg-base-200 shadow-xl mb-4 {{ extra_class }}" {% if id %}id="{{ id }}"{% endif %}>
+    <div class="card-body">
+        {% if title %}
+        <h2 class="card-title text-lg font-semibold">{{ title }}</h2>
+        <div class="divider my-1"></div>
+        {% endif %}
+        {% if caller %}{{ caller() }}{% else %}{{ body|safe }}{% endif %}
+    </div>
+</div>
+{% endmacro %}
+
+
+{# Stat card component
+   Usage: {{ stat_card(value="$100,000", label="Equity", color="primary") }}
+#}
+{% macro stat_card(value, label, color="neutral", size="text-3xl") %}
+<div class="stat bg-base-200 rounded-box shadow">
+    <div class="stat-value {{ size }} text-{{ color }}">{{ value }}</div>
+    <div class="stat-desc text-xs uppercase tracking-wide opacity-60">{{ label }}</div>
+</div>
+{% endmacro %}
+
+
+{# Badge component
+   Usage: {{ badge(text="connected", color="success") }}
+   Colors: primary, secondary, accent, success, warning, error, info, neutral, ghost
+#}
+{% macro badge(text, color="neutral", size="badge-sm") %}
+<span class="badge badge-{{ color }} {{ size }}">{{ text }}</span>
+{% endmacro %}
+
+
+{# Status badge — auto-colors based on status string #}
+{% macro status_badge(status) %}
+{% if status in ("connected", "ok", "live", "filled", "approved") %}
+<span class="badge badge-success badge-sm">{{ status }}</span>
+{% elif status in ("error", "rejected", "canceled", "expired", "failed") %}
+<span class="badge badge-error badge-sm">{{ status }}</span>
+{% elif status in ("warning", "partial", "stale", "pending", "shadow", "block") %}
+<span class="badge badge-warning badge-sm">{{ status }}</span>
+{% elif status in ("not_configured", "disabled", "draft", "proposed", "skip") %}
+<span class="badge badge-ghost badge-sm">{{ status }}</span>
+{% else %}
+<span class="badge badge-info badge-sm">{{ status }}</span>
+{% endif %}
+{% endmacro %}
+
+
+{# Signal direction badge #}
+{% macro signal_badge(direction) %}
+{% if direction == "buy" or direction == "long" %}
+<span class="badge badge-success badge-sm">{{ direction }}</span>
+{% elif direction == "sell" or direction == "short" %}
+<span class="badge badge-error badge-sm">{{ direction }}</span>
+{% else %}
+<span class="badge badge-ghost badge-sm">{{ direction }}</span>
+{% endif %}
+{% endmacro %}
+
+
+{# Regime badge — color-coded by meta-regime state #}
+{% macro regime_badge(regime) %}
+{% if regime in ("risk_off", "funding_stress") %}
+<span class="badge badge-error badge-sm">{{ regime }}</span>
+{% elif regime in ("liquidity_drained", "regime_transition", "high_vol_breakout") %}
+<span class="badge badge-warning badge-sm">{{ regime }}</span>
+{% elif regime == "calm_trend" %}
+<span class="badge badge-success badge-sm">{{ regime }}</span>
+{% else %}
+<span class="badge badge-neutral badge-sm">{{ regime }}</span>
+{% endif %}
+{% endmacro %}
+
+
+{# Data table component
+   Usage:
+   {% call table(headers=["Col1", "Col2"]) %}
+   <tr><td>Row1Cell1</td><td>Row1Cell2</td></tr>
+   <tr><td>Row2Cell1</td><td>Row2Cell2</td></tr>
+   {% endcall %}
+#}
+{% macro table(headers=None, extra_class="") %}
+<div class="overflow-x-auto {{ extra_class }}">
+    <table class="table table-zebra table-sm">
+        {% if headers %}
+        <thead>
+            <tr>
+                {% for header in headers %}
+                <th>{{ header }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        {% endif %}
+        <tbody>
+            {{ caller() }}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
+
+
+{# Empty state component
+   Usage: {{ empty_state(message="No data yet", hint="Run platform init") }}
+#}
+{% macro empty_state(message="", hint="") %}
+<div class="alert alert-info bg-base-300 border-base-300">
+    <div class="flex flex-col items-center w-full py-4">
+        <p class="text-base-content/60 italic">{{ message }}</p>
+        {% if hint %}
+        <code class="mt-2 text-xs text-primary">{{ hint }}</code>
+        {% endif %}
+    </div>
+</div>
+{% endmacro %}
+
+
+{# Refresh note #}
+{% macro refresh_note(interval=10) %}
+<div class="text-xs opacity-50 text-right mt-2">
+    Auto-refreshes every {{ interval }}s
+</div>
+{% endmacro %}
+
+
+{# Stat grid — renders N stat cards in a responsive grid #}
+{% macro stat_grid(stats) %}
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+    {% for stat in stats %}
+    <div class="stat bg-base-200 rounded-box shadow">
+        <div class="stat-value text-2xl text-{{ stat.color or 'primary' }}">{{ stat.value }}</div>
+        <div class="stat-desc text-xs uppercase tracking-wide opacity-60">{{ stat.label }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endmacro %}
+
+
+{# Subsystem row — for status page #}
+{% macro subsystem_row(subsystem) %}
+<div class="flex justify-between items-start py-3 border-b border-base-300 last:border-0">
+    <div>
+        <div class="font-semibold text-sm">{{ subsystem.name }}</div>
+        <div class="text-xs opacity-60 mt-1 break-all">{{ subsystem.detail }}</div>
+        {% if subsystem.url %}
+        <div class="text-xs opacity-40 font-mono mt-1">{{ subsystem.url }}</div>
+        {% endif %}
+        {% if subsystem.channel %}
+        <div class="text-xs opacity-40 font-mono mt-1">channel: {{ subsystem.channel }}</div>
+        {% endif %}
+        {% if subsystem.path %}
+        <div class="text-xs opacity-40 font-mono mt-1">path: {{ subsystem.path }}</div>
+        {% endif %}
+        {% if subsystem.account %}
+        <div class="text-xs opacity-40 font-mono mt-1">
+            account: {{ subsystem.account.number }} · equity: ${{ subsystem.account.equity }}
+        </div>
+        {% endif %}
+    </div>
+    <div>{{ status_badge(subsystem.status) }}</div>
+</div>
+{% endmacro %}
+
+
+{# Theme switcher dropdown #}
+{% macro theme_switcher() %}
+<div class="dropdown dropdown-end">
+    <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        Theme
+    </div>
+    <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-48">
+        <li><a data-theme="dark" class="theme-option">🌙 Dark</a></li>
+        <li><a data-theme="retro" class="theme-option">📺 Retro</a></li>
+        <li><a data-theme="cyberpunk" class="theme-option">🤖 Cyberpunk</a></li>
+        <li><a data-theme="nord" class="theme-option">❄️ Nord</a></li>
+        <li><a data-theme="dracula" class="theme-option">🧛 Dracula</a></li>
+        <li><a data-theme="synthwave" class="theme-option">🌆 Synthwave</a></li>
+        <li><a data-theme="light" class="theme-option">☀️ Light</a></li>
+    </ul>
+</div>
+{% endmacro %}
+
+
+{# Timestamp formatter #}
+{% macro timestamp(ts) %}
+<span class="font-mono text-xs opacity-60 whitespace-nowrap" data-timestamp="{{ ts }}">{{ ts|string|truncate(19, true, '') }}</span>
+{% endmacro %}
+
+
+{# JSON pre block #}
+{% macro json_block(data) %}
+<pre class="bg-base-300 rounded-box p-4 overflow-x-auto font-mono text-xs leading-relaxed opacity-80">{{ data }}</pre>
+{% endmacro %}
+
+
+{# Pagination note #}
+{% macro pagination_note(total_shown, total) %}
+<div class="text-xs opacity-50 text-center mt-2">
+    Showing {{ total_shown }} of {{ total }} items
+</div>
+{% endmacro %}

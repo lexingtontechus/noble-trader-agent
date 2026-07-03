@@ -1,0 +1,37 @@
+/* Hermes Dashboard — supplemental styles (works with DaisyUI/Tailwind) */
+
+/* Timestamp hover */
+[data-timestamp] { cursor: help; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: oklch(var(--bc) / 0.2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: oklch(var(--bc) / 0.3); }
+
+/* Auto-refresh indicator */
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+.refresh-indicator {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: oklch(var(--s));
+    animation: pulse-dot 2s ease-in-out infinite;
+    margin-right: 6px;
+}
+
+/* JSON pre block */
+pre { tab-size: 2; }
+
+/* Table cell text wrapping */
+.table td { word-break: break-word; }
+
+/* Active nav link */
+.menu a.active {
+    background: oklch(var(--p));
+    color: oklch(var(--pc));
+}

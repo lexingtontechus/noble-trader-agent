@@ -1,31 +1,40 @@
 {% extends "base.html" %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
 
-{% block title %}Hermes Dashboard &middot; Heartbeats{% endblock %}
+{% block title %}Hermes Dashboard · Heartbeats{% endblock %}
 
 {% block content %}
 
-<div class="card">
-    <h2>Heartbeats</h2>
-
-    <form class="filter-form" method="get" action="/heartbeats">
-        <label>Symbol filter:</label>
-        <input type="text" name="symbol" value="{{ filter_symbol or '' }}" placeholder="e.g. BTC, AAPL (blank = all)">
-        <label>Limit:</label>
-        <select name="limit">
+{% call card(title="Heartbeats") %}
+<form class="flex flex-wrap items-end gap-2" method="get" action="/heartbeats">
+    <div class="form-control">
+        <label class="label">
+            <span class="label-text text-xs">Symbol filter</span>
+        </label>
+        <input type="text" name="symbol" value="{{ filter_symbol or '' }}"
+               placeholder="e.g. BTC, AAPL (blank = all)"
+               class="input input-bordered input-sm w-64">
+    </div>
+    <div class="form-control">
+        <label class="label">
+            <span class="label-text text-xs">Limit</span>
+        </label>
+        <select name="limit" class="select select-bordered select-sm">
             <option value="50" {% if limit == 50 %}selected{% endif %}>50</option>
             <option value="100" {% if limit == 100 %}selected{% endif %}>100</option>
             <option value="500" {% if limit == 500 %}selected{% endif %}>500</option>
         </select>
-        <button type="submit">Apply</button>
-        <a href="/heartbeats">Clear</a>
-    </form>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+    <a href="/heartbeats" class="btn btn-ghost btn-sm">Clear</a>
+</form>
+<div class="text-xs opacity-50 mt-3">Showing {{ total_shown }} heartbeats</div>
+{% endcall %}
 
-    <div class="refresh-note">Showing {{ total_shown }} heartbeats</div>
-</div>
-
-<div class="card">
-    {% if heartbeats %}
-    <table>
+{% call card(title="Heartbeat Records") %}
+{% if heartbeats %}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-xs">
         <thead>
             <tr>
                 <th>Received</th>
@@ -60,14 +69,14 @@
         <tbody>
             {% for hb in heartbeats %}
             <tr>
-                <td class="timestamp" data-timestamp="{{ hb.ts_received }}">{{ hb.ts_received[:19] }}</td>
-                <td class="timestamp" data-timestamp="{{ hb.ts_upstream }}">{{ hb.ts_upstream[:19] }}</td>
+                <td>{{ timestamp(hb.ts_received) }}</td>
+                <td>{{ timestamp(hb.ts_upstream) }}</td>
                 <td>{{ hb.lag_ms }}</td>
-                <td><strong>{{ hb.symbol }}</strong></td>
-                <td class="signal-{{ hb.signal }}">{{ hb.signal }}</td>
-                <td>{{ hb.regime }}</td>
+                <td class="font-semibold">{{ hb.symbol }}</td>
+                <td>{{ signal_badge(hb.signal) }}</td>
+                <td>{{ regime_badge(hb.regime) }}</td>
                 <td>{{ "%.4f" | format(hb.regime_conf) if hb.regime_conf is not none else "-" }}</td>
-                <td>{% if hb.regime_shift %}<span class="badge badge-warn">SHIFT</span>{% else %}-{% endif %}</td>
+                <td>{% if hb.regime_shift %}<span class="badge badge-warning badge-xs">SHIFT</span>{% else %}-{% endif %}</td>
                 <td>{{ hb.entry_price }}</td>
                 <td>{{ hb.stop_loss }}</td>
                 <td>{{ hb.take_profit }}</td>
@@ -88,26 +97,19 @@
                 <td>{{ hb.markov_current_state }}</td>
                 <td>
                     {% if hb.accepted %}
-                    <span class="badge badge-connected">ok</span>
+                    {{ status_badge("ok") }}
                     {% else %}
-                    <span class="badge badge-error" title="{{ hb.reject_reason }}">{{ hb.reject_reason or "rejected" }}</span>
+                    <span class="badge badge-error badge-sm" title="{{ hb.reject_reason }}">{{ hb.reject_reason or "rejected" }}</span>
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <div class="empty">
-        No heartbeats found.
-        {% if filter_symbol %}
-        (Filter: symbol="{{ filter_symbol }}")
-        {% endif %}
-        <br><br>
-        Run <code>platform ingest</code> to start receiving heartbeats,
-        or <code>platform backfill</code> to pull historical data.
-    </div>
-    {% endif %}
 </div>
+{% else %}
+{{ empty_state(message="No heartbeats found." ~ (" (Filter: symbol=\"" ~ filter_symbol ~ "\")" if filter_symbol else ""), hint="Run: platform ingest  or  platform backfill") }}
+{% endif %}
+{% endcall %}
 
 {% endblock %}

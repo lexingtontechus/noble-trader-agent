@@ -1,52 +1,84 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% block meta %}{% endblock %}
     <title>{% block title %}Hermes Dashboard{% endblock %}</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <!-- Tailwind CSS + DaisyUI via CDN (no build system needed) -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            daisyui: {
+                themes: ["dark", "retro", "cyberpunk", "nord", "dracula", "synthwave", "light"]
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
-    <header>
-        <div class="container">
-            <div>
-                <h1>Hermes Trading Platform</h1>
-                <div class="meta">
-                    v{{ version }} &middot; {{ environment }} &middot; config: <code>{{ config_hash }}</code>
-                </div>
-            </div>
-        </div>
-        <div class="container">
-            <nav>
-                <a href="/" class="{% if active_page == 'index' %}active{% endif %}">Status</a>
-                <a href="/heartbeats" class="{% if active_page == 'heartbeats' %}active{% endif %}">Heartbeats</a>
-                <a href="/signals" class="{% if active_page == 'signals' %}active{% endif %}">Signals</a>
-                <a href="/portfolio" class="{% if active_page == 'portfolio' %}active{% endif %}">Portfolio</a>
-                <a href="/orders" class="{% if active_page == 'orders' %}active{% endif %}">Orders</a>
-                <a href="/pnl" class="{% if active_page == 'pnl' %}active{% endif %}">PnL</a>
-                <a href="/backtest" class="{% if active_page == 'backtest' %}active{% endif %}">Backtest</a>
-                <a href="/optimize" class="{% if active_page == 'optimize' %}active{% endif %}">Optimize</a>
-                <a href="/agent" class="{% if active_page == 'agent' %}active{% endif %}">Agent</a>
-                <a href="/monitor" class="{% if active_page == 'monitor' %}active{% endif %}">Monitor</a>
-                <a href="/config" class="{% if active_page == 'config' %}active{% endif %}">Config</a>
-                <a href="/health" target="_blank">Health JSON</a>
-                <a href="/api/status" target="_blank">API Status</a>
-            </nav>
-        </div>
-    </header>
+<body class="min-h-screen bg-base-100 text-base-content">
 
-    <main class="container">
+    <!-- Navbar -->
+    <div class="navbar bg-base-200 shadow-lg sticky top-0 z-50">
+        <div class="navbar-start">
+            <div class="dropdown lg:hidden">
+                <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+                    </svg>
+                </div>
+                <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-200 rounded-box w-52">
+                    {% include "components/_nav.html" %}
+                </ul>
+            </div>
+            <a href="/" class="btn btn-ghost btn-sm text-lg font-bold">
+                Hermes
+                <span class="badge badge-primary badge-xs ml-1">v{{ version }}</span>
+            </a>
+        </div>
+
+        <!-- Desktop nav -->
+        <div class="navbar-center hidden lg:flex">
+            <ul class="menu menu-horizontal menu-sm px-1">
+                {% include "components/_nav.html" %}
+            </ul>
+        </div>
+
+        <div class="navbar-end">
+            <span class="text-xs opacity-50 mr-2 hidden sm:inline">{{ environment }}</span>
+            {% from "components/ui.html" import theme_switcher %}
+            {{ theme_switcher() }}
+        </div>
+    </div>
+
+    <!-- Main content -->
+    <main class="container mx-auto px-4 py-6 max-w-7xl">
         {% block content %}{% endblock %}
     </main>
 
-    <footer>
-        <div class="container">
-            Hermes Trading Platform &middot; v{{ version }} &middot;
-            Auto-refreshes every 10s on Status page
-        </div>
+    <!-- Footer -->
+    <footer class="footer footer-center p-4 text-xs opacity-50 border-t border-base-300">
+        <aside>
+            Hermes Trading Platform · v{{ version }} ·
+            <a href="/health" target="_blank" class="link link-hover">Health JSON</a> ·
+            <a href="/api/status" target="_blank" class="link link-hover">API Status</a>
+        </aside>
     </footer>
 
     <script src="/static/app.js"></script>
+    <script>
+        // Theme switcher
+        document.querySelectorAll('.theme-option').forEach(opt => {
+            opt.addEventListener('click', (e) => {
+                const theme = e.currentTarget.dataset.theme;
+                document.documentElement.setAttribute('data-theme', theme);
+                localStorage.setItem('hermes-theme', theme);
+            });
+        });
+        // Restore saved theme
+        const savedTheme = localStorage.getItem('hermes-theme');
+        if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+    </script>
 </body>
 </html>

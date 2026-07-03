@@ -1,0 +1,12 @@
+{# Navigation links — included by base.html for both desktop and mobile menus #}
+<li><a href="/" class="{% if active_page == 'index' %}active{% endif %}">Status</a></li>
+<li><a href="/heartbeats" class="{% if active_page == 'heartbeats' %}active{% endif %}">Heartbeats</a></li>
+<li><a href="/signals" class="{% if active_page == 'signals' %}active{% endif %}">Signals</a></li>
+<li><a href="/portfolio" class="{% if active_page == 'portfolio' %}active{% endif %}">Portfolio</a></li>
+<li><a href="/orders" class="{% if active_page == 'orders' %}active{% endif %}">Orders</a></li>
+<li><a href="/pnl" class="{% if active_page == 'pnl' %}active{% endif %}">PnL</a></li>
+<li><a href="/backtest" class="{% if active_page == 'backtest' %}active{% endif %}">Backtest</a></li>
+<li><a href="/optimize" class="{% if active_page == 'optimize' %}active{% endif %}">Optimize</a></li>
+<li><a href="/agent" class="{% if active_page == 'agent' %}active{% endif %}">Agent</a></li>
+<li><a href="/monitor" class="{% if active_page == 'monitor' %}active{% endif %}">Monitor</a></li>
+<li><a href="/config" class="{% if active_page == 'config' %}active{% endif %}">Config</a></li>
