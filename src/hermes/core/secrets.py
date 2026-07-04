@@ -41,14 +41,18 @@ class EnvFileBackend:
         self._file_path = file_path or os.getenv("SECRETS_ENV_FILE_PATH", "./.env")
         if not Path(self._file_path).exists():
             log.warning("env_file_not_found", path=self._file_path)
-        load_dotenv(self._file_path, override=False)
+        # override=True so .env values take precedence over any stale env vars
+        load_dotenv(self._file_path, override=True)
         log.info("secret_backend_initialized", backend="env_file", path=self._file_path)
 
     def get(self, key: str) -> str:
         # python-dotenv loads into os.environ, so we read from there
-        value = os.getenv(key.upper())
+        # Convert dots to underscores for env var naming convention:
+        #   "hermes.duckdb_path" → "HERMES_DUCKDB_PATH" (not "HERMES.DUCKDB_PATH")
+        env_key = key.upper().replace(".", "_")
+        value = os.getenv(env_key)
         if value is None:
-            raise SecretNotFoundError(f"Secret '{key}' not found in .env file")
+            raise SecretNotFoundError(f"Secret '{key}' not found in .env file (looked for {env_key})")
         return value
 
 
@@ -59,9 +63,10 @@ class EnvBackend:
         log.info("secret_backend_initialized", backend="env")
 
     def get(self, key: str) -> str:
-        value = os.getenv(key.upper())
+        env_key = key.upper().replace(".", "_")
+        value = os.getenv(env_key)
         if value is None:
-            raise SecretNotFoundError(f"Secret '{key}' not found in environment")
+            raise SecretNotFoundError(f"Secret '{key}' not found in environment (looked for {env_key})")
         return value
 
 

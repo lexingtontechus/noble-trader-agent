@@ -2370,10 +2370,24 @@ def _check_secrets(config: HermesConfig) -> dict:
     from hermes.core.secrets import get_secret_or_none
 
     placeholders = []
+
+    # Check 1: Raw secret resolution (can the backend find the key?)
     for key in ["hermes.duckdb_path", "hermes.redis_url"]:
         value = get_secret_or_none(key)
-        if value is None or "<" in str(value):
-            placeholders.append(key)
+        if value is None:
+            placeholders.append(f"{key} (not found in .env or environment)")
+        elif "<" in str(value):
+            placeholders.append(f"{key} (still has placeholder: {value})")
+
+    # Check 2: Resolved config values (did the YAML secret: prefix resolve?)
+    duckdb_path = config.duckdb.get("path", "")
+    if duckdb_path.startswith("secret:") or "<" in str(duckdb_path):
+        placeholders.append("config.duckdb.path (unresolved)")
+
+    redis_url = config.hermes_redis.get("url", "")
+    if redis_url.startswith("secret:") or "<" in str(redis_url):
+        placeholders.append("config.hermes_redis.url (unresolved)")
+
     if placeholders:
         return {
             "ok": False,
