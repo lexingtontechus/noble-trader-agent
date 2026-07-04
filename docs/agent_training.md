@@ -875,6 +875,14 @@
   - Autonomy tiers configured correctly
   - Position sizes start small (tier 1: $5k max)
 
+> **Live pipeline wiring update:** As of the post-Phase-10 *Component Wiring* supplement, the `ExecutionEngine` now **automatically** handles position management and attribution on every paper (and live) trade — you no longer have to run `platform agent` separately to get postmortems or branch attribution:
+> - On each new signal, `HermesDecisionTree.evaluate_existing_positions()` runs inside the execution engine and closes any position the decision tree says to (SL/TP/early-profit/trail/flip/hold).
+> - On fill, `DecisionBranchTracker.record_entry()` logs the entry `AgentAction`.
+> - On position close, `PnLService.record_realized_pnl()` writes a `pnl_realized` row with full attribution, AND `DecisionJournalWriter.write_postmortem()` writes a postmortem with lessons, AND `DecisionBranchTracker.record_exit()` logs the exit `AgentAction`.
+> - A `_signal_map` / `_position_signals` pair tracks which signal created each position so entry alpha (bps vs NT-suggested entry) is computed and attached to the exit record.
+>
+> Implication for live-readiness: the pre-live checklist above is now backed by real data plumbing. After a paper run, `platform pnl` and `DecisionBranchTracker.analyze_branch_performance()` will return populated, evidence-backed results (not empty), and `trade_journal` will contain postmortems for every closed position. This is the data that feeds `SelfLearningLoop` hypothesis generation.
+
 **References:**
 - Hermes agent onboarding guide §6 (EOD Analysis & Self-Learning)
 - Hermes DR runbook (docs/dr_runbook.md)
@@ -1020,6 +1028,8 @@ The 8 categories and their default tiers:
 - **Time-decay (`cooldown_sec`):** every tier has a cooldown. When a breaker trips, `expires_at = trip_time + cooldown_sec`. The manager's `evaluate()` step automatically transitions `tripped → expired` once the cooldown elapses, so transient conditions (a 30-minute funding spike, a 4-hour drawdown blip) self-heal without operator intervention. `cooldown_sec: 0` means manual-clear only.
 - **Rolling windows (`RollingWindowTracker`):** a `deque`-backed time-windowed counter that supports `consecutive_losses` (resets on a win) and `trip_frequency` (counts CB trips in the trailing 24h). Exposes `add()`, `sum()`, `count()`, `recent_events(within_sec)`.
 - **Layered, not replacing:** this manager coexists with `circuit_breakers.py` (per-asset volatility + portfolio DD/VaR) and `risk_gate.py` (the 8 pre-trade checks above). It adds new categories + time-decay; the original breakers remain the fast-path pre-trade gate.
+
+> **Live pipeline wiring update:** As of the post-Phase-10 *Component Wiring* supplement, `CircuitBreakerManager` is no longer a standalone component — it is now wired directly into `PortfolioRiskEngine` (L5). On every `evaluate_signal()`, the engine calls `check_all()` against all configured categories, applies the resulting size multiplier (0.0–1.0) to the signal before it becomes a `RiskDecision`, blocks the entry if multiplier=0, records the trip for `trip_frequency` tracking, and emits an alert via `AlertManager` (WARNING for `reduce_*`, CRITICAL for `block_entries`/`halt_all`/`liquidate`). The manager is initialized from `config/default.yaml` → `circuit_breakers.manager` at engine construction time, so it picks up your YAML config automatically — no code changes required to enable it. New stats exposed on the engine: `cb_manager_trips`; new getter: `get_cb_manager()`. Bug fix shipped alongside the wiring: `BreakerConfig.name` is now optional (default `''`) so YAML entries without an explicit `name:` field deserialize cleanly.
 
 **References:**
 - Hermes roadmap §4 (Circuit Breakers)
@@ -1511,6 +1521,8 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
   - Simulates high-frequency heartbeat ingestion
   - Reports actual vs target throughput
   - Target: 100k heartbeats/day sustained
+
+> **Live pipeline wiring update:** As of the post-Phase-10 *Component Wiring* supplement, `DeadMansSwitch` is no longer a standalone component you have to remember to start — it is now wired directly into `PortfolioRiskEngine` (L5). The engine calls `DeadMansSwitch.start()` on `engine.start()`, and feeds `heartbeat()` from the **hot path**: every `evaluate_signal()` call AND every `check_risk_breakers()` (the 10s periodic loop) calls `heartbeat()`. This means the DMS now tracks "is the risk engine making progress" rather than "is the process alive" — a wedged engine (deadlock, stuck DB call) will activate the DMS within 60s even though the process is technically still running. On activation, the DMS activates the kill switch + sends an EMERGENCY alert via `AlertManager` + optionally flattens all positions; it auto-deactivates when heartbeats resume. `AlertManager` is also started on `engine.start()`. New stats exposed on the engine: `dms_activations`, `alerts_sent`; new getters: `get_dms()`, `get_alert_manager()`; new method: `heartbeat()`.
 
 **References:**
 - *Site Reliability Engineering* — Google SRE team (O'Reilly)

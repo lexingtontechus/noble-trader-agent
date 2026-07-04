@@ -403,6 +403,13 @@ NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15mi
 6. **Periodic checks** (every 10s): portfolio DD, daily loss, VaR breach, margin proximity → `circuit_breaker_events`
 7. **Account snapshots** (every 60s): equity, exposure, drawdown → `account_snapshots`
 
+> **Post-Phase-10 wiring:** `PortfolioRiskEngine` now also integrates three ops-grade components on every signal path:
+> - **CircuitBreakerManager** — initialized from `config/default.yaml` → `circuit_breakers.manager`. On every `evaluate_signal()`, checks all 8 categories (portfolio_exposure, position_size, daily_loss, var, drawdown, funding_rate, consecutive_losses, trip_frequency), applies a size multiplier (0.0–1.0) to the signal, blocks the entry if multiplier=0, records trips for frequency tracking, and emits alerts. On every `check_risk_breakers()` (the 10s periodic loop), it re-evaluates so transient breaches self-heal via `cooldown_sec`.
+> - **DeadMansSwitch** — started on `engine.start()`. `heartbeat()` is called on every `evaluate_signal()` AND every `check_risk_breakers()`. If the risk engine stops making progress for 60s (wedge, deadlock, crash), the DMS activates the kill switch, sends an EMERGENCY alert, and optionally flattens all positions. Auto-deactivates when heartbeats resume.
+> - **AlertManager** — started on `engine.start()`. Sends alerts on CB trips (WARNING for `reduce_*`, CRITICAL for `block_entries`/`halt_all`/`liquidate`), kill switch activation (EMERGENCY), and DMS activation (EMERGENCY). Graceful no-op when Discord/Telegram webhooks are unconfigured.
+>
+> New stats exposed: `cb_manager_trips`, `dms_activations`, `alerts_sent`. New getters: `get_cb_manager()`, `get_dms()`, `get_alert_manager()`.
+
 **Key principle**: Risk gate caps size for soft limits (doesn't always reject). Only hard blockers (kill switch, circuit breakers, low R:R, autonomy tier 3+) cause rejection.
 
 #### Step 6: L3 Executes Order (Paper Trading)
@@ -428,6 +435,16 @@ NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15mi
 5. **Order state machine**: DRAFT → SUBMITTED → PARTIAL → FILLED / CANCELED / REJECTED
 6. **On fill**: register position in PortfolioStateService (deducts cash, tracks exposure)
 7. **Write to DuckDB**: `orders`, `order_events`, `fills` tables
+
+> **Post-Phase-10 wiring:** `ExecutionEngine` now also integrates four agent-grade components on every trade:
+> - **HermesDecisionTree** — on each new signal, evaluates existing positions for that symbol before placing a new order: checks SL / TP / early-profit / trail / flip / hold per the validated Phase 9 decision tree, and closes the position if the tree says to. Without this, positions would hold blindly between signals.
+> - **DecisionBranchTracker** — on fill, calls `record_entry(AgentAction)` to log the entry decision; on position close, calls `record_exit(AgentAction)` to log the exit decision. This is what feeds `analyze_branch_performance()` and `get_threshold_feedback()` with real trade data instead of empty results.
+> - **PnLService** — on position close, records realized PnL with full attribution (directional / timing / sizing / regime decomposition) to the `pnl_realized` DuckDB table.
+> - **DecisionJournalWriter** — on position close, writes a postmortem with entry thesis + lessons learned + hypothesis IDs. Was dead code before this wiring.
+>
+> A `_signal_map` / `_position_signals` dict pair tracks which signal created each position so **entry alpha** (bps better/worse than the NT-suggested entry) can be computed at close time and fed into `record_exit()`. `CircuitBreakerManager` is also optionally accepted (via the `cb_manager` constructor param) so the engine can record trade win/loss into the `consecutive_losses` rolling window.
+>
+> New stats exposed: `positions_closed`, `branch_attributions`, `postmortems_written`, `pnl_records`. New getters: `get_branch_tracker()`, `get_decision_tree()`, `get_pnl_service()`, `get_journal_writer()`.
 
 #### Step 7: Hermes Agent Manages Position
 

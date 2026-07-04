@@ -5,11 +5,14 @@ Coordinates all L5 components:
 - PortfolioStateService (positions, cash, exposure)
 - VaRCalculator (historical + parametric)
 - VolatilityCircuitBreaker (per-asset, 4-level ladder)
-- RiskCircuitBreaker (portfolio-level, continuous)
+- CircuitBreakerManager (8-category tiered CBs with time-decay + rolling windows)
+- RiskCircuitBreaker (legacy portfolio-level, still used by RiskGate)
 - KillSwitch (global halt)
 - RiskGate (pre-trade checks on BlendedSignal)
 - AutonomyGate (tier-based approval)
 - SnapshotWriter (periodic + on-event)
+- DeadMansSwitch (auto-flatten if heartbeat missed)
+- AlertManager (Discord/Telegram notifications)
 
 Consumes BlendedSignal from L4, produces RiskDecision for L3.
 
@@ -28,7 +31,10 @@ import structlog
 
 from hermes.core.config import HermesConfig, get_config_hash
 from hermes.db.migrate import get_duckdb_path
+from hermes.ops.alerting import Alert, AlertManager, AlertSeverity
+from hermes.ops.dead_mans_switch import DeadMansSwitch
 from hermes.portfolio.autonomy_gate import AutonomyDecision, AutonomyGate
+from hermes.portfolio.cb_manager import CircuitBreakerManager
 from hermes.portfolio.circuit_breakers import (
     CircuitBreakerEvent,
     KillSwitch,
@@ -81,6 +87,11 @@ class PortfolioRiskEngine:
             max_asset_drawdown_pct=config.asset.get("max_asset_drawdown_pct", 0.08),
             daily_loss_limit_pct=config.account.get("daily_loss_limit_pct", 0.03),
         )
+
+        # Advanced Circuit Breaker Manager (8 categories, time-decay, rolling windows)
+        cb_config = config.circuit_breakers.get("manager", {})
+        self._cb_manager = CircuitBreakerManager.from_config(cb_config if cb_config else None)
+
         self._kill_switch = KillSwitch()
         self._risk_gate = RiskGate(
             portfolio_state=self._state,
@@ -112,6 +123,14 @@ class PortfolioRiskEngine:
         )
         self._snapshot_writer = SnapshotWriter(config, self._state)
 
+        # Ops components
+        self._dms = DeadMansSwitch(
+            timeout_sec=60.0,
+            auto_flatten=True,
+            on_activate=self._on_dms_activate,
+        )
+        self._alert_manager = AlertManager(config)
+
         self._running = False
         self._redis = None
         self._redis_url = config.hermes_redis.get("url", "redis://localhost:6379/1")
@@ -120,6 +139,9 @@ class PortfolioRiskEngine:
             "signals_evaluated": 0,
             "signals_approved": 0,
             "signals_rejected": 0,
+            "cb_manager_trips": 0,
+            "dms_activations": 0,
+            "alerts_sent": 0,
         }
 
     async def start(self) -> None:
@@ -143,15 +165,27 @@ class PortfolioRiskEngine:
         # Start snapshot writer
         await self._snapshot_writer.start()
 
+        # Start dead man's switch
+        await self._dms.start()
+
+        # Start alert manager
+        await self._alert_manager.start()
+
         log.info("portfolio_risk_engine_started", equity=self._state._initial_equity)
 
     async def stop(self) -> None:
         """Stop the L5 engine."""
         self._running = False
         await self._snapshot_writer.stop()
+        await self._dms.stop()
+        await self._alert_manager.stop()
         if self._redis:
             await self._redis.close()
         log.info("portfolio_risk_engine_stopped", stats=self._stats)
+
+    def heartbeat(self, source: str = "l5") -> None:
+        """Signal that the engine is alive (feeds Dead Man's Switch)."""
+        self._dms.heartbeat(source)
 
     async def evaluate_signal(
         self,
@@ -162,15 +196,13 @@ class PortfolioRiskEngine:
         """
         Evaluate a blended signal through the full risk gate.
 
-        Args:
-            signal: BlendedSignal from L4
-            atr_baseline: Baseline ATR (from IndicatorEngine)
-            atr_current: Current ATR
-
-        Returns:
-            RiskDecision (approved/rejected + final size + limits hit)
+        Also:
+        - Checks CircuitBreakerManager (8 categories) for size multiplier
+        - Applies CB multiplier to approved size
+        - Sends heartbeat to Dead Man's Switch
         """
         self._stats["signals_evaluated"] += 1
+        self.heartbeat("evaluate_signal")
 
         # 1. Autonomy gate classification
         metrics = self._state.get_metrics()
@@ -182,7 +214,7 @@ class PortfolioRiskEngine:
             is_crypto=is_crypto,
         )
 
-        # 2. Risk gate evaluation
+        # 2. Risk gate evaluation (legacy: 8 checks)
         decision = self._risk_gate.evaluate(
             signal=signal,
             atr_baseline=atr_baseline,
@@ -190,20 +222,93 @@ class PortfolioRiskEngine:
             autonomy_tier=autonomy_decision.tier,
         )
 
-        # 3. Override if autonomy requires human approval
+        # 3. Advanced Circuit Breaker Manager checks
+        if decision.approved and decision.approved_size_usd > 0:
+            # Check all 8 CB categories
+            cb_trips: list = []
+
+            # Portfolio exposure
+            gross_exposure = metrics.gross_exposure_usd + decision.approved_size_usd
+            cb_trips.extend(self._cb_manager.check_portfolio_exposure(
+                gross_exposure_usd=gross_exposure,
+                equity=metrics.equity_total,
+            ))
+
+            # Position size
+            cb_trips.extend(self._cb_manager.check_position_size(
+                position_notional_usd=decision.approved_size_usd,
+                symbol=signal.symbol,
+            ))
+
+            # Daily loss
+            cb_trips.extend(self._cb_manager.check_daily_loss(
+                daily_loss_usd=metrics.realized_pnl,
+            ))
+
+            # VaR
+            if metrics.var_1d_99 is not None:
+                cb_trips.extend(self._cb_manager.check_var(
+                    var_1d_99_usd=metrics.var_1d_99,
+                ))
+
+            # Drawdown
+            cb_trips.extend(self._cb_manager.check_drawdown(
+                drawdown_pct=metrics.drawdown_pct,
+                drawdown_usd=metrics.drawdown_usd,
+            ))
+
+            # Apply CB size multiplier
+            if self._cb_manager.is_any_tripped():
+                cb_multiplier = self._cb_manager.get_size_multiplier()
+                if cb_multiplier < 1.0:
+                    decision.approved_size_usd = round(
+                        decision.approved_size_usd * cb_multiplier, 2
+                    )
+                    decision.limits_hit.append(f"cb_manager_multiplier:{cb_multiplier:.2f}")
+                    self._stats["cb_manager_trips"] += len(cb_trips)
+
+                    # If multiplier is 0, block entirely
+                    if cb_multiplier == 0.0:
+                        decision.approved = False
+                        decision.reason = "blocked_by_circuit_breaker_manager"
+                        self._stats["signals_rejected"] += 1
+                        await self._write_and_publish(decision)
+                        return decision
+
+                # Record trips for frequency tracking
+                for _ in cb_trips:
+                    self._cb_manager.record_trip()
+
+                # Send alerts for CB trips
+                for trip in cb_trips:
+                    await self._send_alert(
+                        title=f"Circuit Breaker: {trip.tier_label}",
+                        message=f"{trip.breaker_name} tripped. Action: {trip.action.value}. "
+                                f"Value: {trip.trigger_value:.2f}, Threshold: {trip.threshold:.2f}",
+                        severity=AlertSeverity.WARNING if trip.action.value.startswith("reduce")
+                                  else AlertSeverity.CRITICAL,
+                        data={
+                            "category": trip.category,
+                            "action": trip.action.value,
+                            "trigger_value": trip.trigger_value,
+                            "threshold": trip.threshold,
+                        },
+                    )
+
+        # 4. Override if autonomy requires human approval
         if autonomy_decision.requires_human_approval and decision.approved:
             decision.approved = False
             decision.limits_hit.append(f"autonomy_tier_{autonomy_decision.tier}_requires_human")
             decision.reason = f"autonomy_tier_{autonomy_decision.tier}:human_approval_required"
             decision.approved_size_usd = 0.0
 
-        # 4. Update stats
+        # 5. Update stats
         if decision.approved:
             self._stats["signals_approved"] += 1
         else:
             self._stats["signals_rejected"] += 1
 
-        # 5. Write to DuckDB + publish
+        # 6. Write to DuckDB + publish
         await self._write_and_publish(decision)
 
         log.info(
@@ -221,10 +326,12 @@ class PortfolioRiskEngine:
 
     async def check_risk_breakers(self) -> list[CircuitBreakerEvent]:
         """Check portfolio-level risk breakers (call periodically)."""
+        self.heartbeat("check_risk_breakers")
         metrics = self._state.get_metrics()
         daily_pnl_pct = metrics.realized_pnl / metrics.equity_total if metrics.equity_total > 0 else 0
         margin_used_pct = metrics.margin_used / metrics.equity_total if metrics.equity_total > 0 else 0
 
+        # Legacy risk breaker
         events = self._risk_breaker.check_portfolio(
             drawdown_pct=metrics.drawdown_pct,
             daily_pnl_pct=daily_pnl_pct,
@@ -235,8 +342,70 @@ class PortfolioRiskEngine:
 
         for event in events:
             await self._write_breaker_event(event)
+            # Send alert for legacy breaker trips
+            await self._send_alert(
+                title=f"Risk Breaker: {event.payload.get('check', 'unknown')}",
+                message=f"Level {event.level} breaker tripped. Action: {event.action_taken}.",
+                severity=AlertSeverity.CRITICAL,
+                data={
+                    "breaker_type": event.breaker_type,
+                    "level": event.level,
+                    "trigger_value": event.trigger_value,
+                    "threshold": event.threshold,
+                },
+            )
+
+            # If critical, activate kill switch
+            if event.level >= 3:
+                self._kill_switch.activate(
+                    reason=f"risk_breaker:{event.payload.get('check', 'unknown')}",
+                    flatten=event.level >= 4,
+                )
+                await self._send_alert(
+                    title="KILL SWITCH ACTIVATED",
+                    message=f"Kill switch activated: {event.payload.get('check', 'unknown')}. "
+                            f"Flatten: {event.level >= 4}",
+                    severity=AlertSeverity.EMERGENCY,
+                )
 
         return events
+
+    async def _on_dms_activate(self, reason: str, flatten: bool) -> None:
+        """Callback when Dead Man's Switch activates."""
+        self._stats["dms_activations"] += 1
+        log.critical("dms_activated_in_l5", reason=reason, flatten=flatten)
+
+        # Activate kill switch
+        self._kill_switch.activate(reason=f"dms:{reason}", flatten=flatten)
+
+        # Send emergency alert
+        await self._send_alert(
+            title="DEAD MAN'S SWITCH ACTIVATED",
+            message=f"Hermes stopped responding. Reason: {reason}. "
+                    f"Kill switch activated. Flatten: {flatten}.",
+            severity=AlertSeverity.EMERGENCY,
+            data={"reason": reason, "flatten": flatten},
+        )
+
+    async def _send_alert(
+        self,
+        title: str,
+        message: str,
+        severity: AlertSeverity = AlertSeverity.INFO,
+        data: dict | None = None,
+    ) -> None:
+        """Send an alert via AlertManager."""
+        self._stats["alerts_sent"] += 1
+        try:
+            await self._alert_manager.send_alert(Alert(
+                title=title,
+                message=message,
+                severity=severity,
+                source="l5_risk_engine",
+                data=data or {},
+            ))
+        except Exception as e:
+            log.warning("alert_send_failed", error=str(e))
 
     async def _write_and_publish(self, decision: RiskDecision) -> None:
         """Write risk decision to DuckDB + publish to Redis."""
@@ -328,6 +497,15 @@ class PortfolioRiskEngine:
         """Deactivate the kill switch."""
         self._kill_switch.deactivate()
 
+    def get_cb_manager(self) -> CircuitBreakerManager:
+        return self._cb_manager
+
+    def get_dms(self) -> DeadMansSwitch:
+        return self._dms
+
+    def get_alert_manager(self) -> AlertManager:
+        return self._alert_manager
+
     def get_portfolio_state(self) -> PortfolioStateService:
         return self._state
 
@@ -343,8 +521,11 @@ class PortfolioRiskEngine:
         stats["risk_gate"] = self._risk_gate.get_stats()
         stats["vol_breaker"] = self._vol_breaker.get_stats()
         stats["risk_breaker"] = self._risk_breaker.get_stats()
+        stats["cb_manager"] = self._cb_manager.get_stats()
         stats["kill_switch"] = self._kill_switch.get_stats()
         stats["autonomy"] = self._autonomy_gate.get_stats()
         stats["snapshots"] = self._snapshot_writer.get_stats()
         stats["var"] = self._var_calc.get_stats()
+        stats["dms"] = self._dms.get_stats()
+        stats["alert_manager"] = self._alert_manager.get_stats()
         return stats

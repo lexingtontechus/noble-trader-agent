@@ -68,7 +68,7 @@ class BreakerTier(BaseModel):
 class BreakerConfig(BaseModel):
     """Configuration for a single circuit breaker category."""
 
-    name: str
+    name: str = ""
     enabled: bool = True
     tiers: list[BreakerTier] = Field(default_factory=list)
     description: str = ""

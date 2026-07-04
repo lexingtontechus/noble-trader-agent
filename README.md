@@ -3,7 +3,7 @@
 > Entry/execution optimization layer for Noble Trader signals.
 > Hermes consumes Noble Trader's strategy signals and optimizes **when** to enter and **how** to execute — it does NOT replicate Noble Trader's strategy sweeps.
 
-**Status:** ✅ All 11 phases complete — 297 tests passing, 24 CLI commands, 11 dashboard pages, 8 DuckDB migrations, 23 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows) and Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization).
+**Status:** ✅ All 11 phases complete — 297 tests passing, 24 CLI commands, 11 dashboard pages, 8 DuckDB migrations, 23 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), and Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine).
 
 ---
 
@@ -11,7 +11,7 @@
 
 | Metric | Value |
 |---|---|
-| **Phases completed** | 11/11 (Phase 0 through Phase 10) + 2 enhancements |
+| **Phases completed** | 11/11 (Phase 0 through Phase 10) + 3 enhancements |
 | **Tests** | 297 (all passing) |
 | **CLI commands** | 24 |
 | **Dashboard pages** | 11 (DaisyUI, 7 switchable themes) |
@@ -64,12 +64,16 @@ Venue adapter interface (abstract base). Alpaca adapter (live WS trades+quotes, 
 
 PortfolioStateService (positions, cash USD+USDC, exposure, PnL, drawdown, handles long+short). VaRCalculator (historical + parametric, configurable confidence). VolatilityCircuitBreaker (4-level ladder: reduce 50%, block, tighten, liquidate). RiskCircuitBreaker (portfolio DD, daily loss, VaR breach, margin proximity). KillSwitch (global halt with manual + auto triggers). RiskGate (8 pre-trade checks on BlendedSignal, caps size for soft limits). AutonomyGate (5-tier matrix: tier 0 read-only, tier 1 small trades, tier 2 config promo, tier 3 large/novel = human approval, tier 4 structural = hard block). Account snapshot writer (periodic 60s + on-event). DuckDB writes: risk_decisions, circuit_breaker_events, account_snapshots. CLI: `platform risk`.
 
+> **Post-Phase-10 wiring:** `PortfolioRiskEngine` now also wires `CircuitBreakerManager` (5 categories checked on every `evaluate_signal()`, size multiplier 0.0–1.0 applied, blocks if multiplier=0), `DeadMansSwitch` (started on `engine.start()`, `heartbeat()` called on every signal and every `check_risk_breakers()`), and `AlertManager` (started on `engine.start()`, sends WARNING/CRITICAL/EMERGENCY alerts on CB trips, kill switch, and DMS activation). See worklog → *Supplemental — Component Wiring*.
+
 ---
 
 ### Phase 5 — Execution Layer (L3) ✅
 **Status:** Complete · **Tests:** 25 · **Commit:** `17f808c`
 
 Order schemas + OrderStateMachine (DRAFT→SUBMITTED→PARTIAL→FILLED, transition enforcement). SlippageModeler (square-root impact model, venue-specific fees). PaperTradingEngine (simulated fills for market/limit/post_only/TWAP/iceberg, async callbacks, cancel support). SmartOrderRouter (creates orders from RiskDecision + BlendedSignal, routes to correct order type). DuckDB schema v5 (orders, order_events, fills — 44 columns, 12 indexes). L3 Execution orchestrator (subscribes to risk.decision.*, fetches signal from DuckDB, executes via paper engine, registers positions in PortfolioStateService). CLI: `platform execute --paper`.
+
+> **Post-Phase-10 wiring:** `ExecutionEngine` now also wires `HermesDecisionTree` (evaluates existing positions on each new signal — checks SL/TP/early-profit/trail/flip/hold and closes if needed), `DecisionBranchTracker` (records `AgentAction` at entry on fill AND at exit on close), `PnLService` (records realized PnL with attribution on position close → `pnl_realized` table), and `DecisionJournalWriter` (writes postmortem with lessons on position close). `CircuitBreakerManager` is also optionally wired (via `cb_manager` constructor param) to feed `consecutive_losses`. See worklog → *Supplemental — Component Wiring*.
 
 ---
 
@@ -118,6 +122,7 @@ DeadMansSwitch (background monitor, auto-activates kill switch + flattens if no 
 **Post-Phase-10 enhancements:**
 - **Advanced Circuit Breaker Manager** (`src/hermes/portfolio/cb_manager.py`, 42 tests) — 8 tiered categories (portfolio_exposure, position_size, daily_loss, var, drawdown, funding_rate, consecutive_losses, trip_frequency), 7 configurable actions, time-decay via `cooldown_sec`, and `RollingWindowTracker` for consecutive-loss and trip-frequency windows. Config in `config/default.yaml` → `circuit_breakers.manager`.
 - **Performance Attribution** (`src/hermes/agent/attribution.py`, 16 tests) — `DecisionBranchTracker` (attributes PnL per `AgentAction` branch + regime × branch matrix + threshold tuning feedback), `ABTestFramework` (Diebold-Mariano + paired t-test for parallel hypothesis comparison), `SignalWindowOptimizer` (sweeps `signal_expiry_minutes` to maximize entry alpha).
+- **Component Wiring (Live Pipeline Integration)** — wires the two enhancements above (plus `HermesDecisionTree`, `DecisionJournalWriter`, `DeadMansSwitch`, `AlertManager`) into the live trading pipeline: `ExecutionEngine` (L3) now records entry/exit branches, evaluates existing positions via the decision tree, records realized PnL with attribution, and writes postmortems on every trade; `PortfolioRiskEngine` (L5) now runs the 8-category `CircuitBreakerManager` on every signal, feeds `heartbeat()` to `DeadMansSwitch`, and dispatches `AlertManager` alerts on CB trips / kill switch / DMS activation. Closes the attribution → feedback → optimization loop so `SelfLearningLoop` is fed by live data instead of being theoretical. Bug fix: `BreakerConfig.name` made optional (default=`''`) for YAML compatibility. Test count unchanged at 297 (wiring is additive). See `worklog.md` → *Supplemental — Component Wiring*.
 
 ---
 
