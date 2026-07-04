@@ -843,3 +843,126 @@ CHANGED: scripts/setup.ps1             (uv optional, pip fallback)
 - **pyproject.toml remains canonical.** If deps drift, the sync script overwrites the requirements files.
 - **No pinned versions** in requirements files (use `>=` lower bounds matching pyproject.toml). For production lock files, use `pip-compile` or `uv pip compile` to generate `requirements.lock` with exact versions.
 - **Hyperliquid has no PyPI SDK** — its Python examples are vendored locally if needed in Phase 2.
+
+---
+
+## Supplemental — Advanced Circuit Breaker Manager
+**Status:** ✅ Complete
+
+### Issue
+The original circuit breaker layer (`src/hermes/portfolio/circuit_breakers.py`) covered per-asset volatility ladders + portfolio-level DD / daily-loss / VaR / margin, but the full risk-threshold table from roadmap §4 had gaps: position-size caps, funding-rate exposure, consecutive-loss streaks, and breaker trip-frequency feedback were not enforced. Hard trips also lacked time-decay — once a breaker tripped, an operator had to clear it manually even when the underlying condition had self-corrected.
+
+### Solution
+Built `CircuitBreakerManager` — a single, configurable manager that unifies **8 categories** of tiered circuit breakers with time-decay and rolling-window support.
+
+### What was built
+
+#### 8 circuit breaker categories (config in `config/default.yaml` → `circuit_breakers.manager`)
+
+| Category | What it watches | Default tiers (threshold → action) |
+|---|---|---|
+| `portfolio_exposure` | Gross exposure as % of equity | 80% → reduce_25%, 90% → reduce_50%, 100% → block_entries, 150% → halt_all |
+| `position_size` | Absolute $ notional per position | $50k → reduce_25%, $75k → reduce_50%, $100k → block_entries |
+| `daily_loss` | Absolute $ daily loss | $5k → reduce_50%, $10k → block_entries (4h cooldown), $15k → halt_all (24h cooldown) |
+| `var` | Absolute $ VaR (1-day, 99%) | $50k → reduce_50%, $100k → block_entries (1h cooldown) |
+| `drawdown` | Portfolio drawdown % from peak equity | 15% → reduce_50%, 20% → block_entries (4h), 25% → liquidate (24h) |
+| `funding_rate` | Daily funding cost in $ for crypto perps | $50/day → temp_block (30min), $200/day → block_entries (2h) |
+| `consecutive_losses` | Rolling 24h: consecutive losing trades | 3 → reduce_50%, 5 → block_entries (1h) |
+| `trip_frequency` | Rolling 24h: number of CB trips | 5 → reduce_50%, 10 → halt_all (24h — system unstable) |
+
+#### Tiered actions (7 configurable actions)
+`reduce_25pct`, `reduce_50pct`, `temp_block`, `block_entries`, `tighten_stops`, `halt_all`, `liquidate` — each tier in each category can pick the action that matches the severity.
+
+#### Time-decay (auto-clear)
+Every tier has a `cooldown_sec` field. When a breaker trips, `expires_at = trip_time + cooldown_sec`. The manager's `evaluate()` step automatically transitions `tripped → expired` once the cooldown elapses, so transient conditions (e.g., a 30-minute funding spike, a 4-hour drawdown blip) self-heal without operator intervention. `cooldown_sec: 0` means the trip is manual-clear only.
+
+#### Rolling windows (RollingWindowTracker)
+New `RollingWindowTracker` class — a `deque`-backed time-windowed counter that supports the two rolling categories:
+- **consecutive_losses** — counts the current losing streak (resets on a win)
+- **trip_frequency** — counts total CB trips within the trailing 24h window
+
+`add(value)`, `sum()`, `count()`, `recent_events(within_sec)` provide the rolling aggregates the manager consults on each evaluation pass.
+
+#### Files added/changed
+```
+NEW: src/hermes/portfolio/cb_manager.py     (CircuitBreakerManager + 8 BreakerConfig + RollingWindowTracker)
+NEW: tests/test_cb_manager.py               (42 tests)
+CHANGED: config/default.yaml                (circuit_breakers.manager block — 8 categories, all tiers + cooldowns)
+```
+
+#### Verified working
+- ✅ All 42 tests pass (covers: tier selection, time-decay expiry, rolling-window pruning, action mapping, multi-category evaluation, expiry-to-archive flow, edge cases at boundaries)
+- ✅ Config loads cleanly from `config/default.yaml`
+- ✅ `RollingWindowTracker` correctly prunes events older than the window
+- ✅ Time-decay transitions `tripped → expired` exactly at `expires_at`
+- ✅ Each category can be independently toggled via `enabled: false`
+
+### Design notes
+- **Tiered, not binary.** Each category escalates (reduce → block → halt → liquidate) so small breaches get a soft response and only severe breaches trigger hard actions.
+- **Time-decay prevents "stuck" states.** The most common ops headache with the old breakers was "trip happened, condition cleared, but breaker is still tripped because nobody cleared it." Auto-clear eliminates this.
+- **Rolling windows catch systemic issues.** `consecutive_losses` catches tilt / regime mismatch; `trip_frequency` catches a system that's thrashing — if it tripped 10 times in 24h, something is structurally wrong and `halt_all` is the safe response.
+- **Layered, not replacing.** This manager coexists with `circuit_breakers.py` (per-asset volatility + portfolio DD/VaR) and `risk_gate.py` (8 pre-trade checks). It adds new categories and time-decay; the original breakers remain the fast-path pre-trade gate.
+
+---
+
+## Supplemental — Performance Attribution
+**Status:** ✅ Complete
+
+### Issue
+The Hermes agent had a validated decision tree (Phase 9) but no way to answer: *"Which branches actually make money?"* PnL was attributed to {strategy, regime, asset, venue} (Phase 6) but never to **decision branches** — i.e., was `close_early_profit` profitable? Was `close_flip` adding value or destroying it? Is the SL too tight or too loose? Without this, threshold tuning was guesswork, A/B testing didn't exist, and the signal expiry window was a static guess.
+
+### Solution
+Built `src/hermes/agent/attribution.py` — three components that close the attribution → feedback → optimization loop.
+
+### What was built
+
+#### 1. DecisionBranchTracker
+Tracks which `AgentAction` each trade took at entry and exit (`TradeDecisionRecord`), then attributes PnL to the decision branches.
+
+**Methods:**
+- `analyze_branch_performance()` — exit-action stats: win rate, avg R-multiple, expectancy, profit factor, avg hold duration, avg entry alpha (bps) per branch
+- `analyze_entry_branch_performance()` — entry-action stats (was `enter_now` better than `wait_for_brick_close`?)
+- `analyze_regime_branch_matrix()` — decision quality as a `branch × regime` matrix (`RegimeBranchMatrix`): "in `choppy_range`, does `trail_stop` work?"
+- `analyze_hypothesis_performance()` — PnL attributed back to specific hypothesis IDs (closes the loop with the Phase 9 hypothesis tracker)
+- `get_threshold_feedback()` — generates **tuning recommendations** by comparing each branch's actual avg R-multiple against its expected behavior:
+  - `stop_loss_pct` — too loose (avg R < -1.2) or too tight (avg R > -0.8)
+  - `take_profit_pct` — native TP too tight (avg R < 0.3)
+  - `early_profit_pct` — exiting before full profit (avg R < 0.5)
+  - `fading_brick_count` — trail trigger too sensitive (trail trades avg R < 0)
+  - `strong_conviction_threshold` — flip not working (flip trades avg R < 0)
+- `get_decision_quality_report()` — comprehensive roll-up: branch stats + entry stats + regime matrix + hypothesis stats + threshold feedback + best/worst performing branches
+
+Each recommendation includes `current` value, `issue` description, `suggestion`, and `evidence` (n_trades + avg R).
+
+#### 2. ABTestFramework
+Parallel hypothesis testing with proper statistics.
+
+`ABTestFramework.compare(config_a_name, config_a_returns, config_b_name, config_b_returns, significance_level=0.05) → ABTestResult` runs:
+- **Paired t-test** — are the mean daily returns statistically different?
+- **Diebold-Mariano test** — forecast accuracy comparison (standard in quant literature for predictive comparisons)
+- **Sharpe ratio comparison** — annualized Sharpe for each config
+- Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), both p-values and t-stats. Falls back to normal approximation if scipy isn't installed.
+
+#### 3. SignalWindowOptimizer
+Optimizes `signal_expiry_minutes` — how long after a Noble Trader heartbeat Hermes will still act on the signal.
+
+`SignalWindowOptimizer.optimize_window(signals, price_data, windows=[5,10,15,20,30,45,60,90])` simulates, for each candidate window: "if we entered at the best price within N minutes of the signal, what would the PnL be?" Returns per-window `{n_signals, n_filled, avg_entry_alpha_bps, total_pnl}` plus `best_window` + `rationale`. Too short → miss opportunities; too long → act on stale signals.
+
+#### Files added/changed
+```
+NEW: src/hermes/agent/attribution.py     (DecisionBranchTracker + ABTestFramework + SignalWindowOptimizer)
+NEW: tests/test_attribution.py           (16 tests)
+```
+
+#### Verified working
+- ✅ All 16 tests pass (covers: branch stats math, regime matrix population, threshold feedback rules at each boundary, A/B test winner determination, signal window optimization logic, edge cases with < 10 samples → inconclusive)
+- ✅ `DecisionBranchTracker` correctly maps `AgentAction` enums to branch keys
+- ✅ `ABTestFramework` requires n ≥ 10 returns before declaring significance (avoids spurious wins on tiny samples)
+- ✅ `SignalWindowOptimizer` handles both buy and sell directions (best price = min for buy, max for sell)
+- ✅ Threshold feedback only fires when n_trades ≥ 5 (statistical noise filter)
+
+### Design notes
+- **Attribution → feedback → tuning.** This is the biggest gap in the original Phase 9 self-learning loop. `get_threshold_feedback()` produces concrete, evidence-backed tuning recommendations that can be fed directly into a hypothesis proposal.
+- **Statistical rigor, not vibes.** `ABTestFramework` uses Diebold-Mariano (the standard test for forecast accuracy comparison) plus a paired t-test — both with proper p-values. The 10-sample minimum prevents premature promotion.
+- **Branch × regime matrix is the killer view.** A branch that looks bad overall might be excellent in `calm_trend` and terrible in `choppy_range` — the matrix surfaces this and enables regime-conditional tuning.
+- **Signal window was a static guess before.** `SignalWindowOptimizer` turns it into a data-driven decision: sweep candidate windows over historical data, pick the one that maximizes entry alpha + total PnL with adequate fill rate.

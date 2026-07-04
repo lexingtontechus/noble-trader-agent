@@ -3,7 +3,7 @@
 > Entry/execution optimization layer for Noble Trader signals.
 > Hermes consumes Noble Trader's strategy signals and optimizes **when** to enter and **how** to execute — it does NOT replicate Noble Trader's strategy sweeps.
 
-**Status:** ✅ All 11 phases complete — 239 tests passing, 24 CLI commands, 11 dashboard pages, 8 DuckDB migrations, 23 tables, DaisyUI UI with 7 themes.
+**Status:** ✅ All 11 phases complete — 297 tests passing, 24 CLI commands, 11 dashboard pages, 8 DuckDB migrations, 23 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows) and Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization).
 
 ---
 
@@ -11,13 +11,13 @@
 
 | Metric | Value |
 |---|---|
-| **Phases completed** | 11/11 (Phase 0 through Phase 10) |
-| **Tests** | 239 (all passing) |
+| **Phases completed** | 11/11 (Phase 0 through Phase 10) + 2 enhancements |
+| **Tests** | 297 (all passing) |
 | **CLI commands** | 24 |
 | **Dashboard pages** | 11 (DaisyUI, 7 switchable themes) |
 | **DuckDB migrations** | 8 (schema v8) |
 | **DuckDB tables** | 23 |
-| **Python source files** | 48 |
+| **Python source files** | 50 (48 core + 2 enhancements: `cb_manager.py`, `attribution.py`) |
 | **Documentation** | roadmap.md (2,457 lines), agent_onboarding.md (845 lines), dr_runbook.md, worklog.md |
 
 ---
@@ -114,6 +114,10 @@ HypothesisTracker (lifecycle: proposed → backtested → shadow → live / reje
 **Status:** Complete · **Tests:** 14 · **Commit:** `22bad8d`
 
 DeadMansSwitch (background monitor, auto-activates kill switch + flattens if no heartbeat within 60s, auto-deactivates when heartbeat resumes). Alerting system (Discord webhook + Telegram bot, 4 severity levels, rich embeds, graceful no-op when unconfigured). Replay/Forensic mode (replays any historical session from DuckDB, merges 8 event types chronologically, timeline display). Load testing utility (simulates high-frequency heartbeat ingestion, reports actual vs target throughput). Disaster recovery runbook (7 scenarios: process crash, DuckDB corruption, Redis disconnect, NT upstream down, venue API down, daily loss limit, config rollback). Post-incident checklist. CLI: `platform replay`, `platform alert-test`, `platform load-test`.
+
+**Post-Phase-10 enhancements:**
+- **Advanced Circuit Breaker Manager** (`src/hermes/portfolio/cb_manager.py`, 42 tests) — 8 tiered categories (portfolio_exposure, position_size, daily_loss, var, drawdown, funding_rate, consecutive_losses, trip_frequency), 7 configurable actions, time-decay via `cooldown_sec`, and `RollingWindowTracker` for consecutive-loss and trip-frequency windows. Config in `config/default.yaml` → `circuit_breakers.manager`.
+- **Performance Attribution** (`src/hermes/agent/attribution.py`, 16 tests) — `DecisionBranchTracker` (attributes PnL per `AgentAction` branch + regime × branch matrix + threshold tuning feedback), `ABTestFramework` (Diebold-Mariano + paired t-test for parallel hypothesis comparison), `SignalWindowOptimizer` (sweeps `signal_expiry_minutes` to maximize entry alpha).
 
 ---
 
@@ -372,11 +376,11 @@ hermes-trading-platform/
 │   │   └──                    ←   stop_watcher, cross_price, funding_watcher, orchestrator
 │   ├── signals/              ← meta_regime, renko_engine, entry_timing, sizing, synthesizer
 │   ├── portfolio/            ← state, var_calculator, circuit_breakers, risk_gate,
-│   │   └──                    ←   autonomy_gate, snapshot_writer, orchestrator
+│   │   └──                    ←   autonomy_gate, snapshot_writer, orchestrator, **cb_manager**
 │   ├── execution/            ← orders, slippage, paper_engine, router, db_writer, orchestrator
 │   ├── analytics/            ← pnl_service, tear_sheet
 │   ├── backtest/             ← engine, statistics, optimizer
-│   ├── agent/                ← decision_tree, learning
+│   ├── agent/                ← decision_tree, learning, **attribution**
 │   ├── ops/                  ← dead_mans_switch, alerting, replay
 │   └── web/                  ← app.py, status.py, templates/, static/
 │
@@ -392,7 +396,9 @@ hermes-trading-platform/
     ├── test_phase7.py        ← Phase 7 (16 tests)
     ├── test_phase8.py        ← Phase 8 (15 tests)
     ├── test_phase9.py        ← Phase 9 (26 tests — includes decision tree validation)
-    └── test_phase10.py       ← Phase 10 (14 tests)
+    ├── test_phase10.py       ← Phase 10 (14 tests)
+    ├── test_cb_manager.py    ← Advanced Circuit Breaker Manager (42 tests)
+    └── test_attribution.py   ← Performance Attribution (16 tests)
 ```
 
 ---

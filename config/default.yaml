@@ -189,6 +189,134 @@ circuit_breakers:
       venue_disconnect_sec:  60
       audit_log_failure:     true
 
+  # === Advanced Circuit Breaker Manager (Phase 10 enhancement) ===
+  # Tiered thresholds with time-decay and rolling windows.
+  # Each category has tiers: threshold → action → cooldown_sec (0 = no auto-clear)
+  manager:
+    portfolio_exposure:
+      enabled: true
+      description: "Gross exposure as % of equity"
+      tiers:
+        - threshold: 0.80
+          action: reduce_25pct
+          label: "80% exposure"
+          cooldown_sec: 0
+        - threshold: 0.90
+          action: reduce_50pct
+          label: "90% exposure"
+          cooldown_sec: 0
+        - threshold: 1.00
+          action: block_entries
+          label: "100% exposure (max)"
+          cooldown_sec: 0
+        - threshold: 1.50
+          action: halt_all
+          label: "150% exposure (over-leveraged)"
+          cooldown_sec: 3600
+
+    position_size:
+      enabled: true
+      description: "Absolute $ notional per position"
+      tiers:
+        - threshold: 50000
+          action: reduce_25pct
+          label: "$50k position"
+          cooldown_sec: 0
+        - threshold: 75000
+          action: reduce_50pct
+          label: "$75k position"
+          cooldown_sec: 0
+        - threshold: 100000
+          action: block_entries
+          label: "$100k position (max)"
+          cooldown_sec: 0
+
+    daily_loss:
+      enabled: true
+      description: "Absolute $ daily loss"
+      tiers:
+        - threshold: 5000
+          action: reduce_50pct
+          label: "$5k daily loss"
+          cooldown_sec: 0
+        - threshold: 10000
+          action: block_entries
+          label: "$10k daily loss"
+          cooldown_sec: 14400  # 4h cooldown
+        - threshold: 15000
+          action: halt_all
+          label: "$15k daily loss (critical)"
+          cooldown_sec: 86400  # 24h cooldown
+
+    var:
+      enabled: true
+      description: "Absolute $ VaR (1-day, 99% confidence)"
+      tiers:
+        - threshold: 50000
+          action: reduce_50pct
+          label: "$50k VaR"
+          cooldown_sec: 0
+        - threshold: 100000
+          action: block_entries
+          label: "$100k VaR"
+          cooldown_sec: 3600
+
+    drawdown:
+      enabled: true
+      description: "Portfolio drawdown % from peak equity"
+      tiers:
+        - threshold: 0.15
+          action: reduce_50pct
+          label: "15% drawdown"
+          cooldown_sec: 0
+        - threshold: 0.20
+          action: block_entries
+          label: "20% drawdown"
+          cooldown_sec: 14400  # 4h
+        - threshold: 0.25
+          action: liquidate
+          label: "25% drawdown (critical)"
+          cooldown_sec: 86400  # 24h
+
+    funding_rate:
+      enabled: true
+      description: "Daily funding cost in $ for crypto perps"
+      tiers:
+        - threshold: 50
+          action: temp_block
+          label: "$50/day funding"
+          cooldown_sec: 1800  # 30min
+        - threshold: 200
+          action: block_entries
+          label: "$200/day funding (extreme)"
+          cooldown_sec: 7200  # 2h
+
+    consecutive_losses:
+      enabled: true
+      description: "Rolling 24h: consecutive losing trades"
+      tiers:
+        - threshold: 3
+          action: reduce_50pct
+          label: "3 consecutive losses"
+          cooldown_sec: 0
+        - threshold: 5
+          action: block_entries
+          label: "5 consecutive losses"
+          cooldown_sec: 3600
+
+    trip_frequency:
+      enabled: true
+      description: "Rolling 24h: number of CB trips"
+      tiers:
+        - threshold: 5
+          action: reduce_50pct
+          label: "5 trips in 24h"
+          cooldown_sec: 0
+        - threshold: 10
+          action: halt_all
+          label: "10 trips in 24h (system unstable)"
+          cooldown_sec: 86400
+
 # === Autonomy Tiers (§3.5) ===
 autonomy:
   tier_0:

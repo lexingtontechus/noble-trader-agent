@@ -798,6 +798,129 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 
 ---
 
+### Advanced Circuit Breaker Configuration
+
+Beyond the per-asset volatility breaker (`VolatilityCircuitBreaker`) and the portfolio-level `RiskCircuitBreaker` covered in Phase 4, Hermes ships a unified **CircuitBreakerManager** (`src/hermes/portfolio/cb_manager.py`) that adds 8 tiered categories, time-decay, and rolling windows. All configuration lives under `circuit_breakers.manager` in `config/default.yaml`.
+
+#### The 8 breaker categories (default thresholds)
+
+| Category | What it watches | Default tiers (threshold → action → cooldown) |
+|---|---|---|
+| `portfolio_exposure` | Gross exposure as % of equity | 80% → reduce_25pct (0s) · 90% → reduce_50pct (0s) · 100% → block_entries (0s) · 150% → halt_all (1h) |
+| `position_size` | Absolute $ notional per position | $50k → reduce_25pct · $75k → reduce_50pct · $100k → block_entries |
+| `daily_loss` | Absolute $ daily loss | $5k → reduce_50pct (0s) · $10k → block_entries (4h) · $15k → halt_all (24h) |
+| `var` | Absolute $ VaR (1-day, 99% confidence) | $50k → reduce_50pct · $100k → block_entries (1h) |
+| `drawdown` | Portfolio drawdown % from peak equity | 15% → reduce_50pct · 20% → block_entries (4h) · 25% → liquidate (24h) |
+| `funding_rate` | Daily funding cost in $ for crypto perps | $50/day → temp_block (30min) · $200/day → block_entries (2h) |
+| `consecutive_losses` | Rolling 24h: consecutive losing trades | 3 → reduce_50pct · 5 → block_entries (1h) |
+| `trip_frequency` | Rolling 24h: number of CB trips | 5 → reduce_50pct · 10 → halt_all (24h — system unstable) |
+
+The 7 available actions are: `reduce_25pct`, `reduce_50pct`, `temp_block`, `block_entries`, `tighten_stops`, `halt_all`, `liquidate`. Each tier in each category picks the action that matches its severity — small breaches get soft responses (reduce), only severe breaches trigger hard actions (halt, liquidate).
+
+#### How time-decay works (`cooldown_sec`)
+
+Every tier has a `cooldown_sec` field. When a breaker trips, the manager records `expires_at = trip_time + cooldown_sec`. On each `evaluate()` pass, the manager automatically transitions `tripped → expired` once the cooldown elapses — so transient conditions (a 30-minute funding spike, a 4-hour drawdown blip) self-heal without operator intervention.
+
+- `cooldown_sec: 0` → manual-clear only (operator must explicitly clear the trip)
+- `cooldown_sec: 3600` → auto-clears 1 hour after the trip timestamp
+- `cooldown_sec: 86400` → auto-clears after 24 hours (used for the most severe tiers)
+
+This eliminates the most common ops headache with the original breakers: "trip happened, condition cleared, but breaker is still tripped because nobody cleared it."
+
+#### How rolling windows work
+
+The `RollingWindowTracker` class (`deque`-backed, bounded memory) supports the two rolling categories:
+
+- **`consecutive_losses`** — counts the current losing streak (resets on a win). Trips when 3 or 5 consecutive losses accumulate.
+- **`trip_frequency`** — counts total CB trips within the trailing 24-hour window. Trips when 5 (reduce) or 10 (halt_all — "system is thrashing, something is structurally wrong").
+
+The tracker exposes `add(value)`, `sum()`, `count()`, and `recent_events(within_sec)` for the rolling aggregates the manager consults on each evaluation pass.
+
+#### How to configure
+
+All 8 categories live under `circuit_breakers.manager` in `config/default.yaml`. Each category has the same shape:
+
+```yaml
+circuit_breakers:
+  manager:
+    portfolio_exposure:
+      enabled: true
+      description: "Gross exposure as % of equity"
+      tiers:
+        - threshold: 0.80
+          action: reduce_25pct
+          label: "80% exposure"
+          cooldown_sec: 0
+        - threshold: 0.90
+          action: reduce_50pct
+          label: "90% exposure"
+          cooldown_sec: 0
+        - threshold: 1.00
+          action: block_entries
+          label: "100% exposure (max)"
+          cooldown_sec: 0
+        - threshold: 1.50
+          action: halt_all
+          label: "150% exposure (over-leveraged)"
+          cooldown_sec: 3600
+```
+
+To disable a category, set `enabled: false`. To add a new tier, append to the `tiers` list — the manager picks the highest threshold whose value is exceeded. To make a trip auto-clear, set `cooldown_sec` to a non-zero value.
+
+> **Layered, not replacing.** This manager coexists with `circuit_breakers.py` (per-asset volatility + portfolio DD/VaR) and `risk_gate.py` (8 pre-trade checks). It adds new categories and time-decay; the original breakers remain the fast-path pre-trade gate.
+
+---
+
+### Performance Attribution
+
+The Phase 9 decision tree was validated structurally, but Hermes had no way to answer: *"Which branches actually make money?"* `src/hermes/agent/attribution.py` closes that gap with three components.
+
+#### How DecisionBranchTracker attributes PnL to decision branches
+
+Every trade gets a `TradeDecisionRecord` that captures the `AgentAction` taken at entry AND at exit, plus the meta-regime, brick pattern, conviction score, sizing multiplier, net PnL, R-multiple, hold duration, MFE/MAE, and entry alpha (bps). The tracker then aggregates these into `BranchStats` per branch:
+
+- `analyze_branch_performance()` — exit-action stats: win rate, avg R-multiple, expectancy, profit factor, avg hold duration, avg entry alpha (bps) per branch. Tells you whether `close_early_profit`, `close_flip`, `trail_stop`, etc. are actually adding value.
+- `analyze_entry_branch_performance()` — entry-action stats: was `enter_now` better than `wait_for_brick_close`?
+- `analyze_hypothesis_performance()` — PnL attributed back to specific hypothesis IDs, closing the loop with the Phase 9 hypothesis tracker.
+
+#### The regime × branch matrix
+
+`analyze_regime_branch_matrix()` returns a `RegimeBranchMatrix` — a `branch × regime` table of `BranchStats`. This is the killer view: a branch that looks bad overall might be excellent in `calm_trend` and terrible in `choppy_range`. The matrix surfaces this and enables **regime-conditional tuning** (e.g., "disable `trail_stop` in `choppy_range`, keep it in `calm_trend`").
+
+#### Threshold feedback for auto-tuning
+
+`get_threshold_feedback()` produces concrete, evidence-backed tuning recommendations by comparing each branch's actual avg R-multiple against its expected behavior. Each recommendation includes `current` value, `issue` description, `suggestion`, and `evidence` (n_trades + avg R):
+
+| Threshold | Issue detected | Suggested change |
+|---|---|---|
+| `stop_loss_pct` | avg R < -1.2 → SL too loose · avg R > -0.8 → SL too tight (cutting winners) | tighten to -0.8% / loosen to -1.2% |
+| `take_profit_pct` | native TP avg R < 0.3 → too tight | raise from 2.5% to 3.0% |
+| `early_profit_pct` | avg R < 0.5 → exiting before full profit | raise from 4.5% to 5.5% |
+| `fading_brick_count` | trail trades avg R < 0 → trail trigger too sensitive | increase from 2 to 3 adverse bricks |
+| `strong_conviction_threshold` | flip trades avg R < 0 → flipping on weak signals | raise from 0.7 to 0.8 |
+
+Feedback only fires when n_trades ≥ 5 per branch (statistical noise filter). These recommendations can be fed directly into a hypothesis proposal — closing the attribution → feedback → tuning loop.
+
+`get_decision_quality_report()` rolls everything up: branch stats + entry stats + regime matrix + hypothesis stats + threshold feedback + best/worst performing branches in one call.
+
+#### A/B testing framework
+
+`ABTestFramework.compare(config_a_name, config_a_returns, config_b_name, config_b_returns, significance_level=0.05)` runs two configs in parallel and compares them with proper statistics:
+
+- **Paired t-test** — are the mean daily returns statistically different?
+- **Diebold-Mariano test** — forecast accuracy comparison (the standard test in quant literature for predictive comparisons)
+- **Sharpe ratio comparison** — annualized Sharpe for each config
+
+Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), both p-values and t-stats. Requires n ≥ 10 returns before declaring significance (prevents spurious wins on tiny samples). Falls back to a normal approximation if `scipy` isn't installed.
+
+#### Signal window optimization
+
+`SignalWindowOptimizer.optimize_window(signals, price_data, windows=[5,10,15,20,30,45,60,90])` finds the optimal `signal_expiry_minutes` — how long after a Noble Trader heartbeat Hermes will still act on the signal. For each candidate window it simulates: "if we entered at the best price within N minutes of the signal, what would the PnL be?" Returns per-window `{n_signals, n_filled, avg_entry_alpha_bps, total_pnl}` plus `best_window` + `rationale`. Too short → miss opportunities; too long → act on stale signals.
+
+> **Attribution → feedback → tuning.** This was the biggest gap in the original Phase 9 self-learning loop. Combined with the hypothesis lifecycle (`proposed → backtested → shadow → live`), Hermes can now attribute PnL to specific decisions, generate tuning recommendations, A/B test the change, and promote only statistically significant winners.
+
+---
+
 ## What You Might Have Missed
 
 ### Items Added Beyond the Original Request

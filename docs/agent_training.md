@@ -999,6 +999,28 @@
   8. Autonomy tier allows autonomous execution
 - Key principle: soft limits (4-6) CAP size, they don't reject. Hard limits (1-3, 7-8) REJECT.
 
+**Advanced Circuit Breaker Manager (`src/hermes/portfolio/cb_manager.py`)**
+
+Beyond the per-asset volatility ladder and the portfolio-level risk CB above, Hermes ships a unified `CircuitBreakerManager` that covers the full risk-threshold table from roadmap §4 with **8 tiered categories**, **time-decay**, and **rolling windows**. All configuration lives under `circuit_breakers.manager` in `config/default.yaml`.
+
+The 8 categories and their default tiers:
+
+| Category | What it watches | Default tiers (threshold → action) |
+|---|---|---|
+| `portfolio_exposure` | Gross exposure as % of equity | 80% → reduce_25pct, 90% → reduce_50pct, 100% → block_entries, 150% → halt_all |
+| `position_size` | Absolute $ notional per position | $50k → reduce_25pct, $75k → reduce_50pct, $100k → block_entries |
+| `daily_loss` | Absolute $ daily loss | $5k → reduce_50pct, $10k → block_entries, $15k → halt_all |
+| `var` | Absolute $ VaR (1-day, 99%) | $50k → reduce_50pct, $100k → block_entries |
+| `drawdown` | Portfolio drawdown % from peak equity | 15% → reduce_50pct, 20% → block_entries, 25% → liquidate |
+| `funding_rate` | Daily funding cost in $ for crypto perps | $50/day → temp_block, $200/day → block_entries |
+| `consecutive_losses` | Rolling 24h: consecutive losing trades | 3 → reduce_50pct, 5 → block_entries |
+| `trip_frequency` | Rolling 24h: number of CB trips | 5 → reduce_50pct, 10 → halt_all (system unstable) |
+
+- **7 configurable actions:** `reduce_25pct`, `reduce_50pct`, `temp_block`, `block_entries`, `tighten_stops`, `halt_all`, `liquidate`. Each tier escalates severity: small breaches get a soft response (reduce), only severe breaches trigger hard actions (halt, liquidate).
+- **Time-decay (`cooldown_sec`):** every tier has a cooldown. When a breaker trips, `expires_at = trip_time + cooldown_sec`. The manager's `evaluate()` step automatically transitions `tripped → expired` once the cooldown elapses, so transient conditions (a 30-minute funding spike, a 4-hour drawdown blip) self-heal without operator intervention. `cooldown_sec: 0` means manual-clear only.
+- **Rolling windows (`RollingWindowTracker`):** a `deque`-backed time-windowed counter that supports `consecutive_losses` (resets on a win) and `trip_frequency` (counts CB trips in the trailing 24h). Exposes `add()`, `sum()`, `count()`, `recent_events(within_sec)`.
+- **Layered, not replacing:** this manager coexists with `circuit_breakers.py` (per-asset volatility + portfolio DD/VaR) and `risk_gate.py` (the 8 pre-trade checks above). It adds new categories + time-decay; the original breakers remain the fast-path pre-trade gate.
+
 **References:**
 - Hermes roadmap §4 (Circuit Breakers)
 - *Risk Management and Financial Institutions* — John Hull (Wiley, 5th ed.)
@@ -1007,8 +1029,11 @@
 **Hermes Exercise:**
 - Read `src/hermes/portfolio/circuit_breakers.py` — VolatilityCircuitBreaker, RiskCircuitBreaker, KillSwitch
 - Read `src/hermes/portfolio/risk_gate.py` — RiskGate (8 checks)
+- Read `src/hermes/portfolio/cb_manager.py` — CircuitBreakerManager, RollingWindowTracker (8 categories + time-decay)
 - Run `pytest tests/test_phase4.py -k circuit -v`
+- Run `pytest tests/test_cb_manager.py -v` (42 tests covering tiers, time-decay, rolling windows)
 - Review risk decisions: `SELECT approved, limits_hit, reason FROM risk_decisions ORDER BY ts DESC LIMIT 20`
+- Inspect `config/default.yaml` → `circuit_breakers.manager` to see all 8 categories configured
 
 ---
 
@@ -1305,16 +1330,37 @@
   -                              ↗ retired
 - Auto-rollback: if promoted config underperforms in live for 14 days → rollback
 
+**Decision-branch attribution & threshold feedback (`src/hermes/agent/attribution.py`)**
+
+The "Attribute" step above originally decomposed PnL by {strategy, regime, asset, venue}. The `DecisionBranchTracker` extends this to **decision branches** — answering "which `AgentAction` branches actually make money?":
+
+- Every trade gets a `TradeDecisionRecord` capturing the entry + exit `AgentAction`, meta-regime, conviction score, PnL, R-multiple, hold duration, MFE/MAE, and entry alpha.
+- `analyze_branch_performance()` produces per-branch `BranchStats` (win rate, avg R, expectancy, profit factor) — tells you whether `close_early_profit`, `close_flip`, `trail_stop`, etc. are adding value or destroying it.
+- `analyze_regime_branch_matrix()` builds the `branch × regime` matrix — a branch that's bad overall might be excellent in `calm_trend` and terrible in `choppy_range`. This enables **regime-conditional tuning**.
+- `get_threshold_feedback()` generates concrete tuning recommendations by comparing each branch's actual avg R-multiple against its expected behavior:
+  - `stop_loss_pct` — too loose (avg R < -1.2) or too tight (avg R > -0.8)
+  - `take_profit_pct` — native TP too tight (avg R < 0.3)
+  - `early_profit_pct` — exiting before full profit (avg R < 0.5)
+  - `fading_brick_count` — trail trigger too sensitive (trail avg R < 0)
+  - `strong_conviction_threshold` — flip not working (flip avg R < 0)
+
+  Each recommendation includes `current` value, `issue`, `suggestion`, and `evidence` (n_trades + avg R). Feedback only fires when n_trades ≥ 5 per branch.
+
+This closes the **attribution → feedback → tuning** loop: instead of guessing at threshold changes, the agent generates evidence-backed recommendations that can be fed directly into a hypothesis proposal (`HypothesisTracker`), A/B tested (`ABTestFramework` — Diebold-Mariano + paired t-test), and promoted only if statistically significant. `SignalWindowOptimizer` applies the same data-driven approach to the `signal_expiry_minutes` parameter.
+
 **References:**
 - *Advances in Financial Machine Learning* — López de Prado, Chapter 11
 - *Metalearning* — https://en.wikipedia.org/wiki/Meta_learning_(computer_science)
 - Hermes source: `src/hermes/agent/learning.py` — SelfLearningLoop, HypothesisTracker
+- Hermes source: `src/hermes/agent/attribution.py` — DecisionBranchTracker, ABTestFramework, SignalWindowOptimizer
 
 **Hermes Exercise:**
 - Run EOD analysis: `platform agent --eod`
 - List hypotheses: `platform agent --list-hypotheses`
 - Query hypotheses: `SELECT hypothesis_id, status, confidence, hypothesis FROM hermes_hypotheses ORDER BY ts_created DESC`
 - Review the hypothesis lifecycle in DuckDB
+- Read `src/hermes/agent/attribution.py` and trace how `get_threshold_feedback()` converts branch stats into tuning recommendations
+- Run `pytest tests/test_attribution.py -v` (16 tests covering branch stats, regime matrix, threshold feedback, A/B testing, signal window optimization)
 
 ---
 
@@ -1744,8 +1790,8 @@
 | Onboarding | `docs/agent_onboarding.md` | 845-line operational guide |
 | DR Runbook | `docs/dr_runbook.md` | 7 disaster recovery scenarios |
 | Worklog | `worklog.md` | Development log by phase |
-| Source code | `src/hermes/` | 48 Python files across 12 packages |
-| Tests | `tests/` | 239 tests across 12 test files |
+| Source code | `src/hermes/` | 50 Python files across 12 packages (48 core + 2 enhancements: `cb_manager.py`, `attribution.py`) |
+| Tests | `tests/` | 297 tests across 14 test files |
 | Config | `config/default.yaml` | All configurable parameters |
 | Secrets | `.env` (from `.env.example`) | All credentials (never in git) |
 | DuckDB | `data/hermes.duckdb` | 23 tables, 8 migrations |
