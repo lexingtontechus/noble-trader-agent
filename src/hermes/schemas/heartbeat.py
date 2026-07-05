@@ -30,7 +30,7 @@ class NobleTraderHeartbeat(BaseModel):
 
     # === Identity ===
     type: Literal["heartbeat"] = "heartbeat"
-    symbol: str = Field(..., min_length=1, description="Trading symbol, e.g. 'BTC', 'AAPL'")
+    symbol: str = Field(..., min_length=1, description="Trading symbol, e.g. 'BTC', 'BTC/USD', 'SOL/USD'")
     ts: int = Field(..., description="Unix ms timestamp from upstream")
 
     # === Upstream signal ===

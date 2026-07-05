@@ -15,14 +15,16 @@ Run with:
 
 from __future__ import annotations
 
+import hmac
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from hermes import __version__
 from hermes.core.config import (
@@ -30,6 +32,7 @@ from hermes.core.config import (
     get_config_hash,
     redact_config_for_display,
 )
+from hermes.core.secrets import get_secret_or_none
 from hermes.web.status import check_all, get_ingest_stats, get_recent_heartbeats
 
 log = structlog.get_logger(__name__)
@@ -62,6 +65,30 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
     global _config, _monitor
     _config = config
     _monitor = monitor
+
+    # Add session middleware for browser auth (signed cookies).
+    # The session_secret is read from .env; fall back to a dev-only secret
+    # if missing so `platform dashboard` still starts for first-time users.
+    auth_cfg = config.auth if hasattr(config, "auth") else {}
+    auth_enabled = auth_cfg.get("enabled", True) if isinstance(auth_cfg, dict) else True
+    session_secret = (
+        auth_cfg.get("session_secret") if isinstance(auth_cfg, dict) else None
+    ) or get_secret_or_none("hermes.session_secret") or "dev-only-secret-change-me"
+    if session_secret == "dev-only-secret-change-me":
+        log.warning("auth_using_dev_session_secret", note="set HERMES_SESSION_SECRET in .env")
+
+    # SessionMiddleware must be added BEFORE any route that uses request.session.
+    # Max age defaults to 24h; can be overridden via config.
+    max_age = auth_cfg.get("session_max_age_sec", 86400) if isinstance(auth_cfg, dict) else 86400
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=session_secret,
+        max_age=max_age,
+        same_site="strict",     # cookie only sent on same-site requests
+        https_only=False,       # set True if serving over HTTPS (recommended in prod)
+    )
+
+    log.info("auth_middleware_added", enabled=auth_enabled, max_age_sec=max_age)
     return app
 
 
@@ -71,6 +98,136 @@ def get_config() -> HermesConfig:
             "App not configured. Call create_app(config) before serving requests."
         )
     return _config
+
+
+# ============================================================
+# Auth — dual-path: session cookie (browser) OR bearer token (agent)
+# ============================================================
+
+
+def _get_auth_settings() -> dict[str, Any]:
+    """Read auth settings from config + .env. Cached per-request via lru not used
+    because settings can change between requests in dev."""
+    cfg = get_config()
+    auth_cfg = getattr(cfg, "auth", {}) or {}
+    if not isinstance(auth_cfg, dict):
+        auth_cfg = {}
+    return {
+        "enabled": auth_cfg.get("enabled", True),
+        "admin_username": (
+            auth_cfg.get("admin_username")
+            or get_secret_or_none("hermes.admin_username")
+            or "admin"
+        ),
+        "admin_password": (
+            auth_cfg.get("admin_password")
+            or get_secret_or_none("hermes.admin_password")
+            or "change-me"
+        ),
+        "agent_token": (
+            auth_cfg.get("agent_token")
+            or get_secret_or_none("hermes.agent_token")
+            or ""
+        ),
+    }
+
+
+async def require_auth(request: Request, authorization: str | None = Header(None)) -> dict[str, Any]:
+    """FastAPI dependency — authenticates every protected route.
+
+    Two paths:
+      1. Browser: reads signed session cookie set by /auth/login.
+      2. Agent: reads `Authorization: Bearer <token>` header.
+
+    Returns the authenticated principal as {"username": str, "role": "admin"|"agent"}.
+    Raises HTTPException(401) if neither path succeeds.
+    """
+    settings = _get_auth_settings()
+    if not settings["enabled"]:
+        return {"username": "anonymous", "role": "admin"}
+
+    # Path 1: session cookie
+    user = request.session.get("user") if hasattr(request, "session") else None
+    if user:
+        return user
+
+    # Path 2: bearer token (agent)
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        # Use constant-time comparison to prevent timing attacks
+        if settings["agent_token"] and hmac.compare_digest(token, settings["agent_token"]):
+            return {"username": "agent", "role": "agent"}
+
+    raise HTTPException(
+        status_code=401,
+        detail="Not authenticated — log in via /auth/login or send a valid Bearer token.",
+        headers={"WWW-Authenticate": 'Bearer realm="hermes"'},
+    )
+
+
+# === Auth routes ===
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request) -> JSONResponse:
+    """Log in with username + password. Sets a session cookie on success.
+
+    Body: {"username": "...", "password": "..."}
+    """
+    settings = _get_auth_settings()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    username = body.get("username", "")
+    password = body.get("password", "")
+
+    # Constant-time comparison on both fields to prevent username enumeration via timing
+    user_ok = hmac.compare_digest(username, settings["admin_username"])
+    pass_ok = hmac.compare_digest(password, settings["admin_password"])
+
+    if not (user_ok and pass_ok):
+        log.warning("auth_login_failed", username=username, ip=request.client.host if request.client else "?")
+        return JSONResponse({"error": "invalid username or password"}, status_code=401)
+
+    request.session["user"] = {"username": username, "role": "admin"}
+    log.info("auth_login_ok", username=username, ip=request.client.host if request.client else "?")
+    return JSONResponse({"ok": True, "user": {"username": username, "role": "admin"}})
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request) -> JSONResponse:
+    """Clear the session cookie."""
+    user = request.session.get("user") if hasattr(request, "session") else None
+    request.session.clear()
+    log.info("auth_logout", username=user.get("username") if user else "?")
+    return JSONResponse({"ok": True})
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request, authorization: str | None = Header(None)) -> JSONResponse:
+    """Return the current authenticated principal, or 401.
+
+    Used by the SPA on app load to check if the user is already logged in
+    (cookie sent automatically by the browser).
+    """
+    settings = _get_auth_settings()
+    if not settings["enabled"]:
+        return JSONResponse({"username": "anonymous", "role": "admin"})
+
+    # Try session cookie
+    user = request.session.get("user") if hasattr(request, "session") else None
+    if user:
+        return JSONResponse(user)
+
+    # Try bearer token (agent)
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        if settings["agent_token"] and hmac.compare_digest(token, settings["agent_token"]):
+            return JSONResponse({"username": "agent", "role": "agent"})
+
+    return JSONResponse({"error": "not authenticated"}, status_code=401)
 
 
 # === Routes ===
@@ -100,14 +257,47 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/config", response_class=HTMLResponse)
 async def config_page(request: Request) -> HTMLResponse:
-    """Config viewer page (secrets redacted)."""
+    """Config viewer page (secrets redacted).
+
+    Only the operator-tunable sections are surfaced in the form layout —
+    the rest (venues, upstream, duckdb, hermes_redis, notifications, logging)
+    stay in the raw JSON block at the bottom for completeness.
+    """
     config = get_config()
     redacted = redact_config_for_display(config)
 
-    # Pretty-print the JSON for display
+    # Sections shown as editable-style form cards (filtered list).
+    FORM_SECTIONS = [
+        "portfolio",
+        "account",
+        "asset",
+        "signal",
+        "entry",
+        "execution",
+        "position_management",
+        "circuit_breakers",
+        "autonomy",
+        "meta_regime",
+        "renko",
+    ]
+
     import json
 
     config_json = json.dumps(redacted, indent=2, default=str)
+
+    # Build (section_name, fields) pairs where fields is a list of
+    # {key, value, is_secret, is_nested} dicts. We flatten one level deep
+    # so nested dicts (e.g. portfolio.target_allocation) render as labelled
+    # sub-forms rather than opaque JSON blobs.
+    form_sections: list[dict[str, Any]] = []
+    for section_name in FORM_SECTIONS:
+        section_data = redacted.get(section_name)
+        if section_data is None:
+            continue
+        form_sections.append({
+            "name": section_name,
+            "data": section_data,
+        })
 
     return templates.TemplateResponse(
         request,
@@ -117,6 +307,7 @@ async def config_page(request: Request) -> HTMLResponse:
             "config_hash": get_config_hash(config),
             "environment": config.environment,
             "config_json": config_json,
+            "form_sections": form_sections,
         },
     )
 
@@ -172,7 +363,7 @@ async def health() -> JSONResponse:
 
 
 @app.get("/api/status")
-async def api_status() -> JSONResponse:
+async def api_status(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON status endpoint (for programmatic access)."""
     config = get_config()
     status = await check_all(config)
@@ -191,7 +382,7 @@ async def api_status() -> JSONResponse:
 
 
 @app.get("/api/heartbeats")
-async def api_heartbeats(limit: int = 50) -> JSONResponse:
+async def api_heartbeats(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON heartbeats endpoint (for programmatic access)."""
     config = get_config()
     heartbeats = get_recent_heartbeats(config, limit=limit)
@@ -249,7 +440,7 @@ async def monitor_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/monitor/events")
-async def api_monitor_events(limit: int = 50) -> JSONResponse:
+async def api_monitor_events(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON monitor events endpoint."""
     config = get_config()
     from hermes.web.status import get_recent_monitor_events
@@ -306,7 +497,7 @@ async def portfolio_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/portfolio")
-async def api_portfolio() -> JSONResponse:
+async def api_portfolio(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON portfolio metrics endpoint."""
     import json as _json
 
@@ -428,7 +619,7 @@ async def agent_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/hypotheses")
-async def api_hypotheses(limit: int = 50) -> JSONResponse:
+async def api_hypotheses(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON hypotheses endpoint."""
     import json as _json
 
@@ -445,7 +636,7 @@ async def api_hypotheses(limit: int = 50) -> JSONResponse:
 
 
 @app.get("/api/simulations")
-async def api_simulations(limit: int = 50) -> JSONResponse:
+async def api_simulations(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON simulation runs endpoint."""
     import json as _json
 
@@ -462,7 +653,7 @@ async def api_simulations(limit: int = 50) -> JSONResponse:
 
 
 @app.get("/api/backtest/runs")
-async def api_backtest_runs(limit: int = 20) -> JSONResponse:
+async def api_backtest_runs(limit: int = 20, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON backtest runs endpoint."""
     import json as _json
 
@@ -479,7 +670,7 @@ async def api_backtest_runs(limit: int = 20) -> JSONResponse:
 
 
 @app.get("/api/pnl/tear_sheet")
-async def api_pnl_tear_sheet() -> JSONResponse:
+async def api_pnl_tear_sheet(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON tear sheet endpoint."""
     import json as _json
 
@@ -493,7 +684,7 @@ async def api_pnl_tear_sheet() -> JSONResponse:
 
 
 @app.get("/api/pnl/history")
-async def api_pnl_history(limit: int = 100) -> JSONResponse:
+async def api_pnl_history(limit: int = 100, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON PnL history endpoint."""
     import json as _json
 
@@ -510,7 +701,7 @@ async def api_pnl_history(limit: int = 100) -> JSONResponse:
 
 
 @app.get("/api/orders")
-async def api_orders(limit: int = 50) -> JSONResponse:
+async def api_orders(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON orders endpoint."""
     import json as _json
 
@@ -527,7 +718,7 @@ async def api_orders(limit: int = 50) -> JSONResponse:
 
 
 @app.get("/api/fills")
-async def api_fills(limit: int = 50) -> JSONResponse:
+async def api_fills(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON fills endpoint."""
     import json as _json
 
@@ -544,7 +735,7 @@ async def api_fills(limit: int = 50) -> JSONResponse:
 
 
 @app.get("/api/risk/decisions")
-async def api_risk_decisions(limit: int = 50) -> JSONResponse:
+async def api_risk_decisions(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON risk decisions endpoint."""
     import json as _json
 
@@ -561,7 +752,7 @@ async def api_risk_decisions(limit: int = 50) -> JSONResponse:
 
 
 @app.get("/api/signals")
-async def api_signals(limit: int = 50) -> JSONResponse:
+async def api_signals(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON blended signals endpoint."""
     import json as _json
 
@@ -575,3 +766,165 @@ async def api_signals(limit: int = 50) -> JSONResponse:
             default=str,
         ))
     )
+
+
+# ============================================================
+# Symbol Registry — /symbols page + /api/symbols CRUD
+# ============================================================
+
+
+@app.get("/symbols", response_class=HTMLResponse)
+async def symbols_page(request: Request) -> HTMLResponse:
+    """Symbol registry page — list symbols with active toggles and add form."""
+    config = get_config()
+    from hermes.db.symbol_registry import list_symbols
+
+    rows = list_symbols(config)
+    venues = {name: v.asset_classes for name, v in config.venues.items() if v.enabled}
+
+    return templates.TemplateResponse(
+        request,
+        "symbols.html",
+        {
+            "version": __version__,
+            "config_hash": get_config_hash(config),
+            "environment": config.environment,
+            "symbols": [r.to_dict() for r in rows],
+            "venues": venues,
+        },
+    )
+
+
+@app.get("/api/symbols")
+async def api_symbols_list(
+    active_only: bool = False,
+    venue: str | None = None,
+    asset_class: str | None = None,
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """List symbols in the registry (JSON)."""
+    import json as _json
+
+    config = get_config()
+    from hermes.db.symbol_registry import list_symbols
+
+    rows = list_symbols(
+        config, active_only=active_only, venue=venue, asset_class=asset_class,
+    )
+    return JSONResponse(
+        content=_json.loads(_json.dumps(
+            {"count": len(rows), "symbols": [r.to_dict() for r in rows]},
+            default=str,
+        ))
+    )
+
+
+@app.get("/api/symbols/{symbol}")
+async def api_symbols_get(symbol: str, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Fetch a single symbol by name."""
+    import json as _json
+
+    config = get_config()
+    from hermes.db.symbol_registry import get_symbol
+
+    row = get_symbol(config, symbol)
+    if row is None:
+        return JSONResponse(
+            {"error": f"Symbol not found: {symbol}"}, status_code=404,
+        )
+    return JSONResponse(content=_json.loads(_json.dumps(row.to_dict(), default=str)))
+
+
+@app.post("/api/symbols")
+async def api_symbols_add(request: Request, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Add a new symbol. Body: {symbol, venue, asset_class, base_ccy?, ...}."""
+    config = get_config()
+    from hermes.db.symbol_registry import add_symbol
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    required = ("symbol", "venue", "asset_class")
+    missing = [f for f in required if not body.get(f)]
+    if missing:
+        return JSONResponse(
+            {"error": f"missing required field(s): {missing}"}, status_code=400,
+        )
+
+    try:
+        row = add_symbol(
+            config,
+            body["symbol"],
+            body["venue"],
+            body["asset_class"],
+            base_ccy=body.get("base_ccy"),
+            quote_ccy=body.get("quote_ccy", "USD"),
+            tick_size=body.get("tick_size"),
+            min_notional=body.get("min_notional"),
+            max_leverage=body.get("max_leverage"),
+            added_by="dashboard",
+            rationale=body.get("rationale"),
+            activate=not body.get("inactive", False),
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    return JSONResponse(row.to_dict(), status_code=201)
+
+
+@app.post("/api/symbols/{symbol}/activate")
+async def api_symbols_activate(symbol: str, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Activate a previously deactivated symbol."""
+    config = get_config()
+    from hermes.db.symbol_registry import activate_symbol
+
+    try:
+        row = activate_symbol(config, symbol, activated_by="dashboard")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return JSONResponse(row.to_dict())
+
+
+@app.post("/api/symbols/{symbol}/deactivate")
+async def api_symbols_deactivate(request: Request, symbol: str, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Deactivate a symbol (soft-delete). Optional body: {reason: ...}."""
+    config = get_config()
+    from hermes.db.symbol_registry import deactivate_symbol
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reason = body.get("reason") if isinstance(body, dict) else None
+
+    try:
+        row = deactivate_symbol(
+            config, symbol, deactivated_by="dashboard", rationale=reason,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return JSONResponse(row.to_dict())
+
+
+@app.post("/api/symbols/{symbol}/validate")
+async def api_symbols_validate(symbol: str, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Live-test that the venue can fetch a price for this symbol."""
+    config = get_config()
+    from hermes.db.symbol_registry import validate_symbol
+
+    try:
+        row = validate_symbol(config, symbol)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return JSONResponse(row.to_dict())
+
+
+@app.post("/api/symbols/sync")
+async def api_symbols_sync(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """Seed the symbols table from config/default.yaml.initial_symbols."""
+    config = get_config()
+    from hermes.db.symbol_registry import seed_from_config
+
+    inserted = seed_from_config(config, added_by="dashboard")
+    return JSONResponse({"inserted": inserted})

@@ -36,6 +36,40 @@ from hermes.core.logging import setup_logging
 log = structlog.get_logger(__name__)
 
 
+def _resolve_symbols(symbols_arg: str | None, config: HermesConfig) -> list[str]:
+    """Resolve a --symbols CLI arg into a concrete list.
+
+    If `symbols_arg` is provided, it's split on commas and returned as-is
+    (CLI overrides everything). If omitted, the active symbols from the
+    DuckDB `symbols` table are returned. If the table doesn't exist yet
+    (pre-init), falls back to config.portfolio.initial_symbols.
+
+    Always returns at least an empty list — callers should validate that
+    the list is non-empty before proceeding.
+    """
+    if symbols_arg:
+        return [s.strip() for s in symbols_arg.split(",") if s.strip()]
+
+    # Try the DB-backed symbol registry first.
+    try:
+        from hermes.db.symbol_registry import list_active_symbols
+        active = list_active_symbols(config)
+        if active:
+            return active
+    except Exception as e:
+        log.debug("symbols_db_unavailable", error=str(e))
+
+    # Fallback: read from config (pre-init or empty DB).
+    fallback = [
+        entry["symbol"]
+        for entry in config.portfolio.initial_symbols
+        if entry.get("symbol")
+    ]
+    if fallback:
+        log.info("symbols_fallback_to_config", count=len(fallback))
+    return fallback
+
+
 @click.group()
 @click.version_option(__version__, prog_name="hermes")
 @click.option(
@@ -161,6 +195,250 @@ def config_show(ctx: click.Context) -> None:
     config = load_config(config_path)
     redacted = redact_config_for_display(config)
     click.echo(json.dumps(redacted, indent=2, default=str))
+
+
+# ============================================================
+# platform symbols — runtime-mutable symbol registry
+# ============================================================
+
+
+@cli.group()
+def symbols() -> None:
+    """Manage the symbol registry (DuckDB-backed).
+
+    The `symbols` table is the source of truth for the active trading
+    universe. Symbols can be added, deactivated, and validated without
+    editing config/default.yaml.
+
+    \b
+    Examples:
+      platform symbols list
+      platform symbols add BTC/USD --venue alpaca --asset-class crypto
+      platform symbols deactivate GLD --reason "switched to crypto-only"
+      platform symbols validate BTC/USD
+      platform symbols sync     # one-time seed from default.yaml
+    """
+    pass
+
+
+@symbols.command(name="list")
+@click.option(
+    "--active-only", is_flag=True, default=False,
+    help="Show only active symbols (default: show all).",
+)
+@click.option(
+    "--venue", default=None,
+    help="Filter by venue (alpaca, hyperliquid, ...).",
+)
+@click.option(
+    "--asset-class", default=None,
+    help="Filter by asset class (crypto, equities, commodities, forex).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, default=False,
+    help="Emit JSON instead of a table (for piping into other tools).",
+)
+@click.pass_context
+def symbols_list(
+    ctx: click.Context,
+    active_only: bool,
+    venue: str | None,
+    asset_class: str | None,
+    as_json: bool,
+) -> None:
+    """List symbols in the registry."""
+    from hermes.db.symbol_registry import list_symbols
+
+    # In --json mode, silence structlog before load_config() so the output
+    # is parseable JSON (load_config logs INFO-level messages by default).
+    if as_json:
+        setup_logging(level="CRITICAL", format="text", output="stdout")
+    config = load_config(ctx.obj.get("config_path"))
+
+    rows = list_symbols(
+        config, active_only=active_only, venue=venue, asset_class=asset_class,
+    )
+
+    if as_json:
+        click.echo(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
+        return
+
+    if not rows:
+        click.echo("No symbols found. Run `platform symbols sync` to seed from config.")
+        return
+
+    click.echo(
+        f"{'Symbol':<14} {'Venue':<14} {'Class':<12} "
+        f"{'Active':<7} {'Validated':<10} {'Last Price':>12}  Rationale"
+    )
+    click.echo("-" * 100)
+    for r in rows:
+        active = "✓ yes" if r.is_active else "✗ no"
+        validated = (r.validation_status or "pending")[:10]
+        price = f"{r.last_price:.4f}" if r.last_price else "-"
+        rationale = (r.rationale or "")[:40]
+        click.echo(
+            f"{(r.symbol or ''):<14} {(r.venue or ''):<14} "
+            f"{(r.asset_class or ''):<12} {active:<7} {validated:<10} "
+            f"{price:>12}  {rationale}"
+        )
+    click.echo(f"\nTotal: {len(rows)} symbol(s)")
+
+
+@symbols.command(name="add")
+@click.argument("symbol")
+@click.option("--venue", required=True, help="Venue key (alpaca, hyperliquid, ...).")
+@click.option(
+    "--asset-class", "asset_class", required=True,
+    help="Asset class (crypto, equities, commodities, forex).",
+)
+@click.option("--base-ccy", default=None, help="Base currency (default: derived from symbol).")
+@click.option("--quote-ccy", default="USD", help="Quote currency (default: USD).")
+@click.option("--tick-size", type=float, default=None, help="Minimum price increment.")
+@click.option("--min-notional", type=float, default=None, help="Minimum order notional in USD.")
+@click.option("--max-leverage", type=float, default=None, help="Max leverage allowed by venue.")
+@click.option("--rationale", default=None, help="Free-form note explaining why this symbol was added.")
+@click.option(
+    "--inactive", is_flag=True, default=False,
+    help="Add the symbol in inactive state (default: active).",
+)
+@click.pass_context
+def symbols_add(
+    ctx: click.Context,
+    symbol: str,
+    venue: str,
+    asset_class: str,
+    base_ccy: str | None,
+    quote_ccy: str,
+    tick_size: float | None,
+    min_notional: float | None,
+    max_leverage: float | None,
+    rationale: str | None,
+    inactive: bool,
+) -> None:
+    """Add a new symbol to the registry (or update mutable fields if it exists)."""
+    from hermes.db.symbol_registry import add_symbol
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        row = add_symbol(
+            config, symbol, venue, asset_class,
+            base_ccy=base_ccy, quote_ccy=quote_ccy,
+            tick_size=tick_size, min_notional=min_notional, max_leverage=max_leverage,
+            added_by="cli",
+            rationale=rationale,
+            activate=not inactive,
+        )
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"✓ Added symbol: {row.symbol}")
+    click.echo(f"    venue={row.venue}  asset_class={row.asset_class}")
+    click.echo(f"    active={row.is_active}  base_ccy={row.base_ccy}")
+    if rationale:
+        click.echo(f"    rationale: {rationale}")
+    click.echo("")
+    click.echo("  Next: validate the symbol with:")
+    click.echo(f"    platform symbols validate {row.symbol}")
+
+
+@symbols.command(name="activate")
+@click.argument("symbol")
+@click.pass_context
+def symbols_activate(ctx: click.Context, symbol: str) -> None:
+    """Re-enable a previously deactivated symbol."""
+    from hermes.db.symbol_registry import activate_symbol
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        row = activate_symbol(config, symbol, activated_by="cli")
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+    click.echo(f"✓ Activated: {row.symbol}")
+
+
+@symbols.command(name="deactivate")
+@click.argument("symbol")
+@click.option("--reason", default=None, help="Why this symbol is being deactivated.")
+@click.pass_context
+def symbols_deactivate(
+    ctx: click.Context, symbol: str, reason: str | None,
+) -> None:
+    """Soft-delete a symbol (sets is_active = FALSE). Historical rows are preserved."""
+    from hermes.db.symbol_registry import deactivate_symbol
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        row = deactivate_symbol(config, symbol, deactivated_by="cli", rationale=reason)
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+    click.echo(f"✓ Deactivated: {row.symbol}")
+    if reason:
+        click.echo(f"    reason: {reason}")
+
+
+@symbols.command(name="validate")
+@click.argument("symbol")
+@click.pass_context
+def symbols_validate(ctx: click.Context, symbol: str) -> None:
+    """Live-test that the venue can fetch a price for this symbol."""
+    from hermes.db.symbol_registry import validate_symbol
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        row = validate_symbol(config, symbol)
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    if row.validation_status == "ok":
+        click.echo(f"✓ {row.symbol}: valid (last_price={row.last_price})")
+    else:
+        click.echo(
+            f"✗ {row.symbol}: {row.validation_status} — {row.validation_error}",
+            err=True,
+        )
+        sys.exit(1)
+
+
+@symbols.command(name="sync")
+@click.option(
+    "--overwrite-active", is_flag=True, default=False,
+    help="Re-activate symbols present in config that are currently inactive.",
+)
+@click.pass_context
+def symbols_sync(ctx: click.Context, overwrite_active: bool) -> None:
+    """Seed the symbols table from config/default.yaml.initial_symbols.
+
+    Idempotent — only inserts symbols that don't yet exist in the table.
+    Run this once after `platform init` to bootstrap the registry.
+    """
+    from hermes.db.symbol_registry import seed_from_config
+
+    config = load_config(ctx.obj.get("config_path"))
+    inserted = seed_from_config(config, added_by="cli", overwrite_active=overwrite_active)
+    click.echo(f"✓ Sync complete: {inserted} new symbol(s) inserted from config.")
+
+
+@symbols.command(name="show")
+@click.argument("symbol")
+@click.pass_context
+def symbols_show(ctx: click.Context, symbol: str) -> None:
+    """Show full details for one symbol."""
+    from hermes.db.symbol_registry import get_symbol
+
+    # Silence structlog before load_config() so the JSON output is parseable.
+    setup_logging(level="CRITICAL", format="text", output="stdout")
+    config = load_config(ctx.obj.get("config_path"))
+    row = get_symbol(config, symbol)
+    if row is None:
+        click.echo(f"✗ Symbol not found: {symbol}", err=True)
+        sys.exit(1)
+    click.echo(json.dumps(row.to_dict(), indent=2, default=str))
+
 
 
 @cli.command()
@@ -414,8 +692,9 @@ def dashboard(ctx: click.Context, host: str, port: int, reload: bool) -> None:
 @cli.command()
 @click.option(
     "--symbols",
-    required=True,
-    help="Comma-separated list of symbols (e.g., BTC-PERP,AAPL)",
+    required=False,
+    default=None,
+    help="Comma-separated list of symbols (default: all active symbols from the registry).",
 )
 @click.option(
     "--venues",
@@ -430,7 +709,7 @@ def stream(ctx: click.Context, symbols: str, venues: str | None) -> None:
     writes to Parquet (historical) and publishes to internal Redis (hot tier).
 
     Example:
-      platform stream --symbols BTC-PERP,AAPL
+      platform stream --symbols BTC/USD,SOL/USD,BTC-PERP
       platform stream --symbols BTC-PERP --venues hyperliquid
     """
     import asyncio
@@ -444,7 +723,7 @@ def stream(ctx: click.Context, symbols: str, venues: str | None) -> None:
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
     venue_list = venues.split(",") if venues else [
         v for v, vc in config.venues.items() if vc.enabled
     ]
@@ -519,8 +798,9 @@ def stream(ctx: click.Context, symbols: str, venues: str | None) -> None:
 @cli.command()
 @click.option(
     "--symbols",
-    required=True,
-    help="Comma-separated list of symbols (e.g., BTC-PERP,AAPL)",
+    required=False,
+    default=None,
+    help="Comma-separated list of symbols (default: all active symbols from the registry).",
 )
 @click.option(
     "--venues",
@@ -536,7 +816,7 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
     correlation, funding), and writes events to DuckDB + Redis.
 
     Example:
-      platform monitor --symbols BTC-PERP,AAPL
+      platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP
     """
     import asyncio
     import signal as signal_module
@@ -550,7 +830,7 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
     venue_list = venues.split(",") if venues else [
         v for v, vc in config.venues.items() if vc.enabled
     ]
@@ -672,7 +952,7 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
 @click.option(
     "--symbol",
     required=True,
-    help="Symbol to backfill (e.g., BTC-PERP, AAPL)",
+    help="Symbol to backfill (e.g., BTC-PERP, BTC/USD, SOL/USD)",
 )
 @click.option(
     "--venue",
@@ -767,8 +1047,9 @@ def backfill_market(ctx: click.Context, symbol: str, venue: str, timeframe: str,
 @cli.command()
 @click.option(
     "--symbols",
-    required=True,
-    help="Comma-separated list of symbols (e.g., BTC-PERP,AAPL)",
+    required=False,
+    default=None,
+    help="Comma-separated list of symbols (default: all active symbols from the registry).",
 )
 @click.option(
     "--equity",
@@ -788,7 +1069,7 @@ def synthesize(ctx: click.Context, symbols: str, equity: float) -> None:
     signal.blended.{symbol} Redis channel.
 
     Example:
-      platform synthesize --symbols BTC-PERP,AAPL --equity 100000
+      platform synthesize --symbols BTC/USD,SOL/USD,BTC-PERP --equity 100000
     """
     import asyncio
     import signal as signal_module
@@ -802,7 +1083,7 @@ def synthesize(ctx: click.Context, symbols: str, equity: float) -> None:
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
 
     click.echo(f"Starting L4 Signal Synthesizer...")
     click.echo(f"  Symbols: {symbol_list}")
@@ -1433,8 +1714,9 @@ def pnl(ctx: click.Context, equity: float) -> None:
 @cli.command()
 @click.option(
     "--symbols",
-    required=True,
-    help="Comma-separated list of symbols (e.g., BTC-PERP,AAPL)",
+    required=False,
+    default=None,
+    help="Comma-separated list of symbols (default: all active symbols from the registry).",
 )
 @click.option(
     "--days-back",
@@ -1479,7 +1761,7 @@ def backtest(ctx: click.Context, symbols: str, days_back: int, equity: float, sp
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
 
@@ -1585,7 +1867,7 @@ def rigor(ctx: click.Context, symbols: str, days_back: int) -> None:
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
 
     click.echo(f"Running statistical rigor checks...")
     click.echo(f"  Symbols: {symbol_list}")
@@ -1703,7 +1985,7 @@ def optimize(ctx: click.Context, symbols: str, days_back: int, n_trials: int) ->
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
 
     click.echo(f"Starting entry/execution optimization sweep...")
     click.echo(f"  Symbols:  {symbol_list}")
@@ -1788,7 +2070,7 @@ def shadow(ctx: click.Context, symbols: str, duration_days: int) -> None:
         file_path=config.logging.get("file_path"),
     )
 
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = _resolve_symbols(symbols, config)
 
     click.echo(f"Starting shadow mode...")
     click.echo(f"  Symbols:       {symbol_list}")
@@ -2297,6 +2579,19 @@ def _init_duckdb(config: HermesConfig) -> bool:
             )
             count = conn.execute("SELECT COUNT(*) FROM config_history").fetchone()[0]
             click.echo(f"  ✓ Test row written (config_history now has {count} rows)")
+
+        # Seed symbols table from config/default.yaml.initial_symbols.
+        # Idempotent — only inserts rows that don't yet exist.
+        try:
+            from hermes.db.symbol_registry import seed_from_config
+            n_seeded = seed_from_config(config, added_by="init")
+            if n_seeded:
+                click.echo(f"  ✓ Seeded {n_seeded} symbol(s) from config into symbols registry")
+            else:
+                click.echo("  ✓ Symbols registry already seeded (no new inserts)")
+        except Exception as se:
+            click.echo(f"  ⚠ Symbols seed skipped: {se}")
+            log.warning("symbols_seed_skipped", error=str(se))
         return True
     except Exception as e:
         click.echo(f"  ✗ DuckDB init failed: {e}")

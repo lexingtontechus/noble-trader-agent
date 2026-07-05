@@ -3,7 +3,7 @@
 > Entry/execution optimization layer for Noble Trader signals.
 > Hermes consumes Noble Trader's strategy signals and optimizes **when** to enter and **how** to execute — it does NOT replicate Noble Trader's strategy sweeps.
 
-**Status:** ✅ All 11 phases complete — 297 tests passing, 24 CLI commands, 11 dashboard pages, 8 DuckDB migrations, 23 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), and Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine).
+**Status:** ✅ All 11 phases complete — 297 tests passing, 31 CLI commands, 12 dashboard pages, 9 DuckDB migrations, 24 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine), and a DuckDB-backed Symbol Registry (runtime-mutable symbol universe with is_active lifecycle and live validation).
 
 ---
 
@@ -13,10 +13,10 @@
 |---|---|
 | **Phases completed** | 11/11 (Phase 0 through Phase 10) + 3 enhancements |
 | **Tests** | 297 (all passing) |
-| **CLI commands** | 24 |
-| **Dashboard pages** | 11 (DaisyUI, 7 switchable themes) |
-| **DuckDB migrations** | 8 (schema v8) |
-| **DuckDB tables** | 23 |
+| **CLI commands** | 31 |
+| **Dashboard pages** | 12 (DaisyUI, 7 switchable themes) |
+| **DuckDB migrations** | 9 (schema v9) |
+| **DuckDB tables** | 24 |
 | **Python source files** | 50 (48 core + 2 enhancements: `cb_manager.py`, `attribution.py`) |
 | **Documentation** | roadmap.md (2,457 lines), agent_onboarding.md (845 lines), dr_runbook.md, worklog.md |
 
@@ -174,10 +174,24 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 ### 2. Configure
 
-Edit `.env` with paper credentials:
+Edit `.env` with paper credentials + dashboard auth secrets:
 ```powershell
 code .env
-# Replace all <placeholder> values
+# Replace all <placeholder> values, including the four HERMES_* auth vars
+```
+
+Generate strong secrets for the auth vars:
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"   # HERMES_SESSION_SECRET
+python -c "import secrets; print(secrets.token_urlsafe(48))"   # HERMES_AGENT_TOKEN
+```
+
+Required auth vars (see [Auth](#auth) section below for details):
+```bash
+HERMES_ADMIN_USERNAME=admin
+HERMES_ADMIN_PASSWORD=<strong-password>
+HERMES_SESSION_SECRET=<64-char-random-string>
+HERMES_AGENT_TOKEN=<long-random-string>
 ```
 
 ### 3. Initialize
@@ -194,7 +208,9 @@ platform health
 platform dashboard
 ```
 
-Open **http://127.0.0.1:8080** — 11 pages, 7 DaisyUI themes.
+Open **http://127.0.0.1:8080** — 12 pages, 7 DaisyUI themes. You'll be
+prompted to log in with the `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`
+you set in `.env`.
 
 ### 5. Start Trading Pipeline
 
@@ -203,10 +219,10 @@ Open **http://127.0.0.1:8080** — 11 pages, 7 DaisyUI themes.
 platform ingest
 
 # Terminal 3: L2.8 — Active Price Monitor
-platform monitor --symbols BTC-PERP,AAPL
+platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP
 
 # Terminal 4: L4 — Signal Synthesizer
-platform synthesize --symbols BTC-PERP,AAPL
+platform synthesize --symbols BTC/USD,SOL/USD,BTC-PERP
 
 # Terminal 5: L5 — Portfolio & Risk Engine
 platform risk --equity 100000
@@ -214,6 +230,177 @@ platform risk --equity 100000
 # Terminal 6: L3 — Execution Engine (paper)
 platform execute --equity 100000 --paper
 ```
+
+---
+
+## Symbol Registry
+
+The **Symbol Registry** is a DuckDB-backed dimension table (`symbols`) that is the
+runtime source of truth for Hermes's active trading universe. It tracks every
+symbol Hermes knows about, which venue it trades on, its asset class, and
+whether it currently participates in `stream` / `monitor` / `synthesize` /
+`optimize` / `rigor` / `shadow` / `simulate` runs.
+
+### Bootstrapping the registry
+
+`platform init` automatically seeds the `symbols` table from
+`config/default.yaml → portfolio.initial_symbols` after applying migrations.
+The seed is idempotent — re-running `platform init` will not duplicate rows.
+
+To re-seed later (e.g. after editing `initial_symbols` in `default.yaml`):
+
+```bash
+platform symbols sync
+```
+
+### Common commands
+
+```bash
+# List the current universe (active + inactive)
+platform symbols list
+
+# List only symbols that participate in runs
+platform symbols list --active-only
+
+# Add a new symbol (idempotent upsert; validates venue + asset_class)
+platform symbols add SOL/USD --venue alpaca --asset-class crypto --rationale "expanding spot book"
+
+# Live-test that the venue can fetch a price for the symbol
+platform symbols validate SOL/USD
+
+# Soft-delete a symbol (historical rows are preserved, is_active=FALSE)
+platform symbols deactivate SOL/USD --reason "paused for review"
+
+# Re-enable a previously deactivated symbol
+platform symbols activate SOL/USD
+
+# Show full details for one symbol
+platform symbols show BTC/USD
+```
+
+### Dashboard
+
+The `/symbols` dashboard page (link "Symbols" in the navbar) renders the same
+universe as a table with active/inactive badges, validation status, last price,
+and one-click buttons to **add**, **activate**, **deactivate**, **validate**,
+or **sync from config**. The "Add Symbol" modal filters asset-class options
+based on the selected venue's `asset_classes` registry.
+
+### Optional `--symbols` CLI argument
+
+The `--symbols` argument on `stream`, `monitor`, `synthesize`, `optimize`,
+`rigor`, `shadow`, and `simulate` is now **optional**. When omitted, the
+command defaults to all **active** symbols from the registry. If the DB is
+empty or unavailable, it falls back to `config/default.yaml → portfolio.initial_symbols`.
+
+```bash
+# Explicit symbol list (legacy behaviour, still supported)
+platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP
+
+# Use all active symbols from the registry (new default)
+platform monitor
+platform synthesize
+```
+
+---
+
+## Auth
+
+Hermes uses **server-side session cookies** for browser access + a
+**long-lived bearer token** for programmatic agent access. No third-party
+auth service (Clerk, Auth0, etc.) required — single-host, single-user.
+
+### How it works
+
+| Caller | Mechanism | Lifetime |
+|--------|-----------|----------|
+| Browser (admin) | Session cookie set by `POST /auth/login` | 24h (configurable) |
+| Agent (programmatic) | `Authorization: Bearer <HERMES_AGENT_TOKEN>` | Until rotated |
+
+Every `/api/*` route is protected by the `require_auth` FastAPI dependency,
+which tries the session cookie first, then the bearer token, then returns
+401. `/health` stays open for monitoring/CI.
+
+### Configuration (in `.env`)
+
+```bash
+HERMES_ADMIN_USERNAME=admin
+HERMES_ADMIN_PASSWORD=<strong-password>
+HERMES_SESSION_SECRET=<64-char-random-string>     # signs session cookies
+HERMES_AGENT_TOKEN=<long-random-string>           # for AI agent / scripts
+```
+
+Generate strong values with:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### Browser login flow
+
+1. Open the dashboard at `http://localhost:8080` (or wherever FastAPI serves it).
+2. The SPA calls `GET /auth/me` — if no session cookie, it shows the login page.
+3. Submit username + password → SPA POSTs to `/auth/login`.
+4. Server validates against `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`
+   (constant-time comparison via `hmac.compare_digest`).
+5. On success, server sets a signed `session` cookie (HttpOnly, SameSite=Strict).
+6. Browser sends the cookie automatically on every subsequent request — no
+   token in localStorage, no `Authorization` header, no XSS risk.
+7. Logout via the navbar button → SPA POSTs to `/auth/logout` → cookie cleared.
+
+### Agent (programmatic) access
+
+Send the bearer token with every request:
+
+```bash
+# curl
+curl -H "Authorization: Bearer $HERMES_AGENT_TOKEN" http://localhost:8080/api/status
+
+# Python
+import httpx
+r = httpx.get(
+    "http://localhost:8080/api/portfolio",
+    headers={"Authorization": f"Bearer {agent_token}"},
+)
+```
+
+The token is constant-time compared via `hmac.compare_digest` to prevent
+timing attacks. Rotate by changing `HERMES_AGENT_TOKEN` in `.env` and
+restarting — no need to touch the browser session.
+
+### Auth endpoints
+
+| Method | Path | Body | Returns |
+|--------|------|------|---------|
+| `POST` | `/auth/login` | `{"username": "...", "password": "..."}` | `{"ok": true, "user": {...}}` + sets cookie |
+| `POST` | `/auth/logout` | — | `{"ok": true}` + clears cookie |
+| `GET` | `/auth/me` | — | `{"username": "...", "role": "..."}` or 401 |
+
+### Disable auth (dev only)
+
+Set `auth.enabled: false` in `config/default.yaml`. **Never do this in
+production** — every `/api/*` route becomes open.
+
+### Security notes
+
+- Session cookies are signed with `HERMES_SESSION_SECRET`. If the secret
+  changes, all existing sessions are invalidated.
+- `SameSite=Strict` prevents the cookie from being sent on cross-site
+  requests (CSRF protection).
+- For HTTPS deployments, set `https_only=True` in the `SessionMiddleware`
+  call in `src/hermes/web/app.py` (search for `https_only=False`).
+- The agent token has no expiry — rotate it on a schedule (e.g., every 90
+  days) by updating `.env` and restarting.
+- Failed login attempts are logged at WARN level with the client IP.
+
+### Why not Clerk / JWT / API keys in localStorage?
+
+- **Clerk / Auth0**: Overkill for single-user. They exist for user management
+  at scale (password reset, email verification, social login, multi-tenancy).
+- **JWT in browser**: The "stateless" benefit is wasted on a single server.
+  You end up needing a revocation list anyway, which is just sessions with
+  extra steps.
+- **API key in localStorage**: Vulnerable to XSS. Session cookies with
+  `HttpOnly` + `SameSite=Strict` are safer.
 
 ---
 
@@ -251,7 +438,7 @@ pip install -r requirements-optional.txt
 
 ---
 
-## All CLI Commands (24)
+## All CLI Commands (31)
 
 ```powershell
 # Foundation (Phase 0)
@@ -300,11 +487,20 @@ platform agent             # Show decision tree / run EOD / list hypotheses
 platform replay            # Replay a historical session for forensic analysis
 platform alert-test        # Send a test alert to Discord/Telegram
 platform load-test         # Run a load test on the DuckDB writer
+
+# Symbol Registry (Phase 11)
+platform symbols list      # List symbols in the registry (with --active-only / --venue / --asset-class / --json filters)
+platform symbols add       # Add a new symbol (validates venue + asset_class against config)
+platform symbols show      # Show full details for one symbol (JSON)
+platform symbols activate  # Re-enable a previously deactivated symbol
+platform symbols deactivate # Soft-delete a symbol (sets is_active=FALSE; historical rows preserved)
+platform symbols validate  # Live-test that the venue can fetch a price for this symbol
+platform symbols sync      # Seed the symbols table from config/default.yaml.initial_symbols
 ```
 
 ---
 
-## Dashboard Pages (11)
+## Dashboard Pages (12)
 
 | Page | URL | What it shows |
 |---|---|---|
@@ -318,13 +514,14 @@ platform load-test         # Run a load test on the DuckDB writer
 | **Optimize** | `/optimize` | Simulation runs (entry alpha, rigor checks, accepted/rejected) |
 | **Agent** | `/agent` | Decision tree diagram + hypotheses + trade journal with postmortems |
 | **Monitor** | `/monitor` | Live price monitor stats, positions, correlation matrix, events |
+| **Symbols** | `/symbols` | Symbol registry — list, add, activate/deactivate, validate (with form modal) |
 | **Config** | `/config` | Loaded config (secrets redacted) |
 
 **DaisyUI themes** (7): dark (default), retro, cyberpunk, nord, dracula, synthwave, light. Theme switcher in navbar, persists to localStorage.
 
 ---
 
-## DuckDB Schema (8 migrations, 23 tables)
+## DuckDB Schema (9 migrations, 24 tables)
 
 | Migration | Tables added | Phase |
 |---|---|---|
@@ -336,6 +533,7 @@ platform load-test         # Run a load test on the DuckDB writer
 | v6 | pnl_realized, pnl_unrealized | 6 |
 | v7 | backtest_runs | 7 |
 | v8 | simulation_runs, simulation_trades, param_optimizations | 8 |
+| v9 | symbols | 9 (Symbol Registry) |
 
 ---
 

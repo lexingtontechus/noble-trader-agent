@@ -91,7 +91,25 @@ python scripts\init_duckdb.py
 
 ### 2.4 Configure
 
-Edit `.env` with real values (paper keys only). Then verify config loads:
+Edit `.env` with real values (paper keys only). Be sure to set the four
+`HERMES_*` auth vars — without them, you can't log in to the dashboard:
+
+```bash
+# === Dashboard / API auth (single-user + agent) ===
+HERMES_ADMIN_USERNAME=admin
+HERMES_ADMIN_PASSWORD=<your-strong-password>
+HERMES_SESSION_SECRET=<64-char-random-string>    # signs session cookies
+HERMES_AGENT_TOKEN=<long-random-string>          # for programmatic agent access
+```
+
+Generate strong secrets with:
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+See [roadmap §14](roadmap.md#14-dashboard--api-auth) for the full auth model.
+
+Then verify config loads:
 
 ```powershell
 platform init
@@ -100,8 +118,9 @@ platform init
 This will:
 - Load config from `config/default.yaml`
 - Resolve all `secret:` prefixed values from `.env`
-- Open DuckDB and apply schema (8 migrations, 23 tables)
+- Open DuckDB and apply schema (9 migrations, 24 tables)
 - Write a test row to `config_history`
+- Seed the symbols table from `config/default.yaml → portfolio.initial_symbols`
 - Ping Redis (non-fatal if unreachable)
 - Print config summary
 
@@ -123,7 +142,9 @@ Expected output: all subsystems show ✓ or at least "not_configured" (not "erro
 platform dashboard
 ```
 
-Open **http://127.0.0.1:8080** in your browser. The Status page shows connection badges for all 6 subsystems:
+Open **http://127.0.0.1:8080** in your browser. You'll see the login page —
+sign in with the `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD` you set
+in `.env`. After login, the Status page shows connection badges for all 6 subsystems:
 
 | Subsystem | What it checks | Badge when ready |
 |---|---|---|
@@ -182,7 +203,7 @@ Applies data quality checks on ingest:
 
 ```powershell
 platform backfill-market --symbol BTC-PERP --venue hyperliquid --timeframe 1m --days-back 90
-platform backfill-market --symbol AAPL --venue alpaca --timeframe 1m --days-back 90
+platform backfill-market --symbol BTC/USD --venue alpaca --timeframe 1m --days-back 90
 ```
 
 Stores in Parquet (partitioned by `venue/symbol/tf/date`) for offline analysis and backtesting.
@@ -196,6 +217,42 @@ Check the dashboard:
 ---
 
 ## 5. Phase D: The Trading Loop
+
+### 5.0 Symbol Registry
+
+The trading universe is stored in the DuckDB `symbols` table — it is the
+runtime source of truth for which symbols participate in `stream`, `monitor`,
+`synthesize`, `optimize`, `rigor`, `shadow`, and `simulate`. The `--symbols`
+argument on those commands is now optional and defaults to all **active**
+rows from this table.
+
+After running `platform init` (which seeds the table from
+`config/default.yaml → portfolio.initial_symbols`), check what was seeded:
+
+```bash
+platform symbols list                 # all symbols, active + inactive
+platform symbols list --active-only   # the ones that will be used by runs
+```
+
+To add a new symbol and confirm the venue can fetch a price for it:
+
+```bash
+platform symbols add ETH/USD --venue alpaca --asset-class crypto
+platform symbols validate ETH/USD
+```
+
+To pause a symbol without losing its historical rows (positions, fills, PnL
+remain joinable):
+
+```bash
+platform symbols deactivate SOL/USD --reason "paused for review"
+# Later:
+platform symbols activate SOL/USD
+```
+
+The same operations are available in the UI on the `/symbols` dashboard page
+(add / activate / deactivate / validate / sync-from-config buttons, plus a
+"Validate all active" sweep).
 
 ### 5.1 Trading Loop Overview
 
@@ -596,10 +653,10 @@ platform dashboard
 platform ingest
 
 # 4. Start price monitor (Terminal 3)
-platform monitor --symbols BTC-PERP,AAPL
+platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP
 
 # 5. Start signal synthesizer (Terminal 4)
-platform synthesize --symbols BTC-PERP,AAPL
+platform synthesize --symbols BTC/USD,SOL/USD,BTC-PERP
 
 # 6. Start risk engine (Terminal 5)
 platform risk --equity 100000
@@ -630,10 +687,10 @@ cp data/hermes.duckdb backups/hermes_$(date +%Y%m%d).duckdb
 
 ```powershell
 # 1. Run optimization sweep
-platform optimize --symbols BTC-PERP,AAPL --days-back 90 --n-trials 200
+platform optimize --symbols BTC/USD,SOL/USD,BTC-PERP --days-back 90 --n-trials 200
 
 # 2. Run rigor checks
-platform rigor --symbols BTC-PERP,AAPL --days-back 90
+platform rigor --symbols BTC/USD,SOL/USD,BTC-PERP --days-back 90
 
 # 3. Review hypotheses
 platform agent --list-hypotheses

@@ -42,7 +42,7 @@
 - Hyperliquid docs: https://hyperliquid.gitbook.io/
 
 **Hermes Exercise:**
-- Run `platform stream --symbols AAPL` and observe live order book updates
+- Run `platform stream --symbols BTC/USD` and observe live order book updates
 - Identify maker vs taker fills in the dashboard `/orders` page
 - Examine the spread_bps field in `price_monitor_events`
 
@@ -56,10 +56,9 @@
 - Distinguish spot vs derivatives (futures, perpetual swaps)
 
 **Content:**
-- Equities: common stock, ADRs, ETFs (Alpaca)
-- Commodities: gold (GLD), oil, agricultural products
+- Crypto: spot pairs on Alpaca (BTC/USD, SOL/USD) and perpetual swaps on Hyperliquid (BTC-PERP, ETH-PERP) — the platform's default asset class
+- Equities: common stock, ADRs, ETFs via the same Alpaca adapter (secondary asset class, still supported but not in the default `initial_symbols`)
 - Forex: major pairs, cross pairs (future venue)
-- Crypto: spot trading vs perpetual swaps (Hyperliquid)
 - Perpetual swaps: funding rates, basis, liquidation mechanics
 - Leverage: how it amplifies gains/losses, margin requirements
 - Position sizing: fixed fractional, Kelly criterion (preview)
@@ -475,7 +474,7 @@
 - Correlation regime detection: López de Prado, Chapter 16
 
 **Hermes Exercise:**
-- Run `platform monitor --symbols BTC-PERP,ETH-PERP,AAPL` and check the correlation matrix
+- Run `platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP` and check the correlation matrix
 - Review `src/hermes/monitor/cross_price.py` — the CrossPriceMonitor
 - Query: `SELECT * FROM price_monitor_events WHERE event_type = 'correlation_shift' ORDER BY ts DESC LIMIT 10`
 - Observe how high correlation triggers `risk_off` meta-regime
@@ -1191,7 +1190,7 @@ The 8 categories and their default tiers:
 - López de Prado, Chapter 16: "Unsupervised Learning: Correlation Clustering"
 
 **Hermes Exercise:**
-- Run `platform monitor --symbols BTC-PERP,ETH-PERP,AAPL` with 3+ symbols
+- Run `platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP` with 3+ symbols
 - Check the correlation matrix on dashboard `/monitor` page
 - Query shift events: `SELECT * FROM price_monitor_events WHERE event_type = 'correlation_shift' ORDER BY ts DESC`
 - Review `src/hermes/monitor/cross_price.py` — CrossPriceMonitor
@@ -1559,7 +1558,7 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
   - OANDA: forex, REST API, no WebSocket
   - IBKR: multi-asset, complex API, TWS gateway
 - Venue-specific handling:
-  - Symbol normalization: "BTC-PERP" → "BTC" (Hyperliquid), "AAPL" → "AAPL" (Alpaca)
+  - Symbol normalization: "BTC-PERP" → "BTC" (Hyperliquid), "BTC/USD" → "BTC/USD" (Alpaca crypto)
   - Fee structure: Alpaca (0/1 bps maker/taker) vs Hyperliquid (0.5/2 bps)
   - Leverage: Alpaca (4×) vs Hyperliquid (50×)
   - Data: venue-native only (no yfinance), fail-hard policy
@@ -1628,12 +1627,12 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
 ### Lesson 44: DuckDB Schema & Query Patterns
 
 **Objectives:**
-- Understand the 23-table DuckDB schema (8 migrations)
+- Understand the 24-table DuckDB schema (9 migrations)
 - Write efficient analytical queries
 - Use DuckDB for Hermes's self-learning analytics
 
 **Content:**
-- Schema overview (8 migrations, 23 tables):
+- Schema overview (9 migrations, 24 tables):
   - v1: config_history, signal_heartbeats, account_snapshots, trade_journal, risk_decisions, circuit_breaker_events, hermes_hypotheses, meta_regime_history, audit_log, signal_heartbeats_quarantine, schema_version
   - v2: nt_sweep_results_local, nt_regime_log_local (NT mirrors)
   - v3: price_monitor_events
@@ -1642,6 +1641,7 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
   - v6: pnl_realized, pnl_unrealized
   - v7: backtest_runs
   - v8: simulation_runs, simulation_trades, param_optimizations
+  - v9: symbols (Symbol Registry — runtime-mutable, is_active flag, audit + validation columns)
 - Key query patterns Hermes uses:
   - Sharpe by regime: `SELECT strategy_id, regime_at_close, AVG(r_multiple) FROM pnl_realized GROUP BY 1, 2`
   - Worst 10 trades: `SELECT t.symbol, t.entry_thesis, p.net_pnl FROM trade_journal t JOIN pnl_realized p ON t.trade_id = p.trade_id ORDER BY p.net_pnl ASC LIMIT 10`
@@ -1798,17 +1798,50 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
 
 | Resource | Location | Content |
 |---|---|---|
-| Roadmap | `docs/roadmap.md` | 2,457-line system design (13 sections) |
-| Onboarding | `docs/agent_onboarding.md` | 845-line operational guide |
+| Roadmap | `docs/roadmap.md` | System design (14 sections — see §14 for auth model) |
+| Onboarding | `docs/agent_onboarding.md` | Operational guide (Phase A–E) |
 | DR Runbook | `docs/dr_runbook.md` | 7 disaster recovery scenarios |
 | Worklog | `worklog.md` | Development log by phase |
 | Source code | `src/hermes/` | 50 Python files across 12 packages (48 core + 2 enhancements: `cb_manager.py`, `attribution.py`) |
 | Tests | `tests/` | 297 tests across 14 test files |
-| Config | `config/default.yaml` | All configurable parameters |
-| Secrets | `.env` (from `.env.example`) | All credentials (never in git) |
-| DuckDB | `data/hermes.duckdb` | 23 tables, 8 migrations |
+| Config | `config/default.yaml` | All configurable parameters (including `auth:` block) |
+| Secrets | `.env` (from `.env.example`) | All credentials (never in git) — includes 4 `HERMES_*` auth vars |
+| DuckDB | `data/hermes.duckdb` | 24 tables, 9 migrations |
 | Parquet | `data/parquet/` | Partitioned market data |
-| Dashboard | `http://127.0.0.1:8080` | 11 pages, 7 DaisyUI themes |
+| Dashboard | `http://127.0.0.1:8080` | 12 pages, 7 DaisyUI themes — login required |
+| SPA dashboard | `dashboard/` | Vite + React + DaisyUI companion app (single-host deploy) |
+
+### B.1 Agent API Access
+
+When acting as a programmatic agent (calling Hermes's `/api/*` endpoints
+from a script or AI agent), use the bearer token auth path — not browser
+login. Set `HERMES_AGENT_TOKEN` in `.env`, then send it as a header on
+every request:
+
+```python
+import httpx
+
+agent_token = os.environ["HERMES_AGENT_TOKEN"]
+client = httpx.Client(
+    base_url="http://localhost:8080",
+    headers={"Authorization": f"Bearer {agent_token}"},
+)
+
+# All /api/* routes are now accessible
+status = client.get("/api/status").json()
+symbols = client.get("/api/symbols?active_only=true").json()
+portfolio = client.get("/api/portfolio").json()
+```
+
+The agent token:
+- Has no expiry — rotate on a schedule (every 90 days per §13.10 of roadmap).
+- Is constant-time compared via `hmac.compare_digest` to prevent timing attacks.
+- Works for all `/api/*` routes including POST routes (`/api/symbols`,
+  `/api/symbols/{sym}/validate`, etc.).
+- Does NOT work for `/auth/login` (browser-only) or `/auth/logout`.
+
+See [roadmap §14](roadmap.md#14-dashboard--api-auth) for the full auth
+model.
 
 ---
 

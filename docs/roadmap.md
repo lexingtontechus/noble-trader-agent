@@ -37,6 +37,7 @@
 11. [Features Missed in Initial Brief](#11-features-missed-in-initial-brief)
 12. [Open Decisions](#12-open-decisions)
 13. [Credentials & Secrets Management](#13-credentials--secrets-management)
+14. [Dashboard & API Auth](#14-dashboard--api-auth)
 
 ---
 
@@ -391,9 +392,9 @@ portfolio:
   # Target allocation by asset class (must sum to 1.0)
   # Forex venue TBD — allocation reserved but unallocated until venue added
   target_allocation:
-    equities:    0.50    # Alpaca (stocks)
-    crypto:      0.15    # Hyperliquid (perps + spot)
-    commodities: 0.20    # Alpaca (commodity futures/ETFs)
+    crypto:      0.70    # Alpaca (BTC/USD, SOL/USD spot) + Hyperliquid (perps)
+    equities:    0.15    # Alpaca (stocks) — secondary allocation
+    commodities: 0.00    # Currently unallocated (Alpaca commodity ETFs supported but unused)
     forex:       0.15    # FUTURE VENUE — not active until broker added
 
   # Rebalancing
@@ -404,16 +405,16 @@ portfolio:
   # Starting mode
   start_small: true                       # phase in assets gradually
   initial_symbols:                        # start with these, expand later
-    - { symbol: "AAPL",        venue: "alpaca",      asset_class: "equities" }
+    - { symbol: "BTC/USD",     venue: "alpaca",      asset_class: "crypto" }
     - { symbol: "BTC-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
     - { symbol: "ETH-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
-    - { symbol: "GLD",         venue: "alpaca",      asset_class: "commodities" }
+    - { symbol: "SOL/USD",     venue: "alpaca",      asset_class: "crypto" }
 
 venues:
   # Venue registry — add new venues here, no code changes needed
   alpaca:
     enabled: true
-    asset_classes: ["equities", "commodities"]
+    asset_classes: ["crypto", "equities", "commodities"]
     credentials:
       api_key:   "secret:alpaca.api_key"        # resolved by SecretResolver (see §13)
       api_secret: "secret:alpaca.api_secret"
@@ -492,6 +493,68 @@ data_sources:
   rationale: "Each venue has its own prices; using third-party feeds creates arbitrage illusions and execution mismatches. Historical data must come from each venue's own historical API."
   fallback_behavior: "fail_hard"                  # never silently fall back to a third party
 ```
+
+#### 3.0.1 Symbol Registry — runtime source of truth
+
+The `portfolio.initial_symbols` list above is a **seed file**, not the runtime
+universe. At runtime, the source of truth for "which symbols does Hermes trade
+right now?" is the `symbols` DuckDB dimension table, created by migration
+`src/hermes/db/migrations/009_symbols.sql`.
+
+Schema (relevant columns):
+
+| Column | Type | Purpose |
+|---|---|---|
+| `symbol` | VARCHAR PK | e.g. `BTC/USD`, `BTC-PERP` |
+| `venue` | VARCHAR | Must exist in `venues` registry (alpaca, hyperliquid, …) |
+| `asset_class` | VARCHAR NOT NULL | Must be in the venue's `asset_classes` list |
+| `base_ccy`, `quote_ccy`, `tick_size`, `min_notional`, `max_leverage` | — | Optional reference data |
+| `is_active` | BOOLEAN (default TRUE) | Controls whether the symbol participates in `stream` / `monitor` / `synthesize` / `optimize` / `rigor` / `shadow` / `simulate` runs |
+| `added_at`, `added_by`, `deactivated_at`, `deactivated_by`, `rationale` | — | Audit trail |
+| `last_validated_at`, `last_price`, `validation_status`, `validation_error` | — | Live-test results from `platform symbols validate` |
+
+**Bootstrap.** `platform init` calls `seed_from_config(config, added_by)`
+immediately after applying migrations. This upserts every entry in
+`portfolio.initial_symbols` into the `symbols` table. The seed is idempotent —
+re-running `init` will not duplicate or overwrite existing rows. To re-seed
+later (e.g. after editing `initial_symbols`):
+
+```bash
+platform symbols sync                # upserts config entries (does not deactivate rows missing from config)
+platform symbols sync --overwrite-active  # also resets is_active to TRUE for every config entry
+```
+
+**Lifecycle.** Symbols are never hard-deleted; they are soft-deleted via the
+`is_active` flag so historical `signal_heartbeats`, `fills`, `pnl_realized`
+rows remain joinable. The activate / deactivate cycle is reversible:
+
+```bash
+platform symbols add SOL/USD --venue alpaca --asset-class crypto
+platform symbols deactivate SOL/USD --reason "paused for review"
+platform symbols activate SOL/USD
+```
+
+Deactivation records `deactivated_at` + `deactivated_by` + `rationale`;
+activation clears those fields and re-sets `is_active = TRUE`.
+
+**Validation.** `platform symbols validate SYMBOL` calls the venue adapter's
+`get_current_price()`, records `last_price` + `last_validated_at`, and stores
+either `validation_status = 'ok'` or `'error'` (with `validation_error` text).
+This is the fastest way to confirm credentials, symbol format, and venue
+connectivity are all wired correctly before adding a symbol to live runs.
+
+**Runtime default.** When `--symbols` is omitted on `stream`, `monitor`,
+`synthesize`, `optimize`, `rigor`, `shadow`, or `simulate`, the CLI fetches
+all `is_active = TRUE` rows from the `symbols` table and uses that list. If
+the DB is empty or unavailable, it falls back to
+`portfolio.initial_symbols` from `default.yaml`. The Python helper
+`src/hermes/db/symbol_registry.py → list_active_symbols(config)` implements
+this fallback.
+
+**REST API + dashboard.** The same operations are exposed via REST
+(`GET/POST /api/symbols`, `POST /api/symbols/{symbol}/{activate|deactivate|validate}`,
+`POST /api/symbols/sync`) and the `/symbols` dashboard page (see README →
+*Symbol Registry*).
 
 ### 3.1 Account-Level
 | Parameter | Default | Description |
@@ -678,7 +741,7 @@ Hermes subscribes to Noble Trader's heartbeat channel. The heartbeat carries the
 | Field | Type | Description |
 |---|---|---|
 | `type` | literal `"heartbeat"` | Always "heartbeat" — other types may be added later |
-| `symbol` | string | Trading symbol (e.g., "BTC-PERP", "AAPL") |
+| `symbol` | string | Trading symbol (e.g., "BTC-PERP", "BTC/USD") |
 | `ts` | number (unix ms) | Upstream publish timestamp |
 | `regime` | string | Noble Trader's composite regime label `{vol}_{trend}` (e.g., `low_vol_bull`) |
 | `regime_conf` | number | HMM posterior probability of dominant state (0–1) |
@@ -1566,9 +1629,9 @@ Weekly heavy sweeps + periodic light sweeps. Each row = one sweep result for one
 | Field | Type | Description |
 |---|---|---|
 | `id` | int | Primary key (NT-assigned) |
-| `symbol` | string | e.g., "BTC", "AAPL" |
+| `symbol` | string | e.g., "BTC", "BTC/USD" |
 | `asset_class` | string | "crypto", "stocks", "commodities", "forex" |
-| `brick_size` | float | Optimal renko brick size (e.g., 236.43 for BTC, 0.6459 for AAPL) |
+| `brick_size` | float | Optimal renko brick size (e.g., 236.43 for BTC, 0.6459 for BTC/USD) |
 | `sl_bricks` | int | Stop-loss distance in bricks |
 | `tp_bricks` | int | Take-profit distance in bricks |
 | `sharpe` | float | Backtest Sharpe ratio (⚠️ see data quality notes below) |
@@ -1694,11 +1757,11 @@ Hermes must apply sanity checks on ingest because NT's sweep data has known anom
 | `sharpe` absurdly high | BTC: 3726.00 | Possible overflow, division error, or different units | Flag `sharpe_too_high` if > 20; exclude from optimization baselines |
 | `max_drawdown_pct = 0` | BTC: 0 | Impossible for n_trades > 0; backtest bug | Flag `max_dd_zero`; treat as null |
 | `profit_factor = 0` | BTC: 0 | Should be ≥ 0; 0 means no wins or no losses (suspicious) | Flag `profit_factor_zero`; recompute from win_rate + avg_win/avg_loss if possible |
-| `max_drawdown_pct` sign inconsistent | BTC: 0 vs AAPL: -0.0836 | Negative = drawdown (AAPL convention), positive = ??? (BTC) | Normalize to always-negative on ingest; flag if positive |
+| `max_drawdown_pct` sign inconsistent | BTC: 0 vs BTC/USD: -0.0836 | Negative = drawdown (BTC/USD convention), positive = ??? (BTC) | Normalize to always-negative on ingest; flag if positive |
 | `regime = "unknown"` | BTC early rows | HMM not yet fitted or cold-start | Acceptable; Hermes's 7-state meta-regime provides portfolio context |
-| `regime_conf = 0.9999` | AAPL | Near-1.0 confidence is suspicious (overconfident HMM) | Acceptable but feed into Hermes's calibration analysis |
+| `regime_conf = 0.9999` | BTC/USD | Near-1.0 confidence is suspicious (overconfident HMM) | Acceptable but feed into Hermes's calibration analysis |
 | `markov_p_up = 0.5` | BTC | Uninformative prior (Markov not contributing) | Acceptable; Hermes trusts NT's blended p_win which downweights Markov |
-| `regime` says bull but strategy losing | AAPL: regime="high_vol_strong_bull", sharpe=-1.13 | Regime says bull but brick/sl/tp combo is losing — classic case where Hermes's meta-regime overlay adds value | **This is exactly the signal Hermes's 7-state classifier is designed to catch** — see §2.2.1 |
+| `regime` says bull but strategy losing | BTC/USD: regime="high_vol_strong_bull", sharpe=-1.13 | Regime says bull but brick/sl/tp combo is losing — classic case where Hermes's meta-regime overlay adds value | **This is exactly the signal Hermes's 7-state classifier is designed to catch** — see §2.2.1 |
 
 ##### How Hermes Uses These Tables
 
@@ -1961,7 +2024,7 @@ trading_platform/
   - [ ] Macro Clock (FOMC/CPI/earnings countdown)
 - [ ] DuckDB writer for `price_monitor_events`
 
-**Deliverable**: `platform stream --symbols AAPL,BTC-PERP` populates Redis + Parquet + DuckDB view; stop/target watchers fire on every position breach.
+**Deliverable**: `platform stream --symbols BTC/USD,BTC-PERP` populates Redis + Parquet + DuckDB view; stop/target watchers fire on every position breach.
 
 ---
 
@@ -2065,7 +2128,7 @@ trading_platform/
 - [ ] Self-learning schedule: daily walk-forward renko replay, weekly entry/execution sweep, monthly HMM retrain (from Supabase heartbeats), regime-shift-triggered stress test
 - [ ] Hermes-triggered hypothesis runner (`agent.optimize.request` / `agent.optimize.verdict`)
 
-**Deliverable**: `platform optimize --symbols BTC-PERP,AAPL --horizon 90d` runs Bayesian sweep over entry/execution params, returns Pareto front of entry alpha vs drawdown, top 3 candidates enter shadow mode.
+**Deliverable**: `platform optimize --symbols BTC-PERP,BTC/USD --horizon 90d` runs Bayesian sweep over entry/execution params, returns Pareto front of entry alpha vs drawdown, top 3 candidates enter shadow mode.
 
 ---
 
@@ -2200,7 +2263,7 @@ Selected from §11 based on priority:
 4. **DuckDB write strategy** — single-writer batched (current plan) vs. append-only WAL with separate compaction. Need load-test data. With NT publishing every 5min (crypto/forex) to 15min (stocks/commodities) and ~10 symbols, that's ~100k heartbeats/day — well within DuckDB's capability.
 5. **Multi-tenant?** — DECIDED: **single instance, multi-strategy within one schema** using `strategy_id` partition. Avoids operational complexity.
 6. **Cold storage split** — keep 90 days in DuckDB, older in Parquet (current plan); benchmark typical Hermes queries (1y of `pnl_realized` + `signal_heartbeats` join) once data exists.
-7. **Portfolio allocation** — DECIDED: 50% equities / 15% crypto / 20% commodities / 15% forex, configurable in §3.0. Forex 15% reserved but unallocated until a forex venue (OANDA/IBKR) is added. Starting with small asset portfolio (AAPL, BTC-PERP, ETH-PERP, GLD) per §3.0 `initial_symbols`.
+7. **Portfolio allocation** — DECIDED: 50% equities / 15% crypto / 20% commodities / 15% forex, configurable in §3.0. Forex 15% reserved but unallocated until a forex venue (OANDA/IBKR) is added. Default `initial_symbols` are crypto-only (BTC/USD and SOL/USD on Alpaca, BTC-PERP and ETH-PERP on Hyperliquid) per §3.0; equities/commodities symbols can be added later via the same Alpaca adapter.
 8. **Noble Trader upstream Redis connection** — still open. Options: (a) shared Redis instance, (b) Redis-to-Redis bridge, (c) direct cross-network subscription. Need to know: where NT runs, where Hermes will run, whether NT Redis is Upstash/local/self-hosted, and whether you have admin access to NT Redis config.
 9. **Heartbeat schema evolution** — still open. NT is at v7.5.0 and actively iterating. Recommend: version field in payload + CI tests against latest NT release. Need your preference on coupling tightness.
 10. **Upstream `regime_shift == "true"` semantics** — still open. Need to check NT source/docs: does it mean "regime changed in this heartbeat" or "regime has changed recently and this is the first heartbeat since"? Affects whether we re-evaluate open positions on every such heartbeat or only the first.
@@ -2212,7 +2275,7 @@ Selected from §11 based on priority:
 16. **Venue-native data enforcement** — DECIDED: **venue-native only, no third-party feeds** (§3.0 `data_sources.policy = "venue_native_only"`). yfinance/alpha_vantage/etc. are prohibited. Historical data must come from each venue's own historical API. Fail-hard on any fallback attempt.
 17. **Renko simulation multipliers** — for offline analysis, Hermes tests brick_size at ±0.5×, ±0.75×, ±1.25×, ±1.5× NT's suggested brick_size. These NEVER replace NT's brick_size for live signals — only used to study entry timing sensitivity. Configurable in `renko.simulation_multipliers`.
 18. **NT sweep cadence awareness** — NT does weekly full sweeps + 5min (crypto/forex) / 15min (stocks/commodities) light sweeps. Hermes should be aware of this cadence: signals may be "stale-er" right before a sweep and "fresher" right after. Consider: weight signal conviction by time-since-last-sweep. Configurable, default off (trust NT's own `ts` field). The `nt_regime_log_local` table now includes a `minutes_since_last_sweep` field (§6.2.10) to enable this.
-19. **NT data quality issues** — DISCOVERED from sample data (§6.2.10): NT's `nt_sweep_result` has known anomalies (BTC: sharpe=3726, max_dd=0, profit_factor=0; AAPL: regime="high_vol_strong_bull" but sharpe=-1.13 and strategy losing). Hermes must apply data quality checks on ingest (`dq_anomalies` + `dq_trusted` fields in `nt_sweep_results_local`). **Insight**: the AAPL case (regime says bull but strategy losing) is exactly the gap Hermes's 7-state meta-regime is designed to fill — when NT's per-asset regime and strategy performance disagree, Hermes's portfolio-level regime overlay can catch the discrepancy and reduce sizing. This is Hermes's value-add made concrete.
+19. **NT data quality issues** — DISCOVERED from sample data (§6.2.10): NT's `nt_sweep_result` has known anomalies (BTC: sharpe=3726, max_dd=0, profit_factor=0; BTC/USD: regime="high_vol_strong_bull" but sharpe=-1.13 and strategy losing). Hermes must apply data quality checks on ingest (`dq_anomalies` + `dq_trusted` fields in `nt_sweep_results_local`). **Insight**: the BTC/USD case (regime says bull but strategy losing) is exactly the gap Hermes's 7-state meta-regime is designed to fill — when NT's per-asset regime and strategy performance disagree, Hermes's portfolio-level regime overlay can catch the discrepancy and reduce sizing. This is Hermes's value-add made concrete.
 
 ---
 
@@ -2402,6 +2465,9 @@ Also enable:
 | 10 | Discord webhook URL | Discord channel settings | For alerts |
 | 10 | Telegram bot token | @BotFather | For alerts |
 | 10 | PagerDuty integration key | PagerDuty service | For on-call escalation |
+| 11 (Dashboard Auth) | `HERMES_ADMIN_USERNAME` + `HERMES_ADMIN_PASSWORD` | Operator-set | Browser login (session cookie) |
+| 11 | `HERMES_SESSION_SECRET` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` | Signs session cookies — changing it invalidates all sessions |
+| 11 | `HERMES_AGENT_TOKEN` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` | Long-lived bearer token for programmatic agent access |
 
 ### 13.8 What's Safe to Share (and What's Not)
 
@@ -2441,6 +2507,9 @@ Rare case — should be avoided. If unavoidable:
 | Redis password | Every 90 days | Scheduled |
 | Discord/Telegram webhooks | On team change | Manual |
 | Vault tokens | Dynamic (leased) | Auto-renew |
+| `HERMES_ADMIN_PASSWORD` | Every 90 days | Scheduled |
+| `HERMES_SESSION_SECRET` | Every 90 days, or on compromise | Invalidates all active sessions — users must re-login |
+| `HERMES_AGENT_TOKEN` | Every 90 days | Requires updating all agent configs |
 
 Rotation is a config change (update `.env` or Vault), not a code change. The `SecretResolver` picks up the new value on next process restart (or hot-reload if backend supports it).
 
@@ -2455,3 +2524,165 @@ Every secret access is logged (without revealing the value):
 ```
 
 This goes to the standard structured log + DuckDB `audit_log` table (if added) for forensic review.
+
+---
+
+## 14. Dashboard & API Auth
+
+The Hermes dashboard (Jinja2 + Vite/React SPA) and REST API use a
+**dual-path auth model** designed for single-host, single-user + admin + agent
+deployments. No third-party auth service required.
+
+### 14.1 Auth Model
+
+| Caller | Mechanism | Lifetime | Storage |
+|--------|-----------|----------|---------|
+| Browser (admin) | Session cookie set by `POST /auth/login` | 24h (configurable) | Signed cookie, HttpOnly + SameSite=Strict |
+| Agent (programmatic) | `Authorization: Bearer <HERMES_AGENT_TOKEN>` | Until rotated | Sent on every request, no client-side storage |
+
+Every `/api/*` route is protected by the `require_auth` FastAPI dependency
+(in `src/hermes/web/app.py`). It tries the session cookie first, then the
+bearer token, then returns 401. `/health` and `/auth/*` are open.
+
+### 14.2 Configuration
+
+All auth values are resolved from `.env` via the existing `SecretResolver`:
+
+```yaml
+# config/default.yaml
+auth:
+  admin_username: "secret:hermes.admin_username"
+  admin_password: "secret:hermes.admin_password"
+  session_secret: "secret:hermes.session_secret"
+  agent_token:    "secret:hermes.agent_token"
+  session_max_age_sec: 86400          # 24h
+  enabled: true                       # set false to disable auth (dev only)
+```
+
+```bash
+# .env
+HERMES_ADMIN_USERNAME=admin
+HERMES_ADMIN_PASSWORD=<strong-password>
+HERMES_SESSION_SECRET=<64-char-random-string>
+HERMES_AGENT_TOKEN=<long-random-string>
+```
+
+Generate strong secrets with:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### 14.3 Auth Endpoints
+
+| Method | Path | Body | Returns |
+|--------|------|------|---------|
+| `POST` | `/auth/login` | `{"username": "...", "password": "..."}` | `{"ok": true, "user": {"username": "...", "role": "admin"}}` + sets `session` cookie |
+| `POST` | `/auth/logout` | — | `{"ok": true}` + clears cookie |
+| `GET` | `/auth/me` | — | `{"username": "...", "role": "..."}` or 401 |
+
+### 14.4 Browser Flow
+
+1. SPA loads → calls `GET /auth/me` (cookie sent automatically).
+2. If 401, SPA shows the login page (`dashboard/src/pages/Login.tsx`).
+3. User submits username + password → SPA POSTs to `/auth/login`.
+4. Server validates against `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`
+   using `hmac.compare_digest()` (constant-time comparison to prevent timing
+   attacks on both fields).
+5. On success, server sets a signed `session` cookie via Starlette's
+   `SessionMiddleware`. The cookie is `HttpOnly` (not readable by JS) and
+   `SameSite=Strict` (not sent on cross-site requests — CSRF protection).
+6. Browser sends the cookie automatically on every subsequent request. The
+   SPA's axios client has `withCredentials: true` to enable this.
+7. Logout via the navbar button → SPA POSTs to `/auth/logout` → cookie
+   cleared.
+
+### 14.5 Agent Flow
+
+The agent (AI or script) sends the bearer token on every request:
+
+```python
+import httpx
+r = httpx.get(
+    "http://localhost:8080/api/portfolio",
+    headers={"Authorization": f"Bearer {agent_token}"},
+)
+```
+
+The token is constant-time compared via `hmac.compare_digest`. Rotate by
+updating `HERMES_AGENT_TOKEN` in `.env` and restarting — the browser session
+is unaffected.
+
+### 14.6 Implementation Files
+
+| File | Role |
+|------|------|
+| `src/hermes/web/app.py` | `SessionMiddleware` setup, `require_auth` dependency, `/auth/*` routes |
+| `config/default.yaml` | `auth:` block — config schema + secret references |
+| `.env` | `HERMES_ADMIN_USERNAME`, `HERMES_ADMIN_PASSWORD`, `HERMES_SESSION_SECRET`, `HERMES_AGENT_TOKEN` |
+| `dashboard/src/lib/auth.tsx` | `AuthProvider` — calls `/auth/me` on mount, `login()` / `logout()` |
+| `dashboard/src/lib/api.ts` | Axios client with `withCredentials: true` |
+| `dashboard/src/pages/Login.tsx` | Username + password form |
+
+### 14.7 Security Notes
+
+- **Constant-time comparison**: both username/password (login) and the agent
+  token (bearer auth) use `hmac.compare_digest()` to prevent timing attacks.
+- **Cookie flags**: `HttpOnly` (no JS access), `SameSite=Strict` (no CSRF),
+  configurable `https_only` (set `True` for HTTPS deployments).
+- **Session invalidation**: changing `HERMES_SESSION_SECRET` invalidates all
+  existing sessions immediately (cookies won't decrypt).
+- **Audit log**: failed login attempts are logged at WARN level with the
+  client IP. Successful logins and logouts are logged at INFO level.
+- **`/health` is open**: intentional, for monitoring/CI. Returns 200 if
+  healthy, 503 if subsystems are down — never 401.
+
+### 14.8 Why Not Clerk / Auth0 / JWT?
+
+This is a **single-host, single-user + admin + agent** deployment. The
+third-party auth services exist for user management at scale (password
+reset, email verification, social login, multi-tenancy) — none of which
+apply here.
+
+| Option | Why not |
+|--------|---------|
+| Clerk / Auth0 | Overkill — paid service for features we don't need |
+| JWT in browser | "Stateless" benefit wasted on single server; needs revocation list anyway (sessions with extra steps) |
+| API key in localStorage | Vulnerable to XSS — session cookies with `HttpOnly` are safer |
+| HTTP Basic Auth | Ugly browser dialog, no logout, password sent on every request |
+
+### 14.9 Disable Auth (Dev Only)
+
+Set `auth.enabled: false` in `config/default.yaml`:
+
+```yaml
+auth:
+  enabled: false   # NEVER do this in production
+```
+
+The `require_auth` dependency returns `{"username": "anonymous", "role": "admin"}`
+for every request — all `/api/*` routes become open. Useful for first-time
+setup or running tests; never enable in production.
+
+### 14.10 HTTPS Configuration
+
+For HTTPS deployments (recommended for any non-localhost access):
+
+1. Set `https_only=True` in the `SessionMiddleware` call in
+   `src/hermes/web/app.py` (search for `https_only=False`).
+2. Terminate TLS at a reverse proxy (Caddy, nginx) or use `uvicorn --ssl-keyfile --ssl-certfile`.
+3. The session cookie will only be sent over HTTPS connections.
+
+### 14.11 Auth Smoke Test
+
+Run `/home/z/my-project/scripts/test_auth_flow.py` to verify the full auth
+flow end-to-end (12-step test using FastAPI TestClient):
+
+```bash
+python /home/z/my-project/scripts/test_auth_flow.py
+```
+
+Verifies: 401 without auth, login with wrong password → 401, login with
+correct creds → 200 + cookie, `/api/*` with cookie → 200, logout clears
+session, bearer token works for agent path, wrong bearer → 401, `/health`
+is open.
+

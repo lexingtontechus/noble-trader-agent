@@ -26,7 +26,7 @@
 </div>
 {% endif %}
 {% else %}
-{{ empty_state(message="Monitor not running in this process.", hint="Run: platform monitor --symbols BTC-PERP,AAPL") }}
+{{ empty_state(message="Monitor not running in this process.", hint="Run: platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP") }}
 <p class="text-xs opacity-60 mt-2 text-center">
     The events below are from the DuckDB <code class="text-primary">price_monitor_events</code> table
     (populated when the monitor is running).
@@ -166,7 +166,7 @@
     </table>
 </div>
 {% else %}
-{{ empty_state(message="No monitor events in DuckDB yet.", hint="Run: platform monitor --symbols BTC-PERP,AAPL") }}
+{{ empty_state(message="No monitor events in DuckDB yet.", hint="Run: platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP") }}
 {% endif %}
 {% endcall %}
 

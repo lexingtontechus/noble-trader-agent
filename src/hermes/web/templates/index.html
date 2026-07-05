@@ -8,10 +8,10 @@
 {% block content %}
 
 {# Overall status #}
-{{ card(
-    title="Overall: " ~ status.overall,
-    body=refresh_note(10) ~ "<div class='text-xs opacity-50'>Last checked: " ~ status.checked_at[:19] ~ "Z</div>"
-) }}
+{% call card(title="Overall: " ~ status.overall) %}
+{{ refresh_note(10) }}
+<div class="text-xs opacity-50">Last checked: {{ status.checked_at[:19] }}Z</div>
+{% endcall %}
 
 {# Subsystem connections #}
 {% call card(title="Subsystem Connections") %}

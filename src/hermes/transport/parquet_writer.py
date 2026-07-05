@@ -8,7 +8,7 @@ Partition layout:
     data/parquet/
         bars/
             venue=alpaca/
-                symbol=AAPL/
+                symbol=BTC/USD/
                     tf=1m/
                         date=2026-07-02/
                             part-0.parquet

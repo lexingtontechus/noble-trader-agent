@@ -11,9 +11,9 @@ log_level: INFO                             # DEBUG | INFO | WARNING | ERROR
 # === Portfolio Allocation (§3.0) ===
 portfolio:
   target_allocation:
-    equities:    0.50
-    crypto:      0.15
-    commodities: 0.20
+    crypto:      0.70
+    equities:    0.15
+    commodities: 0.00
     forex:       0.15                      # reserved — unallocated until forex venue added
 
   rebalance_threshold_drift_pct: 0.10
@@ -22,16 +22,16 @@ portfolio:
 
   start_small: true
   initial_symbols:
-    - { symbol: "AAPL",      venue: "alpaca",      asset_class: "equities" }
-    - { symbol: "BTC-PERP",  venue: "hyperliquid",  asset_class: "crypto" }
-    - { symbol: "ETH-PERP",  venue: "hyperliquid",  asset_class: "crypto" }
-    - { symbol: "GLD",       venue: "alpaca",      asset_class: "commodities" }
+    - { symbol: "BTC/USD",     venue: "alpaca",       asset_class: "crypto" }
+    - { symbol: "SOL/USD",     venue: "alpaca",       asset_class: "crypto" }
+    - { symbol: "BTC-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
+    - { symbol: "ETH-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
 
 # === Venue Registry (§3.0) ===
 venues:
   alpaca:
     enabled: true
-    asset_classes: ["equities", "commodities"]
+    asset_classes: ["crypto", "equities", "commodities"]
     credentials:
       api_key:    "secret:alpaca.api_key"
       api_secret: "secret:alpaca.api_secret"
@@ -46,6 +46,9 @@ venues:
       options: false
       shorting: true
       leverage: 4.0
+      # Crypto-specific (Alpaca v1beta3 crypto endpoint)
+      crypto_24_7: true
+      crypto_pairs: ["BTC/USD", "SOL/USD", "ETH/USD", "LTC/USD", "BCH/USD"]
 
   hyperliquid:
     enabled: true
@@ -389,6 +392,19 @@ duckdb:
 # === Hermes Redis (internal pub/sub) ===
 hermes_redis:
   url: "secret:hermes.redis_url"
+
+# === Dashboard / API auth (single-user + agent) ===
+# Browser login uses a server-side session cookie (signed with HERMES_SESSION_SECRET).
+# Programmatic agent access uses a long-lived bearer token (HERMES_AGENT_TOKEN).
+# All values are resolved from .env via the SecretResolver.
+auth:
+  admin_username: "secret:hermes.admin_username"
+  admin_password: "secret:hermes.admin_password"
+  session_secret: "secret:hermes.session_secret"
+  agent_token:    "secret:hermes.agent_token"
+  session_max_age_sec: 86400          # 24h — cookie expiry
+  # Set to false to disable auth entirely (dev only — never do this in prod)
+  enabled: true
 
 # === Notifications ===
 notifications:

@@ -5,21 +5,78 @@
 
 {% block content %}
 
+{# Header card — config hash + environment + edit hints #}
 {% call card(title="Loaded Configuration (secrets redacted)") %}
-<div class="text-xs opacity-50 mb-3">
-    Hash: <code class="text-primary">{{ config_hash }}</code> · Environment: {{ environment }}
+<div class="text-xs opacity-50 mb-3 flex flex-wrap gap-x-4 gap-y-1">
+    <span>Hash: <code class="text-primary">{{ config_hash }}</code></span>
+    <span>Environment: <code class="text-primary">{{ environment }}</code></span>
 </div>
-{{ json_block(config_json) }}
-{% endcall %}
-
-{% call card(title="Configuration Notes") %}
 <ul class="list-disc pl-5 space-y-1 text-sm opacity-70">
     <li>Secrets are shown as <code class="text-primary">&lt;redacted:Nchars&gt;</code> or <code class="text-primary">secret:...</code> placeholders.</li>
     <li>Edit <code class="text-primary">config/default.yaml</code> to change non-secret values.</li>
     <li>Edit <code class="text-primary">.env</code> to change secret values (API keys, Redis URLs, etc.).</li>
     <li>Changes require a restart (config is loaded at startup).</li>
-    <li>See <code class="text-primary">docs/roadmap.md</code> §3 for documentation of every parameter.</li>
+    <li>Only the operator-tunable sections below are surfaced as forms; the full raw JSON is at the bottom of the page.</li>
 </ul>
+{% endcall %}
+
+{# ──────────────────────────────────────────────────────────────────────
+   Recursive macro: renders any value as a read-only form field.
+   - dict  → labelled sub-form (nested)
+   - list  → numbered rows
+   - scalar → labelled input (disabled)
+   ────────────────────────────────────────────────────────────────────── #}
+{% macro field(label, value, depth=0) %}
+{% if value is mapping %}
+{% if depth > 0 %}
+<div class="ml-4 pl-3 border-l border-base-300 mt-1 mb-2">
+    <div class="text-xs uppercase tracking-wide opacity-50 mb-1">{{ label }}</div>
+{% else %}
+<div class="mb-3">
+{% endif %}
+{% for k, v in value.items() %}
+{{ field(k, v, depth + 1) }}
+{% endfor %}
+</div>
+{% elif value is iterable and value is not string %}
+<div class="form-control mb-2 ml-4 pl-3 border-l border-base-300">
+    <label class="label">
+        <span class="label-text text-xs font-semibold opacity-70">{{ label }}</span>
+        <span class="label-text-alt text-xs opacity-50">list[{{ value | length }}]</span>
+    </label>
+    {% for item in value %}
+    {% if item is mapping %}
+    <div class="ml-2 mb-1 text-xs opacity-80">
+        {% for k, v in item.items() %}<span class="font-mono">{{ k }}={{ v }}</span>{% if not loop.last %} · {% endif %}{% endfor %}
+    </div>
+    {% else %}
+    <div class="ml-2 text-xs opacity-80 font-mono">{{ item }}</div>
+    {% endif %}
+    {% endfor %}
+</div>
+{% else %}
+<div class="form-control mb-2 {% if depth > 1 %}ml-4{% endif %}">
+    <label class="label pb-0">
+        <span class="label-text text-xs font-semibold opacity-70">{{ label }}</span>
+    </label>
+    <input type="text"
+           class="input input-bordered input-sm w-full font-mono text-xs opacity-80"
+           value="{{ value }}"
+           readonly disabled>
+</div>
+{% endif %}
+{% endmacro %}
+
+{# Render each operator-tunable section as its own card-form #}
+{% for section in form_sections %}
+{% call card(title=section.name | upper | replace('_', ' ')) %}
+{{ field(section.name, section.data, depth=0) }}
+{% endcall %}
+{% endfor %}
+
+{# Full raw JSON for completeness (operators / debugging) #}
+{% call card(title="Raw Configuration JSON") %}
+{{ json_block(config_json) }}
 {% endcall %}
 
 {% endblock %}

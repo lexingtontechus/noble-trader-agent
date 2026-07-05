@@ -1,12 +1,17 @@
-{# Navigation links — included by base.html for both desktop and mobile menus #}
-<li><a href="/" class="{% if active_page == 'index' %}active{% endif %}">Status</a></li>
-<li><a href="/heartbeats" class="{% if active_page == 'heartbeats' %}active{% endif %}">Heartbeats</a></li>
-<li><a href="/signals" class="{% if active_page == 'signals' %}active{% endif %}">Signals</a></li>
-<li><a href="/portfolio" class="{% if active_page == 'portfolio' %}active{% endif %}">Portfolio</a></li>
-<li><a href="/orders" class="{% if active_page == 'orders' %}active{% endif %}">Orders</a></li>
-<li><a href="/pnl" class="{% if active_page == 'pnl' %}active{% endif %}">PnL</a></li>
-<li><a href="/backtest" class="{% if active_page == 'backtest' %}active{% endif %}">Backtest</a></li>
-<li><a href="/optimize" class="{% if active_page == 'optimize' %}active{% endif %}">Optimize</a></li>
-<li><a href="/agent" class="{% if active_page == 'agent' %}active{% endif %}">Agent</a></li>
-<li><a href="/monitor" class="{% if active_page == 'monitor' %}active{% endif %}">Monitor</a></li>
-<li><a href="/config" class="{% if active_page == 'config' %}active{% endif %}">Config</a></li>
+{# Navigation links — included by base.html for both desktop and mobile menus.
+   Active tab is detected from request.url.path so routes don't need to pass
+   an `active_page` context variable. The `index` route (/) uses an exact
+   match to avoid always-on highlighting. #}
+{% set path = request.url.path %}
+<li><a href="/" class="{% if path == '/' %}active{% endif %}">Status</a></li>
+<li><a href="/heartbeats" class="{% if path == '/heartbeats' %}active{% endif %}">Heartbeats</a></li>
+<li><a href="/signals" class="{% if path == '/signals' %}active{% endif %}">Signals</a></li>
+<li><a href="/portfolio" class="{% if path == '/portfolio' %}active{% endif %}">Portfolio</a></li>
+<li><a href="/orders" class="{% if path == '/orders' %}active{% endif %}">Orders</a></li>
+<li><a href="/pnl" class="{% if path == '/pnl' %}active{% endif %}">PnL</a></li>
+<li><a href="/backtest" class="{% if path == '/backtest' %}active{% endif %}">Backtest</a></li>
+<li><a href="/optimize" class="{% if path == '/optimize' %}active{% endif %}">Optimize</a></li>
+<li><a href="/agent" class="{% if path == '/agent' %}active{% endif %}">Agent</a></li>
+<li><a href="/monitor" class="{% if path == '/monitor' %}active{% endif %}">Monitor</a></li>
+<li><a href="/symbols" class="{% if path == '/symbols' %}active{% endif %}">Symbols</a></li>
+<li><a href="/config" class="{% if path == '/config' %}active{% endif %}">Config</a></li>

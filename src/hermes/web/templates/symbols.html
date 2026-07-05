@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, status_badge, empty_state, refresh_note %}
+
+{% block title %}Hermes Dashboard · Symbols{% endblock %}
+
+{% block content %}
+
+{# Summary stats #}
+{% set active_count = symbols | selectattr('is_active') | list | length %}
+{% set total_count = symbols | length %}
+{% set validated_count = symbols | selectattr('validation_status', 'equalto', 'ok') | list | length %}
+
+{% call card(title="Symbol Registry") %}
+<div class="text-xs opacity-50 mb-3">
+    {{ active_count }} active · {{ total_count - active_count }} inactive ·
+    {{ validated_count }} validated ·
+    <a href="/api/symbols" target="_blank" class="link link-hover">JSON</a>
+</div>
+
+{# Toolbar #}
+<div class="flex flex-wrap gap-2 mb-4">
+    <button class="btn btn-primary btn-sm" onclick="document.getElementById('add-symbol-modal').showModal()">
+        + Add Symbol
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="syncFromConfig()">
+        ↻ Sync from config
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="validateAll()">
+        ✓ Validate all active
+    </button>
+    <a href="/api/symbols?active_only=true&json=true" class="btn btn-ghost btn-sm" target="_blank">
+        ⬇ Export JSON
+    </a>
+</div>
+
+{% if symbols %}
+
+{# Symbols table #}
+<div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Venue</th>
+                <th>Asset Class</th>
+                <th>Base</th>
+                <th>Quote</th>
+                <th>Active</th>
+                <th>Validated</th>
+                <th>Last Price</th>
+                <th>Added</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in symbols %}
+            <tr class="{% if not s.is_active %}opacity-50{% endif %}">
+                <td class="font-semibold font-mono">{{ s.symbol }}</td>
+                <td>{{ s.venue }}</td>
+                <td>{{ s.asset_class }}</td>
+                <td class="font-mono text-xs">{{ s.base_ccy or '-' }}</td>
+                <td class="font-mono text-xs">{{ s.quote_ccy or 'USD' }}</td>
+                <td>
+                    {% if s.is_active %}
+                    <span class="badge badge-success badge-sm">active</span>
+                    {% else %}
+                    <span class="badge badge-ghost badge-sm">inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if s.validation_status == 'ok' %}
+                    <span class="badge badge-success badge-sm">ok</span>
+                    {% elif s.validation_status == 'failed' %}
+                    <span class="badge badge-error badge-sm" title="{{ s.validation_error }}">failed</span>
+                    {% else %}
+                    <span class="badge badge-ghost badge-sm">pending</span>
+                    {% endif %}
+                </td>
+                <td class="font-mono text-xs">
+                    {% if s.last_price %}{{ s.last_price }}{% else %}-{% endif %}
+                </td>
+                <td class="text-xs opacity-60 font-mono">
+                    {{ s.added_at|string|truncate(10, true, '') if s.added_at else '-' }}
+                </td>
+                <td>
+                    <div class="flex gap-1">
+                        {% if s.is_active %}
+                        <button class="btn btn-ghost btn-xs"
+                                onclick="deactivateSymbol('{{ s.symbol }}')"
+                                title="Deactivate">✗</button>
+                        {% else %}
+                        <button class="btn btn-ghost btn-xs"
+                                onclick="activateSymbol('{{ s.symbol }}')"
+                                title="Activate">✓</button>
+                        {% endif %}
+                        <button class="btn btn-ghost btn-xs"
+                                onclick="validateSymbol('{{ s.symbol }}')"
+                                title="Validate">⟳</button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+{{ empty_state(
+    message="No symbols in registry yet",
+    hint="Click 'Sync from config' to seed from default.yaml, or 'Add Symbol' to create one."
+) }}
+{% endif %}
+
+{% endcall %}
+
+
+{# Add Symbol modal #}
+<dialog id="add-symbol-modal" class="modal">
+    <div class="modal-box">
+        <h3 class="font-bold text-lg mb-4">Add Symbol</h3>
+        <form method="dialog" onsubmit="addSymbol(event)">
+            <div class="form-control mb-3">
+                <label class="label"><span class="label-text">Symbol *</span></label>
+                <input type="text" name="symbol" required
+                       placeholder="e.g. BTC/USD, SOL/USD, BTC-PERP"
+                       class="input input-bordered input-sm w-full font-mono">
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Venue *</span></label>
+                    <select name="venue" required class="select select-bordered select-sm w-full">
+                        {% for venue_name, classes in venues.items() %}
+                        <option value="{{ venue_name }}">{{ venue_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Asset Class *</span></label>
+                    <select name="asset_class" required class="select select-bordered select-sm w-full">
+                        <option value="crypto">crypto</option>
+                        <option value="equities">equities</option>
+                        <option value="commodities">commodities</option>
+                        <option value="forex">forex</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Base CCY</span></label>
+                    <input type="text" name="base_ccy"
+                           placeholder="auto-derived"
+                           class="input input-bordered input-sm w-full font-mono">
+                </div>
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Quote CCY</span></label>
+                    <input type="text" name="quote_ccy" value="USD"
+                           class="input input-bordered input-sm w-full font-mono">
+                </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Tick Size</span></label>
+                    <input type="number" step="any" name="tick_size"
+                           placeholder="optional"
+                           class="input input-bordered input-sm w-full">
+                </div>
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Min Notional</span></label>
+                    <input type="number" step="any" name="min_notional"
+                           placeholder="optional"
+                           class="input input-bordered input-sm w-full">
+                </div>
+                <div class="form-control mb-3">
+                    <label class="label"><span class="label-text">Max Leverage</span></label>
+                    <input type="number" step="any" name="max_leverage"
+                           placeholder="optional"
+                           class="input input-bordered input-sm w-full">
+                </div>
+            </div>
+            <div class="form-control mb-3">
+                <label class="label"><span class="label-text">Rationale</span></label>
+                <input type="text" name="rationale"
+                       placeholder="Why is this symbol being added?"
+                       class="input input-bordered input-sm w-full">
+            </div>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('add-symbol-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">Add Symbol</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+// === Symbol registry client-side handlers ===
+
+async function activateSymbol(symbol) {
+    if (!confirm(`Activate ${symbol}?`)) return;
+    const r = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/activate`, {method: 'POST'});
+    if (r.ok) { location.reload(); } else { alert(`Failed: ${(await r.json()).error}`); }
+}
+
+async function deactivateSymbol(symbol) {
+    const reason = prompt(`Reason for deactivating ${symbol}? (optional)`);
+    if (reason === null) return;
+    const r = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/deactivate`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reason}),
+    });
+    if (r.ok) { location.reload(); } else { alert(`Failed: ${(await r.json()).error}`); }
+}
+
+async function validateSymbol(symbol) {
+    const r = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/validate`, {method: 'POST'});
+    const data = await r.json();
+    if (r.ok && data.validation_status === 'ok') {
+        alert(`${symbol}: valid (last_price=${data.last_price})`);
+        location.reload();
+    } else {
+        alert(`${symbol}: ${data.error || data.validation_status} — ${data.validation_error || ''}`);
+    }
+}
+
+async function validateAll() {
+    if (!confirm('Validate all symbols? This may take 10-30 seconds.')) return;
+    const list = await (await fetch('/api/symbols?active_only=true')).json();
+    let ok = 0, fail = 0;
+    for (const s of list.symbols) {
+        try {
+            const r = await fetch(`/api/symbols/${encodeURIComponent(s.symbol)}/validate`, {method: 'POST'});
+            const d = await r.json();
+            if (d.validation_status === 'ok') ok++; else fail++;
+        } catch (e) { fail++; }
+    }
+    alert(`Validation complete: ${ok} ok, ${fail} failed`);
+    location.reload();
+}
+
+async function syncFromConfig() {
+    if (!confirm('Seed symbols table from config/default.yaml? Only inserts new rows; existing rows untouched.')) return;
+    const r = await fetch('/api/symbols/sync', {method: 'POST'});
+    const d = await r.json();
+    alert(`Synced: ${d.inserted} new symbol(s) inserted`);
+    location.reload();
+}
+
+async function addSymbol(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = Object.fromEntries(new FormData(form).entries());
+    // Coerce numeric fields
+    ['tick_size', 'min_notional', 'max_leverage'].forEach(k => {
+        if (data[k]) data[k] = parseFloat(data[k]); else delete data[k];
+    });
+    if (!data.base_ccy) delete data.base_ccy;
+    if (!data.rationale) delete data.rationale;
+    const r = await fetch('/api/symbols', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+    });
+    const d = await r.json();
+    if (r.ok) {
+        document.getElementById('add-symbol-modal').close();
+        location.reload();
+    } else {
+        alert(`Failed: ${d.error}`);
+    }
+}
+
+// When the venue dropdown changes, filter the asset_class options to only those
+// supported by the selected venue.
+document.querySelector('select[name="venue"]').addEventListener('change', (e) => {
+    const venue = e.target.value;
+    const supported = {{ venues | tojson }}[venue] || [];
+    const classSelect = document.querySelector('select[name="asset_class"]');
+    Array.from(classSelect.options).forEach(opt => {
+        opt.disabled = supported.length > 0 && !supported.includes(opt.value);
+        if (opt.disabled && opt.selected) {
+            // Find first non-disabled option
+            const firstEnabled = Array.from(classSelect.options).find(o => !o.disabled);
+            if (firstEnabled) firstEnabled.selected = true;
+        }
+    });
+});
+// Trigger once on load to filter initial state
+document.querySelector('select[name="venue"]').dispatchEvent(new Event('change'));
+</script>
+
+{% endblock %}
