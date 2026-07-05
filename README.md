@@ -159,7 +159,7 @@ DeadMansSwitch (background monitor, auto-activates kill switch + flattens if no 
 4. **Paper trading credentials** (gather before setup):
    - Alpaca paper keys: https://app.alpaca.markets/paper/dashboard/overview
    - Hyperliquid: generate a **dedicated** trading wallet (never your main)
-   - Noble Trader Redis URL + Supabase URL + service_role key
+   - Noble Trader Redis URL + Supabase URL + anon/publishable key (RLS-scoped)
 
 ---
 

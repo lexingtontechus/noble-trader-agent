@@ -182,7 +182,7 @@ async def check_supabase(config: HermesConfig) -> dict[str, Any]:
         return {
             "name": "Supabase",
             "status": "not_configured",
-            "detail": "Set SUPABASE_URL and SUPABASE_KEY in .env",
+            "detail": "Set SUPABASE_URL and SUPABASE_ANON_KEY in .env",
             "url": "",
         }
     try:

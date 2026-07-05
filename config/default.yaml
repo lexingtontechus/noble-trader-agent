@@ -89,7 +89,7 @@ upstream:
       staleness_ms:    30000                # reject heartbeats older than 30s
     supabase:
       url:                    "secret:supabase.url"
-      key:                    "secret:supabase.key"
+      anon_key:               "secret:supabase.anon_key"
       sweep_result_table:     "nt_sweep_result"
       regime_log_table:       "nt_regime_log"
       backfill_on_startup:    true

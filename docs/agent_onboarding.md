@@ -137,7 +137,7 @@ log in to the dashboard or call the API programmatically.
 |---|---|---|
 | `NOBLE_TRADER_REDIS_URL` | Noble Trader operator | Real-time heartbeat ingestion |
 | `SUPABASE_URL` | Your Supabase project | Historical heartbeat backfill |
-| `SUPABASE_KEY` | Supabase dashboard (service_role) | Read access to NT tables |
+| `SUPABASE_ANON_KEY` | Supabase dashboard (Settings → API → anon public) | Read access to NT tables (subject to RLS) |
 | `ALPACA_API_KEY` | https://app.alpaca.markets/paper/dashboard/overview | Paper stock/commodity/crypto trading |
 | `ALPACA_API_SECRET` | Same as above | Paper stock/commodity/crypto trading |
 | `HYPERLIQUID_WALLET_ADDRESS` | Generate dedicated wallet | Paper crypto trading |
@@ -927,7 +927,7 @@ The agent installs the following cron entries on its host:
 - HMM retrain reminder (logs a note — the actual HMM lives upstream in Noble
   Trader; this is a reminder to coordinate with the NT operator)
 - Rotation reminders (every 90 days per security policy) for API keys,
-  Supabase service_role key, Hyperliquid wallet
+  Supabase anon/publishable key, Hyperliquid wallet
 
 `platform meta-regime --retrain` recalibrates the rule-based meta-regime
 classifier thresholds from the trailing 30-day distribution. Hermes's

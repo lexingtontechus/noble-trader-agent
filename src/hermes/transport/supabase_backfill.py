@@ -38,7 +38,11 @@ class SupabaseBackfiller:
         nt_supabase = config.upstream.get("noble_trader", {}).get("supabase", {})
 
         self._url = nt_supabase.get("url", "")
-        self._key = nt_supabase.get("key", "")
+        # Use anon_key (publishable key subject to RLS policies) — NOT the
+        # service_role key. The service_role key bypasses RLS and grants full
+        # admin access to the entire Supabase project, which is unsafe to
+        # distribute in an open-source / multi-agent deployment.
+        self._key = nt_supabase.get("anon_key", "") or nt_supabase.get("key", "")
         self._sweep_table = nt_supabase.get("sweep_result_table", "nt_sweep_result")
         self._regime_table = nt_supabase.get("regime_log_table", "nt_regime_log")
         self._db_path = get_duckdb_path(config)

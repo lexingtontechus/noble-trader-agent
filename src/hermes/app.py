@@ -815,7 +815,7 @@ def backfill(ctx: click.Context, days_back: int, symbols: str | None) -> None:
         asyncio.run(run())
     except RuntimeError as e:
         click.echo(f"  ERROR: {e}", err=True)
-        click.echo("  Make sure SUPABASE_URL and SUPABASE_KEY are set in .env", err=True)
+        click.echo("  Make sure SUPABASE_URL and SUPABASE_ANON_KEY are set in .env", err=True)
         sys.exit(1)
 
 

@@ -474,7 +474,7 @@ upstream:
       consumer_group:  "hermes-l0"                              # logical name, not secret
     supabase:
       url:             "secret:supabase.url"
-      key:             "secret:supabase.key"                    # service_role key, NOT anon
+      anon_key:        "secret:supabase.anon_key"               # anon/publishable key — safe to distribute (RLS-scoped, see §13.12)
       # Actual NT Supabase tables (confirmed from NT schema):
       sweep_result_table: "nt_sweep_result"                     # weekly heavy + light sweeps: optimal brick_size/sl/tp per symbol
       regime_log_table:   "nt_regime_log"                       # periodic regime snapshots (every 5–15min per symbol)
@@ -2268,7 +2268,7 @@ Selected from §11 based on priority:
 9. **Heartbeat schema evolution** — still open. NT is at v7.5.0 and actively iterating. Recommend: version field in payload + CI tests against latest NT release. Need your preference on coupling tightness.
 10. **Upstream `regime_shift == "true"` semantics** — still open. Need to check NT source/docs: does it mean "regime changed in this heartbeat" or "regime has changed recently and this is the first heartbeat since"? Affects whether we re-evaluate open positions on every such heartbeat or only the first.
 11. **Tail risk action override policy** — DECIDED: **`more_conservative`** (configurable in §3.3). When NT and Hermes disagree, take the more conservative of the two.
-12. **7-state meta-regime training data** — DECIDED: **use historical NT heartbeats from Supabase** (Option 3 from earlier proposal). Pull 1–2 years of heartbeats, construct portfolio returns from venue-native historical price data, train HMM. Retrain monthly. Supabase access pattern covered in §13. **Supabase table names CONFIRMED from NT schema**: `nt_sweep_result` (heavy + light sweeps with optimal brick/sl/tp) and `nt_regime_log` (periodic regime snapshots). Full schemas in §6.2.10. Still need: Supabase URL + service_role key (paper keys OK) for actual connection testing.
+12. **7-state meta-regime training data** — DECIDED: **use historical NT heartbeats from Supabase** (Option 3 from earlier proposal). Pull 1–2 years of heartbeats, construct portfolio returns from venue-native historical price data, train HMM. Retrain monthly. Supabase access pattern covered in §13. **Supabase table names CONFIRMED from NT schema**: `nt_sweep_result` (heavy + light sweeps with optimal brick/sl/tp) and `nt_regime_log` (periodic regime snapshots). Full schemas in §6.2.10. Still need: Supabase URL + anon/publishable key (paper keys OK) for actual connection testing.
 13. **Simulation Engine compute budget** — DECIDED: **separate worker process** communicating via DuckDB + Redis. A runaway optimization can't affect live trading.
 14. **Shadow mode sizing** — DECIDED: **scaled-down (10% of live size cap)** with explicit `shadow_run_id` tag on every simulated trade for clean attribution. Configurable.
 15. **Forex venue selection** — still open. 15% of portfolio is reserved for forex but no venue yet. Candidates: OANDA (easy API, retail), IBKR (institutional, more asset classes), FXCM. Need your preference and timeline. Alpaca confirmed to have no forex.
@@ -2352,7 +2352,7 @@ NOBLE_TRADER_REDIS_CONSUMER_GROUP=hermes-l0
 # === Noble Trader upstream (Supabase — historical sweeps + regime logs) ===
 # Placeholder URL — replace with actual Supabase project URL in .env
 SUPABASE_URL=https://<your-project>.supabase.co
-SUPABASE_KEY=<service-role-key>                              # service_role, NOT anon
+SUPABASE_ANON_KEY=<publishable-anon-key>                     # anon/publishable key — RLS-scoped, safe to distribute (see §13.12)
 SUPABASE_SWEEP_RESULT_TABLE=nt_sweep_result                  # confirmed from NT schema
 SUPABASE_REGIME_LOG_TABLE=nt_regime_log                      # confirmed from NT schema
 
@@ -2454,7 +2454,7 @@ Also enable:
 |---|---|---|---|
 | 0–1 (Foundation + Upstream) | NT Redis URL | NT operator | `rediss://` for TLS; includes password if any |
 | 0–1 | NT Redis channel name | NT config | Non-sensitive, but confirm exact name |
-| 0–1 | Supabase URL + service_role key | Your Supabase project | service_role, NOT anon — needed for cross-user read |
+| 0–1 | Supabase URL + anon/publishable key | Your Supabase project (Settings → API → anon public) | RLS-scoped — safe to distribute; requires RLS policies (see §13.12) |
 | 0–1 | Supabase table names | NT schema | Confirm `trading_config` + `ta_backtest_result` |
 | 2 (Market Data) | Alpaca API key + secret | https://app.alpaca.markets/paper/dashboard/overview | Paper keys free, instant |
 | 2 | HL wallet address + private key | Generate dedicated wallet | Never reuse main wallet; fund with small USDC for paper |
@@ -2485,7 +2485,7 @@ Also enable:
 | Docker commands | Private keys |
 | Python package versions | Wallet seed phrases |
 | Error messages (with keys redacted) | Anything starting with `sk_`, `pk_`, `0x` + 40+ hex chars |
-| Screenshots of dashboards (with sensitive columns redacted) | Service role keys |
+| Screenshots of dashboards (with sensitive columns redacted) | Service role keys (when used — this project uses anon/publishable keys, see §13.12) |
 
 ### 13.9 If Real Credentials Must Be Shared for Debugging
 
@@ -2503,7 +2503,7 @@ Rare case — should be avoided. If unavoidable:
 |---|---|---|
 | API keys (Alpaca, OANDA) | Every 90 days | Scheduled |
 | Hyperliquid wallet private key | On compromise suspicion | Manual — requires wallet migration |
-| Supabase service_role key | Every 90 days | Scheduled |
+| Supabase anon/publishable key | On compromise suspicion | Manual — low-risk (RLS-scoped, read-only) |
 | Redis password | Every 90 days | Scheduled |
 | Discord/Telegram webhooks | On team change | Manual |
 | Vault tokens | Dynamic (leased) | Auto-renew |
@@ -2520,10 +2520,29 @@ Every secret access is logged (without revealing the value):
 ```
 2025-01-15T10:23:45Z [secret_access] key=alpaca.api_key backend=env_file caller=hermes.adapters.alpaca.AlpacaAdapter result=success
 2025-01-15T10:23:45Z [secret_access] key=hyperliquid.private_key backend=env_file caller=hermes.adapters.hyperliquid.HyperliquidAdapter result=success
-2025-01-15T10:24:01Z [secret_access] key=supabase.key backend=env_file caller=hermes.transport.supabase.SupabaseBackfiller result=success
+2025-01-15T10:24:01Z [secret_access] key=supabase.anon_key backend=env_file caller=hermes.transport.supabase.SupabaseBackfiller result=success
 ```
 
 This goes to the standard structured log + DuckDB `audit_log` table (if added) for forensic review.
+
+### 13.12 Supabase RLS Policy Requirement
+
+The project uses the **anon / publishable key** (`SUPABASE_ANON_KEY`), **not** the `service_role` key. The anon key is subject to Row-Level Security (RLS), so the NT operator must explicitly enable RLS and create `SELECT` policies on the two tables Hermes reads:
+
+```sql
+-- Allow anon (publishable key) to read NT's shared tables
+ALTER TABLE nt_sweep_result ENABLE ROW LEVEL SECURITY;
+ALTER TABLE nt_regime_log   ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "anon can read nt_sweep_result" ON nt_sweep_result
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "anon can read nt_regime_log" ON nt_regime_log
+  FOR SELECT TO anon USING (true);
+```
+
+Run this once from the Supabase dashboard (SQL Editor) or `psql` against the NT project. Without these policies, the anon key receives an empty result set for every query and `SupabaseBackfiller` silently backfills zero rows.
+
+**Why anon instead of `service_role`?** This repo is open-source and designed to run as one of several cooperating agents, so the Supabase key is treated as effectively public. The anon/publishable key is safe to distribute: even if leaked, the worst case is read access to the two `nt_*` tables above — and only because the RLS policies explicitly grant it. The `service_role` key, by contrast, bypasses RLS entirely and grants full admin access to the entire Supabase project (every table, every row, including writes and deletes). Using it would make any key leak catastrophic, so it is intentionally avoided.
 
 ---
 
