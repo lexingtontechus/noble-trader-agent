@@ -2474,8 +2474,30 @@ def counterfactual(ctx: click.Context, trade_id: str) -> None:
     is_flag=True,
     help="List all hypotheses",
 )
+@click.option(
+    "--check-shadow-promotions",
+    is_flag=True,
+    help="Check for shadow hypotheses ready to promote to live (runs daily after EOD)",
+)
+@click.option(
+    "--check-underperformance",
+    is_flag=True,
+    help="Check if any promoted configs are underperforming → auto-rollback (runs daily)",
+)
+@click.option(
+    "--monthly-maintenance",
+    is_flag=True,
+    help="Run monthly maintenance (archive, vacuum, hypothesis review, DR test)",
+)
 @click.pass_context
-def agent(ctx: click.Context, eod: bool, list_hypotheses: bool) -> None:
+def agent(
+    ctx: click.Context,
+    eod: bool,
+    list_hypotheses: bool,
+    check_shadow_promotions: bool,
+    check_underperformance: bool,
+    monthly_maintenance: bool,
+) -> None:
     """Hermes Agent — self-learning loop, hypothesis tracking, decision journal.
 
     The Hermes agent evaluates existing positions through a decision tree
@@ -2486,9 +2508,20 @@ def agent(ctx: click.Context, eod: bool, list_hypotheses: bool) -> None:
     4. Shadow tests
     5. Promotes to live
 
+    \b
+    Scheduled tasks (agent owns its own cron — see docs/agent_onboarding.md):
+      Daily 16:30 PT:  --eod
+      Daily 16:35 PT:  --check-shadow-promotions
+      Daily 16:40 PT:  --check-underperformance
+      Monthly 1st:     --monthly-maintenance
+
+    \b
     Examples:
-      platform agent --eod                # Run EOD analysis
-      platform agent --list-hypotheses    # List all hypotheses
+      platform agent --eod                       Run EOD analysis
+      platform agent --list-hypotheses           List all hypotheses
+      platform agent --check-shadow-promotions   Check for ready shadow hypotheses
+      platform agent --check-underperformance    Check for underperforming configs
+      platform agent --monthly-maintenance       Run monthly maintenance
     """
     import asyncio
 
@@ -2558,6 +2591,80 @@ def agent(ctx: click.Context, eod: bool, list_hypotheses: bool) -> None:
             sys.exit(1)
         return
 
+    if check_shadow_promotions:
+        from hermes.agent.agent_ops import check_shadow_promotions as _check
+        click.echo("Checking for shadow hypotheses ready to promote...")
+        result = _check(config)
+        click.echo("")
+        click.echo("=" * 60)
+        click.echo("  Shadow Promotion Check Complete")
+        click.echo("=" * 60)
+        click.echo(f"  Checked:      {result['checked']} shadow hypotheses")
+        click.echo(f"  Ready:        {result['ready']}")
+        click.echo(f"  Promoted:     {result['promoted']}")
+        click.echo(f"  Blocked:      {result['blocked']} (awaiting human approval)")
+        if result["details"]:
+            click.echo("")
+            click.echo("  Details:")
+            for d in result["details"]:
+                action = d.get("action", "?")
+                sym = ""
+                if d.get("config_hash"):
+                    sym = f" → hash {d['config_hash'][:12]}..."
+                click.echo(f"    [{action}] {d['hypothesis_id'][:8]}: {d['hypothesis'][:60]}{sym}")
+        click.echo("")
+        return
+
+    if check_underperformance:
+        from hermes.agent.agent_ops import check_underperformance as _check
+        click.echo("Checking for underperforming promoted configs...")
+        result = _check(config)
+        click.echo("")
+        click.echo("=" * 60)
+        click.echo("  Underperformance Check Complete")
+        click.echo("=" * 60)
+        click.echo(f"  Checked:         {result['checked']} hermes-promoted configs")
+        click.echo(f"  Underperforming: {result['underperforming']}")
+        click.echo(f"  Rolled back:     {result['rolled_back']}")
+        if result["details"]:
+            click.echo("")
+            click.echo("  Details:")
+            for d in result["details"]:
+                action = d.get("action", "?")
+                click.echo(
+                    f"    [{action}] {d['config_hash'][:12]}... "
+                    f"(live Sharpe {d.get('live_sharpe', '?'):.2f} vs backtest {d.get('backtest_sharpe', '?'):.2f}, "
+                    f"{d.get('days_live', 0)} days live)"
+                )
+        click.echo("")
+        return
+
+    if monthly_maintenance:
+        from hermes.agent.agent_ops import monthly_maintenance as _monthly
+        click.echo("Running monthly maintenance...")
+        result = _monthly(config)
+        click.echo("")
+        click.echo("=" * 60)
+        click.echo("  Monthly Maintenance Complete")
+        click.echo("=" * 60)
+        click.echo(f"  Parquet files archived:  {result['archived_files']}")
+        click.echo(f"  DuckDB VACUUM:           {'✓' if result['vacuumed'] else '✗'}")
+        click.echo(f"  Hypothesis summary:      {result['hypothesis_summary']}")
+        if result.get("stuck_hypotheses"):
+            click.echo(f"  Stuck hypotheses (>14d in shadow): {len(result['stuck_hypotheses'])}")
+            for h_id in result["stuck_hypotheses"]:
+                click.echo(f"    {h_id[:12]}...")
+        click.echo(f"  DR test:                 {result['dr_test']}")
+        click.echo(f"  HMM retrain reminder:    {'✓ logged' if result['hmm_retrain_reminder'] else '✗'}")
+        if result.get("nt_reminder_note"):
+            click.echo(f"    {result['nt_reminder_note']}")
+        click.echo("")
+        click.echo("  Rotation reminders (every 90 days):")
+        for r in result["rotation_reminders"]:
+            click.echo(f"    • {r}")
+        click.echo("")
+        return
+
     # Default: show agent decision tree stats
     click.echo("Hermes Agent Decision Tree")
     click.echo("=" * 60)
@@ -2572,8 +2679,84 @@ def agent(ctx: click.Context, eod: bool, list_hypotheses: bool) -> None:
     click.echo("    No signal:   hold with native stops")
     click.echo("")
     click.echo("  Commands:")
-    click.echo("    platform agent --eod               Run EOD analysis")
-    click.echo("    platform agent --list-hypotheses    List hypotheses")
+    click.echo("    platform agent --eod                       Run EOD analysis")
+    click.echo("    platform agent --list-hypotheses           List hypotheses")
+    click.echo("    platform agent --check-shadow-promotions   Check for ready shadow hypotheses")
+    click.echo("    platform agent --check-underperformance    Check for underperforming configs")
+    click.echo("    platform agent --monthly-maintenance       Run monthly maintenance")
+    click.echo("")
+
+
+@cli.command(name="meta-regime")
+@click.option(
+    "--retrain",
+    is_flag=True,
+    help="Retrain the meta-regime classifier (recalibrate thresholds from 30-day distribution)",
+)
+@click.pass_context
+def meta_regime_cmd(ctx: click.Context, retrain: bool) -> None:
+    """Meta-regime classifier management.
+
+    Hermes's meta-regime classifier is RULE-BASED (the HMM lives upstream in
+    Noble Trader). This command recalibrates the rule thresholds based on
+    recent regime distribution.
+
+    \b
+    Scheduled task (agent owns its own cron):
+      Monthly 1st:  platform meta-regime --retrain
+
+    \b
+    Example:
+      platform meta-regime --retrain    Recalibrate thresholds from 30-day data
+    """
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "text"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+
+    if retrain:
+        from hermes.agent.agent_ops import retrain_meta_regime
+        click.echo("Retraining meta-regime classifier...")
+        result = retrain_meta_regime(config)
+        click.echo("")
+        click.echo("=" * 60)
+        click.echo("  Meta-Regime Retrain Complete")
+        click.echo("=" * 60)
+        click.echo(f"  Samples (30d):           {result.get('samples', 0)}")
+        click.echo(f"  Distribution:            {result.get('distribution', {})}")
+        click.echo(f"  Config change proposed:  {result.get('config_change_proposed', False)}")
+        if result.get("proposed_changes"):
+            click.echo("  Proposed changes (tier 3 — human approval required):")
+            for k, v in result["proposed_changes"].items():
+                click.echo(f"    {k} = {v}")
+        if result.get("next_step"):
+            click.echo("")
+            click.echo(f"  Next step: {result['next_step']}")
+        if result.get("nt_reminder_note"):
+            click.echo("")
+            click.echo(f"  ⚠ Upstream: {result['nt_reminder_note']}")
+        if result.get("error"):
+            click.echo(f"  Error: {result['error']}")
+        click.echo("")
+        return
+
+    # Default: show current meta-regime config
+    mr_cfg = config.meta_regime if hasattr(config, "meta_regime") else {}
+    if not isinstance(mr_cfg, dict):
+        mr_cfg = {}
+    click.echo("Meta-Regime Classifier Configuration")
+    click.echo("=" * 60)
+    click.echo(f"  HMM n_components:        {mr_cfg.get('hmm_n_components', 7)}")
+    click.echo(f"  Retrain frequency (days): {mr_cfg.get('retrain_frequency_days', 30)}")
+    click.echo(f"  Confidence floor:        {mr_cfg.get('confidence_floor', 0.55)}")
+    click.echo(f"  Thresholds:              {mr_cfg.get('thresholds', {})}")
+    click.echo("")
+    click.echo("  Commands:")
+    click.echo("    platform meta-regime --retrain    Recalibrate thresholds from 30-day data")
     click.echo("")
 
 

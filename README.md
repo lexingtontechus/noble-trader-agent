@@ -13,7 +13,7 @@
 |---|---|
 | **Phases completed** | 11/11 (Phase 0 through Phase 10) + 3 enhancements |
 | **Tests** | 297 (all passing) |
-| **CLI commands** | 36 |
+| **CLI commands** | 37 |
 | **Dashboard pages** | 12 (DaisyUI, 7 switchable themes) |
 | **DuckDB migrations** | 9 (schema v9) |
 | **DuckDB tables** | 24 |
@@ -526,7 +526,7 @@ pip install -r requirements-optional.txt
 
 ---
 
-## All CLI Commands (36)
+## All CLI Commands (37)
 
 ```powershell
 # Foundation (Phase 0)
@@ -574,7 +574,8 @@ platform shadow            # Start shadow mode for a new config
 platform counterfactual    # Run counterfactual analysis on a closed trade
 
 # Hermes Agent (Phase 9)
-platform agent             # Show decision tree / run EOD / list hypotheses
+platform agent             # Show decision tree / run EOD / list hypotheses / check shadow promotions / check underperformance / monthly maintenance
+platform meta-regime       # Show meta-regime config / retrain thresholds
 
 # Ops (Phase 10)
 platform replay            # Replay a historical session for forensic analysis

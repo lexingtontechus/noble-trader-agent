@@ -1,98 +1,153 @@
-# Hermes Agent Onboarding Guide
+# Hermes Agent Operational Runbook
 
-> Complete walkthrough: from project installation through live paper trading, self-learning, and disaster recovery.
+> **This is the Hermes agent's operational runbook.** Hermes is the AI operator
+> that runs the Noble Trader platform on its host. The agent reads this document
+> and executes the steps below on its own machine — it does not wait for a
+> human operator to issue commands. Recurring tasks (daily / weekly / monthly)
+> are scheduled by the agent on its own host via `crontab -e`. No recurring-task
+> scripts live in this repository; the cron schedule is the agent's, not the
+> repo's.
 
 ---
 
 ## Table of Contents
 
 1. [Onboarding Overview](#1-onboarding-overview)
-2. [Phase A: Installation & Configuration](#2-phase-a-installation--configuration)
-3. [Phase B: Connection Verification](#3-phase-b-connection-verification)
-4. [Phase C: Historical Data Backfill](#4-phase-c-historical-data-backfill)
-5. [Phase D: The Trading Loop](#5-phase-d-the-trading-loop)
-6. [Phase E: End-of-Day Analysis & Self-Learning](#6-phase-e-end-of-day-analysis--self-learning)
-7. [Phase F: Ongoing Operations](#7-phase-f-ongoing-operations)
-8. [Phase G: Disaster Recovery](#8-phase-g-disaster-recovery)
+2. [At-Startup](#2-at-startup)
+3. [Connection Verification](#3-connection-verification)
+4. [Historical Data Backfill](#4-historical-data-backfill)
+5. [The Trading Loop](#5-the-trading-loop)
+6. [End-of-Day Analysis & Self-Learning](#6-end-of-day-analysis--self-learning)
+7. [Ongoing Operations](#7-ongoing-operations)
+8. [Disaster Recovery](#8-disaster-recovery)
 9. [Dashboard Reference](#9-dashboard-reference)
 10. [CLI Command Reference](#10-cli-command-reference)
 11. [Troubleshooting Guide](#11-troubleshooting-guide)
+12. [Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary)
+13. [Appendix: Advanced Circuit Breaker Configuration](#appendix-advanced-circuit-breaker-configuration)
+14. [Appendix: Performance Attribution](#appendix-performance-attribution)
+15. [Appendix: What You Might Have Missed](#appendix-what-you-might-have-missed)
 
 ---
 
 ## 1. Onboarding Overview
 
-Hermes onboards in 7 phases:
+This runbook defines the agent's lifecycle with the platform. The agent
+executes every step on its host machine.
 
 ```
-Phase A: Installation & Configuration
+Stage 1: At-Startup                  → install, configure, verify, start loop
     ↓
-Phase B: Connection Verification
+Stage 2: Connection Verification     → verify all 6 subsystems are reachable
     ↓
-Phase C: Historical Data Backfill (cold start)
+Stage 3: Historical Data Backfill    → cold-start only: pull NT + market history
     ↓
-Phase D: The Trading Loop (daily operation)
+Stage 4: The Trading Loop            → continuous, 6 long-running processes
     ↓
-Phase E: End-of-Day Analysis & Self-Learning
+Stage 5: End-of-Day Analysis         → daily cron: postmortems + hypotheses + auto-rollback
     ↓
-Phase F: Ongoing Operations (weekly/monthly maintenance)
+Stage 6: Ongoing Operations          → weekly + monthly cron (optimize, rigor, retrain)
     ↓
-Phase G: Disaster Recovery (when things go wrong)
+Stage 7: Disaster Recovery           → when things go wrong, take prescriptive action
 ```
 
-**Time to first trade**: ~30 minutes (installation + config + connection verification)
+**Time to first trade**: ~30 minutes (install + config + connection verification).
 
-**Time to first learning cycle**: ~1-2 hours (after accumulating trade history)
+**Time to first learning cycle**: ~1–2 hours (after accumulating trade history,
+the first EOD cron run generates postmortems + hypotheses).
+
+**Cron ownership**: the agent installs its own cron schedule on its host via
+`crontab -e`. No cron definitions or recurring-task scripts are committed to
+the repository. The complete schedule the agent installs is in
+[Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary).
 
 ---
 
-## 2. Phase A: Installation & Configuration
+## 2. At-Startup
+
+When the platform starts (after a fresh install, a restart, a deploy, or crash
+recovery), the agent must perform the steps in this section in order. Stage 1
+is the only stage the agent runs every time the host comes up; the daily /
+weekly / monthly work is handled by cron in §6 and §7.
 
 ### 2.1 Prerequisites
 
-| Requirement | How to verify |
+The agent verifies each prerequisite before doing anything else.
+
+| Requirement | How the agent verifies |
 |---|---|
 | Python 3.12+ | `python --version` |
 | Git | `git --version` |
-| Redis (local or remote) | `redis-cli ping` → PONG |
-| Paper trading credentials | See §2.3 below |
+| Node.js 18+ (for SPA dashboard build) | `node --version` |
+| Redis (local or remote) | `redis-cli ping` → `PONG` |
+| Paper-trading credentials for all venues | see §2.3 |
 
-### 2.2 Install
+### 2.2 First-Time Install
 
-```powershell
-# Extract the zip
-# Navigate to project folder
-cd hermes-trading-platform
+The agent runs these steps once on a fresh host. Subsequent restarts skip to
+§2.4.
 
-# Run setup (Windows)
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```bash
+# 1. Clone the repo (skip if already cloned)
+git clone <repo-url> noble-trader-agent
+cd noble-trader-agent
 
-# Or manual install
+# 2. Create the Python virtual environment and install deps
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+source .venv/bin/activate
 pip install -r requirements-dev.txt
 pip install -e . --no-deps
-copy .env.example .env
-python scripts\init_duckdb.py
+
+# 3. Copy the env template (real values are filled in §2.3)
+cp .env.example .env
+
+# 4. Build the SPA dashboard (Vite + React + DaisyUI)
+#    The FastAPI server serves the prebuilt bundle at /, so the bundle
+#    must exist before `platform dashboard` is useful.
+cd dashboard
+npm install
+npm run build          # outputs to dashboard/dist/
+cd ..
+
+# 5. Bootstrap the platform: load config, open DuckDB, apply schema,
+#    seed symbols, write the baseline audit entry to config_history
+platform init
 ```
 
-### 2.3 Gather Paper Credentials
+`platform init` is the canonical setup command. It replaces the old
+`python scripts/init_duckdb.py` invocation. Specifically, it:
+
+- Loads config from `config/default.yaml`
+- Resolves all `secret:` prefixed values from `.env`
+- Opens DuckDB and applies all schema migrations (9 migrations, 24 tables)
+- Writes the **real** current config to `config_history` as the baseline audit
+  entry — every future change is diffed against this hash. (Earlier versions
+  wrote a placeholder test row; that is no longer the case.)
+- Seeds the `symbols` table from `config/default.yaml → portfolio.initial_symbols`
+- Pings Redis (non-fatal if unreachable)
+- Prints a config summary
+
+### 2.3 Configure `.env`
+
+The agent fills in `.env` with paper-only credentials. There are 8 venue
+credentials and 4 `HERMES_*` auth vars. Without the auth vars the agent cannot
+log in to the dashboard or call the API programmatically.
 
 | Credential | Source | What it enables |
 |---|---|---|
 | `NOBLE_TRADER_REDIS_URL` | Noble Trader operator | Real-time heartbeat ingestion |
 | `SUPABASE_URL` | Your Supabase project | Historical heartbeat backfill |
 | `SUPABASE_KEY` | Supabase dashboard (service_role) | Read access to NT tables |
-| `ALPACA_API_KEY` | https://app.alpaca.markets/paper/dashboard/overview | Paper stock/commodity trading |
-| `ALPACA_API_SECRET` | Same as above | Paper stock/commodity trading |
+| `ALPACA_API_KEY` | https://app.alpaca.markets/paper/dashboard/overview | Paper stock/commodity/crypto trading |
+| `ALPACA_API_SECRET` | Same as above | Paper stock/commodity/crypto trading |
 | `HYPERLIQUID_WALLET_ADDRESS` | Generate dedicated wallet | Paper crypto trading |
 | `HYPERLIQUID_PRIVATE_KEY` | Same wallet (NEVER main wallet) | Paper crypto trading |
 | `HERMES_REDIS_URL` | Local Redis instance | Internal pub/sub between layers |
 
-### 2.4 Configure
-
-Edit `.env` with real values (paper keys only). Be sure to set the four
-`HERMES_*` auth vars — without them, you can't log in to the dashboard:
+The 4 `HERMES_*` auth vars are mandatory. The auth model is a session cookie
+for browsers and a bearer token for the agent — **not** Clerk, **not** JWT,
+**not** localStorage. See [roadmap §14](roadmap.md#14-dashboard--api-auth) for
+the full model.
 
 ```bash
 # === Dashboard / API auth (single-user + agent) ===
@@ -102,49 +157,117 @@ HERMES_SESSION_SECRET=<64-char-random-string>    # signs session cookies
 HERMES_AGENT_TOKEN=<long-random-string>          # for programmatic agent access
 ```
 
-Generate strong secrets with:
-```powershell
+The agent generates strong secrets with:
+
+```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-See [roadmap §14](roadmap.md#14-dashboard--api-auth) for the full auth model.
+(Generate two distinct values — one for `HERMES_SESSION_SECRET`, one for
+`HERMES_AGENT_TOKEN`. Do not reuse.)
 
-Then verify config loads:
+### 2.4 Verify Health
 
-```powershell
-platform init
-```
-
-This will:
-- Load config from `config/default.yaml`
-- Resolve all `secret:` prefixed values from `.env`
-- Open DuckDB and apply schema (9 migrations, 24 tables)
-- Write a test row to `config_history`
-- Seed the symbols table from `config/default.yaml → portfolio.initial_symbols`
-- Ping Redis (non-fatal if unreachable)
-- Print config summary
-
-### 2.5 Verify
-
-```powershell
+```bash
 platform health
 ```
 
-Expected output: all subsystems show ✓ or at least "not_configured" (not "error").
+Expected output: every subsystem shows `✓` or at least `not_configured` —
+never `error`.
+
+### 2.5 Verify Config Audit Baseline
+
+```bash
+platform config history --limit 1
+```
+
+If the output is empty (no rows), the agent runs `platform init` again — the
+baseline audit entry is required before any config change can be diffed or
+rolled back. If a row is present, the agent notes the baseline `config_hash`;
+every future `platform config set` / `promote` / `rollback` writes a new row
+that diffs against this baseline.
+
+### 2.6 Verify Symbol Registry
+
+```bash
+platform symbols list --active-only
+```
+
+If the output is empty, the agent runs:
+
+```bash
+platform symbols sync     # re-seed from config/default.yaml → portfolio.initial_symbols
+```
+
+The active symbols in the `symbols` DuckDB table are the runtime source of
+truth for which symbols participate in `stream`, `monitor`, `synthesize`,
+`optimize`, `rigor`, `shadow`, and `simulate`. The `--symbols` CLI argument on
+those commands is **optional** and defaults to the active rows from this table
+— the agent does not pass `--symbols` unless it wants to override the active
+set.
+
+### 2.7 Start the Trading Loop
+
+The trading loop is 6 long-running processes. The agent starts each in its own
+terminal session (or under a process supervisor like `systemd` or `tmux`) and
+leaves them running. **The agent does not pass `--symbols`** — every command
+defaults to the active symbols in the registry.
+
+```bash
+# Terminal 1 — dashboard (FastAPI + SPA bundle)
+platform dashboard
+
+# Terminal 2 — L0: heartbeat subscriber
+platform ingest
+
+# Terminal 3 — L2.8: active price monitor
+platform monitor
+
+# Terminal 4 — L4: signal synthesizer
+platform synthesize
+
+# Terminal 5 — L5: portfolio & risk engine
+platform risk --equity 100000
+
+# Terminal 6 — L3: execution engine (paper)
+platform execute --equity 100000 --paper
+```
+
+### 2.8 Verify the Loop Is Alive
+
+After starting all 6 processes, the agent waits 60 seconds and then verifies:
+
+```bash
+# 1. Health check — all subsystems connected
+platform health
+
+# 2. Dashboard reachable and logged in
+#    (open http://127.0.0.1:8080 in a browser, sign in with
+#    HERMES_ADMIN_USERNAME / HERMES_ADMIN_PASSWORD, and confirm the Status
+#    page shows 6 green badges)
+curl -s http://127.0.0.1:8080/health | head
+```
+
+If any badge is red, the agent consults §11 Troubleshooting before proceeding.
 
 ---
 
-## 3. Phase B: Connection Verification
+## 3. Connection Verification
 
-### 3.1 Start the Dashboard
+Before the agent allows the trading loop to place any paper trade, it verifies
+all 6 subsystems are connected. The agent performs this verification once
+after the first startup, and again any time a credential or upstream URL is
+changed.
 
-```powershell
+### 3.1 Start the Dashboard and Check the Status Page
+
+```bash
 platform dashboard
 ```
 
-Open **http://127.0.0.1:8080** in your browser. You'll see the login page —
-sign in with the `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD` you set
-in `.env`. After login, the Status page shows connection badges for all 6 subsystems:
+The agent opens **http://127.0.0.1:8080** in a browser, signs in with
+`HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`, and confirms the Status page
+shows `connected` badges for all 6 subsystems:
 
 | Subsystem | What it checks | Badge when ready |
 |---|---|---|
@@ -157,74 +280,91 @@ in `.env`. After login, the Status page shows connection badges for all 6 subsys
 
 ### 3.2 Test Alert Channels
 
-```powershell
+```bash
 platform alert-test
 ```
 
-Verifies Discord webhook and Telegram bot are configured correctly.
+The agent verifies Discord webhook and Telegram bot are configured correctly.
+If either channel is not configured, the agent will not receive kill-switch or
+circuit-breaker notifications — fix before going live.
 
 ### 3.3 Test Redis Connectivity
 
-```powershell
-python scripts\test_redis.py
+```bash
+redis-cli -u "$HERMES_REDIS_URL" ping       # → PONG
+redis-cli -u "$NOBLE_TRADER_REDIS_URL" ping # → PONG (or NT-side echo)
 ```
 
-Tests both Hermes internal Redis and Noble Trader upstream Redis with ping + pub/sub round-trip.
+The agent verifies both the internal Hermes Redis and the Noble Trader upstream
+Redis respond to `PING` and that pub/sub round-trips work.
 
 ### 3.4 Dry-Run Ingest
 
-```powershell
+```bash
 platform ingest --dry-run
 ```
 
-Validates that the Noble Trader heartbeat subscriber config is correct without actually subscribing.
+The agent verifies the Noble Trader heartbeat subscriber config is correct
+without actually subscribing. This catches typos in `NOBLE_TRADER_REDIS_URL`
+and malformed channel names before they cause silent failures in production.
 
 ---
 
-## 4. Phase C: Historical Data Backfill
+## 4. Historical Data Backfill
+
+On a cold start (fresh DuckDB), the agent backfills historical data before
+enabling live trading. This is a one-time operation per fresh install; the
+agent skips this section on subsequent restarts.
 
 ### 4.1 Pull Noble Trader Historical Data from Supabase
 
-```powershell
+```bash
 platform backfill --days-back 365
 ```
 
-Pulls from:
-- `nt_sweep_result` — weekly heavy + light sweeps (optimal brick_size/sl/tp per symbol)
-- `nt_regime_log` — periodic regime snapshots (every 5-15 min per symbol)
+This pulls from:
+
+- `nt_sweep_result` — weekly heavy + light sweeps (optimal brick_size / sl / tp
+  per symbol)
+- `nt_regime_log` — periodic regime snapshots (every 5–15 min per symbol)
 
 Applies data quality checks on ingest:
-- `sharpe_too_high` — flags absurd Sharpe ratios (>20)
+
+- `sharpe_too_high` — flags absurd Sharpe ratios (> 20)
 - `max_dd_zero` — flags impossible zero drawdown
 - `profit_factor_zero` — flags suspicious zero profit factor
-- `regime_strategy_disagree` — flags when regime says bull but strategy is losing (this is Hermes's value-add signal)
+- `regime_strategy_disagree` — flags when regime says bull but strategy is
+  losing (this is Hermes's value-add signal)
 
 ### 4.2 Pull Historical Market Data from Venues
 
-```powershell
-platform backfill-market --symbol BTC-PERP --venue hyperliquid --timeframe 1m --days-back 90
-platform backfill-market --symbol BTC/USD --venue alpaca --timeframe 1m --days-back 90
+```bash
+platform backfill-market --symbol BTC/USD    --venue alpaca       --timeframe 1m --days-back 90
+platform backfill-market --symbol BTC-PERP   --venue hyperliquid  --timeframe 1m --days-back 90
 ```
 
-Stores in Parquet (partitioned by `venue/symbol/tf/date`) for offline analysis and backtesting.
+Stores in Parquet (partitioned by `venue/symbol/tf/date`) for offline analysis
+and backtesting.
 
 ### 4.3 Verify Data
 
-Check the dashboard:
+The agent opens the dashboard and confirms:
+
 - **Heartbeats page** (`/heartbeats`) — should show historical NT heartbeats
 - **PnL page** (`/pnl`) — should show "insufficient data" (no trades yet)
 
 ---
 
-## 5. Phase D: The Trading Loop
+## 5. The Trading Loop
 
 ### 5.0 Symbol Registry
 
 The trading universe is stored in the DuckDB `symbols` table — it is the
 runtime source of truth for which symbols participate in `stream`, `monitor`,
 `synthesize`, `optimize`, `rigor`, `shadow`, and `simulate`. The `--symbols`
-argument on those commands is now optional and defaults to all **active**
-rows from this table.
+argument on those commands is **optional** and defaults to all **active** rows
+from this table. The agent does not pass `--symbols` unless it wants to
+override the active set for a single run.
 
 After running `platform init` (which seeds the table from
 `config/default.yaml → portfolio.initial_symbols`), check what was seeded:
@@ -256,7 +396,9 @@ The same operations are available in the UI on the `/symbols` dashboard page
 
 ### 5.1 Trading Loop Overview
 
-The trading loop is the real-time pipeline that runs continuously during market hours:
+The trading loop is the real-time pipeline that runs continuously during
+market hours. The agent keeps all 6 processes (§2.7) running for the entire
+session.
 
 ```
 Noble Trader
@@ -367,6 +509,7 @@ Noble Trader
 #### Step 1: Noble Trader Publishes Heartbeat
 
 Noble Trader (NT) runs its own strategy brain — it owns:
+
 - Strategy direction (buy/sell/neutral)
 - Renko brick_size optimization (weekly full sweep + 5/15min light sweeps)
 - Per-asset 4×4 HMM regime detection (vol × trend = 16 cells)
@@ -374,11 +517,13 @@ Noble Trader (NT) runs its own strategy brain — it owns:
 - Kelly + Masaniello sizing
 - Signal generation (direction, entry, stop, TP)
 
-NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15min (stocks/commodities).
+NT publishes a heartbeat to its Redis channel every ~5 min (crypto/forex) /
+~15 min (stocks/commodities).
 
 #### Step 2: L0 Receives and Validates Heartbeat
 
-**What happens**: The `platform ingest` process subscribes to NT's Redis channel and processes each heartbeat.
+**What happens**: The `platform ingest` process subscribes to NT's Redis
+channel and processes each heartbeat.
 
 **Sub-steps**:
 1. **Receive**: async Redis subscriber with consumer group (survives disconnects)
@@ -389,7 +534,7 @@ NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15mi
 6. **Persist**: write to DuckDB `signal_heartbeats` table (immutable provenance chain)
 7. **Re-publish**: on internal `signal.raw.hermes.{symbol}` channel for downstream consumption
 
-**Failure handling**: malformed payloads quarantined in `signal_heartbeats_quarantine`; heartbeat gap >60s triggers `upstream.stale` alert.
+**Failure handling**: malformed payloads quarantined in `signal_heartbeats_quarantine`; heartbeat gap > 60s triggers `upstream.stale` alert.
 
 #### Step 3: L2.8 Monitors Live Market Data
 
@@ -442,9 +587,9 @@ NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15mi
 2. **Autonomy gate**: classify the action into one of 5 tiers:
    - Tier 0: read-only (query, backtest) — autonomous
    - Tier 1: small trade (≤ $5k, ≤ 2% equity) — autonomous
-   - Tier 2: config promotion — notify-only
+   - Tier 2: config promotion — auto-promote + notify (per-key tier table; see §7.4)
    - Tier 3: large/novel trade (> $25k) — human approval required (4h timeout)
-   - Tier 4: structural change — hard block
+   - Tier 4: structural change — hard block (agent cannot do; human only)
    - Active hours check: tier 1 degrades to tier 3 outside market hours (crypto 24/7 exempt)
 3. **Risk gate** (8 checks, all must pass for approval):
    - Kill switch not active
@@ -557,26 +702,85 @@ NT publishes a heartbeat to its Redis channel every ~5min (crypto/forex) / ~15mi
 
 ---
 
-## 6. Phase E: End-of-Day Analysis & Self-Learning
+## 6. End-of-Day Analysis & Self-Learning
 
-### 6.1 EOD Analysis
+This is the agent's self-learning loop. The agent **owns its own cron schedule
+on its host** — these cron entries are NOT committed to the repository. The
+agent installs them via `crontab -e` on the host it runs on. The complete
+schedule is in
+[Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary); the EOD
+entries are reproduced in §6.1 below.
 
-Run at end of trading day:
+### 6.1 EOD Cron Schedule
 
-```powershell
-platform agent --eod
+The agent installs the following cron entries on its host (PT = Pacific Time,
+market close):
+
+```bash
+crontab -e
 ```
 
-**What it does**:
+Add:
+
+```bash
+# EOD analysis — weekdays 16:30 PT
+30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --eod >> logs/eod.log 2>&1
+# Shadow promotion check — weekdays 16:35 PT
+35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-shadow-promotions >> logs/eod.log 2>&1
+# Underperformance check — weekdays 16:40 PT
+40 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-underperformance >> logs/eod.log 2>&1
+```
+
+The three commands run in sequence, 5 minutes apart, to ensure each completes
+before the next starts. All output is appended to `logs/eod.log`.
+
+### 6.2 What EOD Does
+
+`platform agent --eod` calls `SelfLearningLoop.run_eod_analysis()` which
+executes these 5 steps:
+
 1. **Observe**: pull all closed trades from `pnl_realized` for today
 2. **Attribute**: decompose PnL by meta-regime (win rate, total PnL, avg PnL per regime)
 3. **Postmortems**: write automated postmortems for each trade with lessons
 4. **Hypothesize**: generate improvement hypotheses from regime performance:
    - Low win-rate regime (< 40%, 3+ trades) → propose reducing sizing multiplier
    - High win-rate regime (> 65%, 3+ trades, positive PnL) → propose increasing sizing multiplier
-5. **Store hypotheses**: write to `hermes_hypotheses` table (status = "proposed")
+5. **Store hypotheses**: write to `hermes_hypotheses` table (status = `proposed`)
 
-### 6.2 Hypothesis Lifecycle
+### 6.3 Shadow Promotion Check
+
+`platform agent --check-shadow-promotions` runs at 16:35 PT, 5 minutes after
+EOD. For each hypothesis in `shadow` state, it checks whether the shadow
+config's live Sharpe ≥ 80% of its backtest Sharpe over the shadow window. If
+yes:
+
+- **Tier 2 keys** (13 keys, e.g. `entry.brick_confirmation_count`,
+  `execution.limit_offset_bps`) — **auto-promoted** via
+  `platform config promote --hypothesis-id ID --change k=v`. The AutonomyGate
+  permits agent promotion of tier 2 keys. A notification is sent; no human
+  action required.
+- **Tier 3 keys** (8 keys, e.g. `circuit_breakers.volatility.vol_mult_threshold`,
+  `account.daily_loss_limit_pct`) — **blocked**. The hypothesis is marked
+  `awaiting_human`. The agent sends a notification asking a human to run
+  `platform config set <key> <value> --rationale "..." --author <human>`.
+- **Tier 4 keys** (9 keys, e.g. `account.max_gross_exposure_pct`,
+  `venues.*.enabled`, `autonomy.tier_*.max_notional_usd`) — **hard blocked**,
+  structural, human-only. Same `awaiting_human` flow.
+
+### 6.4 Underperformance Check
+
+`platform agent --check-underperformance` runs at 16:40 PT. For each config
+promotion with `source = 'hermes'` in `config_history` that has been live for
+≥ 14 days, the agent computes live Sharpe over the live window and compares it
+to the backtest Sharpe stored in the promotion's rationale.
+
+If **live Sharpe < 50% of backtest Sharpe**, the agent **auto-rolls back** to
+the previous config hash via `rollback_config()`. The rollback is itself
+written to `config_history` with
+`rationale = "auto-rollback: live Sharpe X < 50% of backtest Y over N days"`
+and `author = "hermes"`. A notification is sent.
+
+### 6.5 Hypothesis Lifecycle
 
 ```
 proposed → backtested → shadow → live
@@ -587,16 +791,32 @@ proposed → backtested → shadow → live
 - **Propose**: EOD analysis generates hypothesis (e.g., "Reduce sizing in choppy_range")
 - **Backtest**: run through simulation engine with 6 rigor checks
 - **Shadow**: paper-trade in parallel at 10% of live size for 7 days
-- **Promote**: auto-promote if shadow Sharpe ≥ 80% of backtest Sharpe
+- **Promote**: auto-promote if shadow Sharpe ≥ 80% of backtest Sharpe (tier 2
+  only — see §6.3)
 - **Reject**: if rigor checks fail or shadow underperforms
-- **Retire**: if promoted config underperforms in live for 14 days → auto-rollback
+- **Retire**: if promoted config underperforms in live for 14 days →
+  auto-rollback (see §6.4)
 
-### 6.3 Optimization Sweep
+Promotion is gated by `AutonomyGate.classify_config_change(key_path, caller)`:
 
-Run weekly (or on demand):
+- `caller='hermes'` (used by `platform config promote`) — tier 2 allowed,
+  tier 3/4 blocked with exit 1
+- `caller='human'` (used by `platform config set`) — all tiers allowed, tier
+  3/4 prints a warning
 
-```powershell
-platform optimize --symbols BTC-PERP --days-back 90 --n-trials 200
+See [§7.4 Config Management Workflow](#74-config-management-workflow) for the
+per-key tier table and the exact CLI commands.
+
+### 6.6 Optimization Sweep (Weekly Cron)
+
+The agent runs the optimization sweep weekly via cron (Saturday 02:00 PT — see
+[Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary)). The
+`--symbols` argument is **optional** and the agent does not pass it — the
+sweep defaults to all active symbols.
+
+```bash
+# Saturday 02:00 PT
+0 2 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform optimize --days-back 90 --n-trials 200 >> logs/optimize.log 2>&1
 ```
 
 **What it does**:
@@ -610,22 +830,29 @@ platform optimize --symbols BTC-PERP --days-back 90 --n-trials 200
    - Sizing multipliers per regime
 3. Each trial: run backtest → compute entry alpha vs baseline → 6 rigor checks
 4. Accept only trials that: pass rigor AND beat baseline
-5. Top candidates enter shadow mode
+5. Top candidates enter shadow mode (then flow through §6.3 → §6.4)
 
-### 6.4 Counterfactual Analysis
+### 6.7 Counterfactual Analysis (On Demand)
 
-On any closed trade:
+The agent runs counterfactuals on demand when investigating a specific closed
+trade:
 
-```powershell
+```bash
 platform counterfactual --trade-id <uuid>
 ```
 
-**What it does**: replays the trade under alternative entry strategies (enter_now vs wait_for_brick_close vs wait_for_pullback) and computes what the PnL would have been.
+Replays the trade under alternative entry strategies (enter_now vs
+wait_for_brick_close vs wait_for_pullback) and computes what the PnL would
+have been.
 
-### 6.5 Statistical Rigor Checks
+### 6.8 Statistical Rigor Checks (Weekly Cron)
 
-```powershell
-platform rigor --symbols BTC-PERP --days-back 90
+The agent runs rigor checks weekly via cron (Saturday 03:00 PT) — see
+[Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary).
+
+```bash
+# Saturday 03:00 PT
+0 3 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform rigor --days-back 90 >> logs/rigor.log 2>&1
 ```
 
 6 checks (all must pass for a strategy to be accepted):
@@ -638,101 +865,168 @@ platform rigor --symbols BTC-PERP --days-back 90
 
 ---
 
-## 7. Phase F: Ongoing Operations
+## 7. Ongoing Operations
 
-### 7.1 Daily Startup Checklist
+The agent owns its weekly and monthly cron schedule on its host (NOT in the
+repo). The complete schedule is in
+[Appendix: Cron Schedule Summary](#appendix-cron-schedule-summary).
 
-```powershell
-# 1. Verify health
-platform health
+### 7.1 Daily Startup
 
-# 2. Start dashboard (Terminal 1)
-platform dashboard
+The agent does **not** restart the 6 trading-loop processes every day. They
+run continuously. The agent only restarts them after:
 
-# 3. Start heartbeat subscriber (Terminal 2)
-platform ingest
+- A config change that requires a restart (see §7.4 — after `platform config
+  set` / `promote` / `rollback`, restart all 6 processes from §2.7)
+- A host reboot or crash (run §2.4 through §2.8)
+- A deploy or code change (rebuild SPA with `cd dashboard && npm run build`,
+  then restart all 6 processes)
 
-# 4. Start price monitor (Terminal 3)
-platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP
+If a restart is needed, the agent follows §2.7 → §2.8 exactly. There is no
+separate "daily startup checklist" — at-startup is at-startup.
 
-# 5. Start signal synthesizer (Terminal 4)
-platform synthesize --symbols BTC/USD,SOL/USD,BTC-PERP
+### 7.2 Weekly Cron (Saturday)
 
-# 6. Start risk engine (Terminal 5)
-platform risk --equity 100000
+The agent installs the following cron entries on its host:
 
-# 7. Start execution engine (Terminal 6)
-platform execute --equity 100000 --paper
+```bash
+# Weekly optimization sweep — Saturday 02:00 PT
+0 2 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform optimize --days-back 90 --n-trials 200 >> logs/optimize.log 2>&1
+# Weekly rigor checks — Saturday 03:00 PT
+0 3 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform rigor --days-back 90 >> logs/rigor.log 2>&1
+# DuckDB VACUUM — Saturday 04:00 PT
+0 4 * * 6 cd /path/to/noble-trader-agent && .venv/bin/python -c "import duckdb; duckdb.connect('data/hermes.duckdb').execute('VACUUM')" >> logs/vacuum.log 2>&1
 ```
 
-### 7.2 Daily Shutdown Checklist
+The agent also reviews `circuit_breaker_events` weekly to look for patterns
+(this is a manual review the agent performs when triaging incidents, not a
+cron job):
 
-```powershell
-# 1. Run EOD analysis
-platform agent --eod
-
-# 2. Generate tear sheet
-platform pnl
-
-# 3. Stop all processes (Ctrl+C in each terminal)
-
-# 4. Verify no orphaned positions
-# Check dashboard /portfolio page
-
-# 5. Backup DuckDB
-cp data/hermes.duckdb backups/hermes_$(date +%Y%m%d).duckdb
+```bash
+# Review alert history (manual, not cron)
+duckdb data/hermes.duckdb -c "SELECT * FROM circuit_breaker_events WHERE ts >= now() - INTERVAL '7 days'"
 ```
 
-### 7.3 Weekly Maintenance
+### 7.3 Monthly Cron (1st of Month)
 
-```powershell
-# 1. Run optimization sweep
-platform optimize --symbols BTC/USD,SOL/USD,BTC-PERP --days-back 90 --n-trials 200
+The agent installs the following cron entries on its host:
 
-# 2. Run rigor checks
-platform rigor --symbols BTC/USD,SOL/USD,BTC-PERP --days-back 90
-
-# 3. Review hypotheses
-platform agent --list-hypotheses
-
-# 4. DuckDB VACUUM
-python -c "import duckdb; duckdb.connect('data/hermes.duckdb').execute('VACUUM')"
-
-# 5. Review alert history (check for patterns)
-# Query: SELECT * FROM circuit_breaker_events WHERE ts >= now() - INTERVAL '7 days'
+```bash
+# Monthly maintenance — 1st of month 03:00 PT
+0 3 1 * * cd /path/to/noble-trader-agent && .venv/bin/platform agent --monthly-maintenance >> logs/monthly.log 2>&1
+# Monthly meta-regime retrain — 1st of month 04:00 PT
+0 4 1 * * cd /path/to/noble-trader-agent && .venv/bin/platform meta-regime --retrain >> logs/monthly.log 2>&1
 ```
 
-### 7.4 Monthly Maintenance
+`platform agent --monthly-maintenance` performs:
 
-- Retrain 7-state meta-regime HMM on rolling 2-year window
-- Review and rotate API keys (every 90 days per security policy)
-- Archive old Parquet data (>90 days) to cold storage
-- Test disaster recovery by running through a scenario in `docs/dr_runbook.md`
-- Review hypothesis tracker for promotions/rejections
+- Archive old Parquet data (> 90 days) to cold storage
+- DuckDB VACUUM
+- Hypothesis review (list stuck hypotheses > 14 days in shadow)
+- DR test (run a scenario from `docs/dr_runbook.md`)
+- HMM retrain reminder (logs a note — the actual HMM lives upstream in Noble
+  Trader; this is a reminder to coordinate with the NT operator)
+- Rotation reminders (every 90 days per security policy) for API keys,
+  Supabase service_role key, Hyperliquid wallet
 
-### 7.5 Config Tuning Guide
+`platform meta-regime --retrain` recalibrates the rule-based meta-regime
+classifier thresholds from the trailing 30-day distribution. Hermes's
+meta-regime classifier is **rule-based** (the HMM lives upstream in Noble
+Trader). The retrain proposes threshold changes; because the threshold keys
+are **tier 3** (human approval required), the retrain only **proposes** the
+changes — it does not auto-apply them. A human must run `platform config set
+<meta_regime.thresholds.*> <value> --rationale "monthly retrain proposal"`.
+The agent sends a notification with the proposed values.
 
-The most important tunable parameters (in `config/default.yaml`):
+### 7.4 Config Management Workflow
 
-| Parameter | Default | When to tune |
-|---|---|---|
-| `account.max_portfolio_drawdown_pct` | 0.15 | If you want tighter/looser portfolio risk |
-| `account.daily_loss_limit_pct` | 0.03 | Daily risk tolerance |
-| `asset.max_position_size_pct` | 0.05 | Per-asset concentration limit |
-| `signal.reward_risk_min` | 1.5 | Minimum R:R to take a trade |
-| `meta_regime.thresholds.risk_off_corr_threshold` | 0.75 | When to go risk-off |
-| `autonomy.tier_1.max_notional_usd` | 5000 | Autonomous trade size cap |
-| `execution.max_slippage_bps` | 20 | Max acceptable slippage |
+This section replaces the old "Config Tuning Guide". The agent does not edit
+`config/default.yaml` directly. Every config change flows through
+`platform config` and is recorded in the `config_history` audit table.
 
-**Rule**: Never change more than one parameter at a time. Backtest before promoting to live.
+#### Manual change (human path)
+
+```bash
+platform config set <key.path> <value> --rationale "why this change" --author <human>
+```
+
+- Single-key change. Always approved for humans (tier 2/3/4 all allowed).
+- Tier 3/4 keys print a warning but still apply.
+- Writes a new row to `config_history` with `source='human'`, the rationale,
+  the author, and the diff against the previous hash.
+
+#### Optimization promotion (agent path)
+
+```bash
+platform config promote \
+  --hypothesis-id <ID> \
+  --change key1=val1 \
+  --change key2=val2 \
+  --rationale "shadow Sharpe X ≥ 80% of backtest Y; tier 2 auto-promote"
+```
+
+- Multi-key change, used by `platform agent --check-shadow-promotions` and
+  by the agent when promoting a hypothesis.
+- `--author` defaults to `hermes` (the agent).
+- AutonomyGate classifies each key:
+  - All keys tier 2 → applied, audit row with `source='hermes'`.
+  - Any key tier 3 → **blocked** (exit 1). The agent must mark the hypothesis
+    `awaiting_human` and send a notification. A human then uses
+    `platform config set` for each tier 3 key.
+  - Any key tier 4 → **hard blocked** (exit 1). Same `awaiting_human` flow.
+
+#### View audit trail
+
+```bash
+platform config history              # last 20 entries
+platform config history --limit 50   # last 50 entries
+platform config history --json       # machine-readable
+```
+
+#### Diff two configs
+
+```bash
+platform config diff <hash_a> <hash_b>
+```
+
+Shows field-level diff between two config hashes.
+
+#### Rollback
+
+```bash
+platform config rollback <target_hash> --rationale "live Sharpe collapsed after promotion"
+```
+
+Restores the config identified by `<target_hash>`, writes a new row to
+`config_history` with `source='rollback'` and the provided rationale. Used by
+both `platform agent --check-underperformance` (auto-rollback, `author='hermes'`)
+and by humans (manual rollback, `author=<human>`).
+
+#### Per-key tier table
+
+The tier of each config key is defined in `config/default.yaml → autonomy.config_keys`.
+Uncategorized keys default to **tier 3** (conservative).
+
+| Tier | How many keys | Who can change | Behavior |
+|---|---|---|---|
+| Tier 2 | 13 (e.g. `signal.staleness_ms`, `execution.limit_offset_bps`, `entry.brick_confirmation_count`, `position_management.trailing.atr_mult`, `renko.rolling_window_bricks`) | agent + human | Auto-promote + notify |
+| Tier 3 | 8 (e.g. `circuit_breakers.volatility.vol_mult_threshold`, `account.daily_loss_limit_pct`, `meta_regime.hmm_n_components`, all `meta_regime.thresholds.*`) | human only | Agent blocked, awaiting_human |
+| Tier 4 | 9 (e.g. `account.max_gross_exposure_pct`, `account.max_leverage_total`, `circuit_breakers.kill_switch.auto_triggers`, `venues.*.enabled`, `autonomy.tier_*.max_notional_usd`) | human only | Hard block, structural |
+
+**Rule**: Never change more than one parameter (or one hypothesis) at a time.
+The audit trail must remain diffable. After any config change, the agent
+restarts all 6 trading-loop processes (§2.7) so the new config is loaded —
+config is read at startup, not hot-reloaded.
 
 ---
 
-## 8. Phase G: Disaster Recovery
+## 8. Disaster Recovery
+
+When things go wrong, the agent takes these prescriptive actions.
 
 ### 8.1 Kill Switch (Emergency Stop)
 
-```powershell
+```bash
 # Activate (halts all new entries, cancels orders, optionally flattens)
 redis-cli PUBLISH agent.command '{"action": "flatten"}'
 
@@ -740,37 +1034,73 @@ redis-cli PUBLISH agent.command '{"action": "flatten"}'
 redis-cli PUBLISH agent.command '{"action": "resume"}'
 ```
 
+The agent activates the kill switch when:
+
+- Daily loss limit hit (configurable in `config/default.yaml`)
+- Portfolio drawdown exceeds `account.max_portfolio_drawdown_pct`
+- Dead man's switch fires (see §8.2)
+- A circuit breaker hits `halt_all` or `liquidate` severity
+
 ### 8.2 Dead Man's Switch
 
-Automatically activates if no heartbeat from any component for 60 seconds. Triggers:
+Automatically activates if no heartbeat from any component for 60 seconds.
+Triggers:
+
 1. Kill switch activation
 2. Cancel all open orders
 3. Optionally flatten all positions
 4. Send critical alert to Discord/Telegram
 
+The agent does not need to do anything to arm the DMS — it is armed on
+`engine.start()` and disarmed automatically when heartbeats resume.
+
 ### 8.3 Common Scenarios
 
 See `docs/dr_runbook.md` for 7 detailed scenarios:
+
 1. Process crash
 2. DuckDB corruption
 3. Redis disconnect
 4. Noble Trader upstream down
 5. Venue API down
 6. Daily loss limit hit
-7. Config change rollback
+7. **Config change rollback** — the agent runs:
+   ```bash
+   platform config history --limit 5                # find the bad hash
+   platform config diff <bad_hash> <good_hash>      # confirm what changed
+   platform config rollback <good_hash> --rationale "revert <reason>"
+   ```
+   Then restarts all 6 trading-loop processes (§2.7).
 
 ### 8.4 Forensic Replay
 
-```powershell
+```bash
 # Replay any time period to see exactly what happened
-platform replay --start 2026-07-01T14:00:00 --end 2026-07-01T15:00:00 --symbols BTC-PERP
+platform replay --start 2026-07-01T14:00:00 --end 2026-07-01T15:00:00
 ```
 
-Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions, orders, fills, monitor events, circuit breaker events, and account snapshots — all in chronological order.
+Reconstructs the full timeline from DuckDB: heartbeats, signals, risk
+decisions, orders, fills, monitor events, circuit breaker events, and
+account snapshots — all in chronological order. The `--symbols` argument is
+optional and defaults to all symbols.
 
 ---
 
 ## 9. Dashboard Reference
+
+The dashboard is served by the FastAPI backend at `http://127.0.0.1:8080`.
+The SPA bundle is built by `cd dashboard && npm run build` and served as
+static files from `dashboard/dist/` via a `StaticFiles` mount — this is the
+**single-host deploy** model. Same-origin cookies, no CORS, no separate
+static host.
+
+The agent signs in with `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`
+(browser session cookie) or with `HERMES_AGENT_TOKEN` as
+`Authorization: Bearer <token>` (programmatic agent access).
+
+There are 12 Jinja2 pages and 8 SPA pages.
+
+### 9.1 Jinja2 Pages (server-rendered, 12)
 
 | Page | URL | What it shows |
 |---|---|---|
@@ -787,35 +1117,72 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 | **Config** | `/config` | Loaded config (secrets redacted) |
 | **Health JSON** | `/health` | JSON health endpoint (for monitoring/CI) |
 
+### 9.2 SPA Pages (Vite + React + DaisyUI, 8)
+
+These pages replace their Jinja2 equivalents with interactive charts
+(Recharts), reactive data (TanStack Query), and live WebSocket streams.
+The remaining 4 Jinja2 pages (Heartbeats, Orders, Optimize, Config) stay
+server-rendered indefinitely — they are pure tables with no UX gain from
+migration.
+
+| SPA Page | Route | What it adds over Jinja2 |
+|---|---|---|
+| **Dashboard** | `/spa/` | 6-cell account grid + equity curve (Recharts area chart) + performance stats + open positions + risk/VaR card + recent risk decisions |
+| **Status** | `/spa/status` | Polls `/api/status` every 10s via TanStack Query (no full-page reload) |
+| **Monitor** | `/spa/monitor` | First page to consume the WebSocket infrastructure — live tick stream |
+| **Symbols** | `/spa/symbols` | Full CRUD UI mirroring Jinja2 `/symbols` with optimistic mutations |
+| **PnL** | `/spa/pnl` | Full tear sheet — equity curve (1000 pts), by-regime breakdown |
+| **Backtest** | `/spa/backtest` | Runs table with drill-down: tear sheet + equity curve + trade list |
+| **Portfolio** | `/spa/portfolio` | 4 chart types (pie, bars, histogram, stat grids) + full risk decisions table |
+| **Agent** | `/spa/agent` | Collapsible decision tree viz + hypotheses table + trade journal |
+
 ---
 
 ## 10. CLI Command Reference
 
-| Command | Phase | Purpose |
-|---|---|---|
-| `platform init` | 0 | Bootstrap: load config, open DuckDB, apply schema |
-| `platform health` | 0 | Check health of all subsystems |
-| `platform config show` | 0 | Print loaded config (secrets redacted) |
-| `platform version` | 0 | Print version |
-| `platform dashboard` | 0.5 | Start web dashboard at http://127.0.0.1:8080 |
-| `platform ingest` | 1 | Start Noble Trader heartbeat subscriber (L0) |
-| `platform backfill` | 1 | Pull historical heartbeats from Supabase |
-| `platform stream` | 2 | Stream live market data from venue WebSockets |
-| `platform monitor` | 2 | Start Active Price Monitor (L2.8) |
-| `platform backfill-market` | 2 | Pull historical bars from venue REST API |
-| `platform synthesize` | 3 | Start L4 Signal Synthesizer (BEV combiner) |
-| `platform risk` | 4 | Start L5 Portfolio & Risk Engine |
-| `platform execute` | 5 | Start L3 Execution Engine (paper trading) |
-| `platform pnl` | 6 | Generate PnL tear sheet |
-| `platform backtest` | 7 | Run backtest by replaying historical heartbeats |
-| `platform rigor` | 7 | Run statistical rigor checks |
-| `platform optimize` | 8 | Run entry/execution optimization sweep (Optuna) |
-| `platform shadow` | 8 | Start shadow mode for a new config |
-| `platform counterfactual` | 8 | Run counterfactual analysis on a closed trade |
-| `platform agent` | 9 | Show decision tree / run EOD analysis / list hypotheses |
-| `platform replay` | 10 | Replay a historical session for forensic analysis |
-| `platform alert-test` | 10 | Send a test alert to Discord/Telegram |
-| `platform load-test` | 10 | Run a load test on the DuckDB writer |
+37 commands total. The `--symbols` argument on `stream`, `monitor`,
+`synthesize`, `optimize`, `rigor`, `shadow`, and `simulate` is **optional**
+and defaults to all active symbols in the registry.
+
+| Command | Purpose |
+|---|---|
+| `platform init` | Bootstrap: load config, open DuckDB, apply schema (9 migrations, 24 tables), seed symbols, write baseline config_history entry |
+| `platform health` | Check health of all subsystems |
+| `platform version` | Print version |
+| `platform dashboard` | Start web dashboard at http://127.0.0.1:8080 |
+| `platform config show` | Print loaded config (secrets redacted) |
+| `platform config set <key> <value> --rationale "..."` | Manual single-key change (human path); writes audit row |
+| `platform config history [--limit N] [--json]` | View config audit trail |
+| `platform config diff <hash_a> <hash_b>` | Field-level diff between two configs |
+| `platform config rollback <hash> --rationale "..."` | Restore a previous config; writes audit row |
+| `platform config promote --hypothesis-id ID --change k=v [...] --rationale "..."` | Multi-key agent promotion; tier 2 only (tier 3/4 blocked) |
+| `platform symbols list [--active-only] [--venue V] [--asset-class C] [--json]` | List symbols in registry |
+| `platform symbols add <symbol> --venue V --asset-class C [...]` | Add a new symbol |
+| `platform symbols activate <symbol>` | Reactivate a paused symbol |
+| `platform symbols deactivate <symbol> --reason "..."` | Soft-delete (historical rows preserved) |
+| `platform symbols validate <symbol>` | Live-probe venue's `get_current_price` |
+| `platform symbols sync [--overwrite-active]` | Re-seed from `config/default.yaml → portfolio.initial_symbols` |
+| `platform symbols show <symbol>` | Show one symbol's full row |
+| `platform ingest [--dry-run]` | Start Noble Trader heartbeat subscriber (L0) |
+| `platform backfill --days-back N` | Pull historical heartbeats from Supabase |
+| `platform stream` | Stream live market data from venue WebSockets |
+| `platform monitor` | Start Active Price Monitor (L2.8) |
+| `platform backfill-market --symbol S --venue V --timeframe T --days-back N` | Pull historical bars from venue REST API |
+| `platform synthesize` | Start L4 Signal Synthesizer (BEV combiner) |
+| `platform risk --equity N` | Start L5 Portfolio & Risk Engine |
+| `platform execute --equity N --paper` | Start L3 Execution Engine (paper trading) |
+| `platform pnl` | Generate PnL tear sheet |
+| `platform backtest` | Run backtest by replaying historical heartbeats |
+| `platform rigor [--days-back N]` | Run statistical rigor checks (6 checks) |
+| `platform optimize [--days-back N] [--n-trials N]` | Run entry/execution optimization sweep (Optuna) |
+| `platform shadow` | Start shadow mode for a new config |
+| `platform simulate` | Run a simulation (counterfactual what-if) |
+| `platform counterfactual --trade-id <uuid>` | Run counterfactual analysis on a closed trade |
+| `platform agent [--eod] [--list-hypotheses] [--check-shadow-promotions] [--check-underperformance] [--monthly-maintenance]` | Hermes Agent — self-learning loop, hypothesis tracking, decision journal. Daily/weekly/monthly tasks run via agent-owned cron. |
+| `platform meta-regime [--retrain]` | Meta-regime classifier management. `--retrain` recalibrates rule thresholds from 30-day distribution (monthly cron; proposes tier-3 changes for human approval). |
+| `platform replay --start T --end T` | Replay a historical session for forensic analysis |
+| `platform alert-test` | Send a test alert to Discord/Telegram |
+| `platform load-test` | Run a load test on the DuckDB writer |
 
 ---
 
@@ -827,8 +1194,8 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 - If persists: check DuckDB version (`pip show duckdb`)
 
 ### "Redis unreachable"
-- Windows: `Start-Service Memurai` or `docker start hermes-redis`
 - Linux: `sudo systemctl restart redis`
+- Docker: `docker start hermes-redis`
 - Test: `redis-cli ping`
 
 ### "No heartbeats received"
@@ -841,7 +1208,7 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 - Verify `platform ingest` is running (heartbeats flowing)
 - Verify `platform synthesize` is running and subscribed to correct channels
 - Check DuckDB `signal_heartbeats` table has rows
-- Check logs for "heartbeat_parse_failed" warnings
+- Check logs for `heartbeat_parse_failed` warnings
 
 ### "All signals rejected"
 - Check `risk_decisions` table for `limits_hit` column
@@ -855,9 +1222,12 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 - Check the specific page — each page reads from a different table
 
 ### "Config change not taking effect"
-- Config is loaded at startup — restart all processes
-- Hot-reload via Redis: `redis-cli PUBLISH config.update '{"key": "value"}'`
-- Verify with `platform config show`
+- Config is loaded at startup — **restart all 6 processes** (see §2.7) after
+  any `platform config set` / `promote` / `rollback`.
+- **There is no hot-reload.** The old `redis-cli PUBLISH config.update ...`
+  trick no longer applies — use `platform config set` and restart.
+- Verify the change was recorded: `platform config history --limit 1`
+- Verify the loaded config: `platform config show`
 
 ### "Hypotheses not being generated"
 - Run `platform agent --eod` manually
@@ -867,16 +1237,71 @@ Reconstructs the full timeline from DuckDB: heartbeats, signals, risk decisions,
 ### "Optimization is slow"
 - Reduce `--n-trials` (default 200)
 - Reduce `--days-back` (default 90)
-- Use fewer symbols
-- Each trial runs a full backtest — expect ~1-5 seconds per trial depending on data volume
+- Use fewer symbols (pass `--symbols` explicitly to override the active set)
+- Each trial runs a full backtest — expect ~1–5 seconds per trial depending on data volume
+
+### "Shadow promotion didn't fire"
+- Check the hypothesis tier — tier 3/4 keys are **blocked**, not auto-promoted
+  (see §6.3). The hypothesis is marked `awaiting_human`; a human must run
+  `platform config set` for each blocked key.
+- Run `platform agent --check-shadow-promotions` manually to see the
+  per-hypothesis action (`promoted`, `blocked`, `awaiting_human`).
+
+### "Auto-rollback didn't fire"
+- The promotion must have `source='hermes'` in `config_history` (manual
+  `config set` changes are not auto-rolled back).
+- The promotion must be ≥ 14 days live.
+- The backtest Sharpe must be parseable from the rationale string. If
+  `--rationale` was empty or didn't include a Sharpe number, the
+  underperformance check skips that promotion.
 
 ---
 
-### Advanced Circuit Breaker Configuration
+## Appendix: Cron Schedule Summary
+
+The complete cron schedule the agent installs on its host via `crontab -e`.
+**This schedule is NOT committed to the repository.** The agent owns it.
+
+```bash
+# === EOD analysis — weekdays 16:30 PT ===
+30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --eod >> logs/eod.log 2>&1
+# === Shadow promotion check — weekdays 16:35 PT ===
+35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-shadow-promotions >> logs/eod.log 2>&1
+# === Underperformance check — weekdays 16:40 PT ===
+40 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-underperformance >> logs/eod.log 2>&1
+
+# === Weekly optimization — Saturday 02:00 PT ===
+0 2 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform optimize --days-back 90 --n-trials 200 >> logs/optimize.log 2>&1
+# === Weekly rigor — Saturday 03:00 PT ===
+0 3 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform rigor --days-back 90 >> logs/rigor.log 2>&1
+# === Weekly DuckDB VACUUM — Saturday 04:00 PT ===
+0 4 * * 6 cd /path/to/noble-trader-agent && .venv/bin/python -c "import duckdb; duckdb.connect('data/hermes.duckdb').execute('VACUUM')" >> logs/vacuum.log 2>&1
+
+# === Monthly maintenance — 1st of month 03:00 PT ===
+0 3 1 * * cd /path/to/noble-trader-agent && .venv/bin/platform agent --monthly-maintenance >> logs/monthly.log 2>&1
+# === Monthly meta-regime retrain — 1st of month 04:00 PT ===
+0 4 1 * * cd /path/to/noble-trader-agent && .venv/bin/platform meta-regime --retrain >> logs/monthly.log 2>&1
+```
+
+**Notes:**
+
+- All entries assume the agent installed the repo at
+  `/path/to/noble-trader-agent` and the venv at `.venv/`. Adjust the path to
+  match the actual install location.
+- All log output goes to `logs/` under the repo. The agent is responsible for
+  log rotation on its host (e.g. `logrotate`).
+- Times are in the host's local timezone. The agent adjusts to PT if its host
+  is in another timezone.
+- The agent does NOT commit this cron schedule to the repo. Each host the
+  agent runs on gets its own `crontab -e` install.
+
+---
+
+## Appendix: Advanced Circuit Breaker Configuration
 
 Beyond the per-asset volatility breaker (`VolatilityCircuitBreaker`) and the portfolio-level `RiskCircuitBreaker` covered in Phase 4, Hermes ships a unified **CircuitBreakerManager** (`src/hermes/portfolio/cb_manager.py`) that adds 8 tiered categories, time-decay, and rolling windows. All configuration lives under `circuit_breakers.manager` in `config/default.yaml`.
 
-#### The 8 breaker categories (default thresholds)
+### The 8 breaker categories (default thresholds)
 
 | Category | What it watches | Default tiers (threshold → action → cooldown) |
 |---|---|---|
@@ -891,7 +1316,7 @@ Beyond the per-asset volatility breaker (`VolatilityCircuitBreaker`) and the por
 
 The 7 available actions are: `reduce_25pct`, `reduce_50pct`, `temp_block`, `block_entries`, `tighten_stops`, `halt_all`, `liquidate`. Each tier in each category picks the action that matches its severity — small breaches get soft responses (reduce), only severe breaches trigger hard actions (halt, liquidate).
 
-#### How time-decay works (`cooldown_sec`)
+### How time-decay works (`cooldown_sec`)
 
 Every tier has a `cooldown_sec` field. When a breaker trips, the manager records `expires_at = trip_time + cooldown_sec`. On each `evaluate()` pass, the manager automatically transitions `tripped → expired` once the cooldown elapses — so transient conditions (a 30-minute funding spike, a 4-hour drawdown blip) self-heal without operator intervention.
 
@@ -901,7 +1326,7 @@ Every tier has a `cooldown_sec` field. When a breaker trips, the manager records
 
 This eliminates the most common ops headache with the original breakers: "trip happened, condition cleared, but breaker is still tripped because nobody cleared it."
 
-#### How rolling windows work
+### How rolling windows work
 
 The `RollingWindowTracker` class (`deque`-backed, bounded memory) supports the two rolling categories:
 
@@ -910,7 +1335,7 @@ The `RollingWindowTracker` class (`deque`-backed, bounded memory) supports the t
 
 The tracker exposes `add(value)`, `sum()`, `count()`, and `recent_events(within_sec)` for the rolling aggregates the manager consults on each evaluation pass.
 
-#### How to configure
+### How to configure
 
 All 8 categories live under `circuit_breakers.manager` in `config/default.yaml`. Each category has the same shape:
 
@@ -941,15 +1366,17 @@ circuit_breakers:
 
 To disable a category, set `enabled: false`. To add a new tier, append to the `tiers` list — the manager picks the highest threshold whose value is exceeded. To make a trip auto-clear, set `cooldown_sec` to a non-zero value.
 
+The agent changes circuit-breaker config through `platform config set` (see §7.4), not by editing YAML directly. Most `circuit_breakers.*` keys are tier 3 (human approval required) — the agent cannot auto-promote changes to breaker thresholds.
+
 > **Layered, not replacing.** This manager coexists with `circuit_breakers.py` (per-asset volatility + portfolio DD/VaR) and `risk_gate.py` (8 pre-trade checks). It adds new categories and time-decay; the original breakers remain the fast-path pre-trade gate.
 
 ---
 
-### Performance Attribution
+## Appendix: Performance Attribution
 
 The Phase 9 decision tree was validated structurally, but Hermes had no way to answer: *"Which branches actually make money?"* `src/hermes/agent/attribution.py` closes that gap with three components.
 
-#### How DecisionBranchTracker attributes PnL to decision branches
+### How DecisionBranchTracker attributes PnL to decision branches
 
 Every trade gets a `TradeDecisionRecord` that captures the `AgentAction` taken at entry AND at exit, plus the meta-regime, brick pattern, conviction score, sizing multiplier, net PnL, R-multiple, hold duration, MFE/MAE, and entry alpha (bps). The tracker then aggregates these into `BranchStats` per branch:
 
@@ -957,11 +1384,11 @@ Every trade gets a `TradeDecisionRecord` that captures the `AgentAction` taken a
 - `analyze_entry_branch_performance()` — entry-action stats: was `enter_now` better than `wait_for_brick_close`?
 - `analyze_hypothesis_performance()` — PnL attributed back to specific hypothesis IDs, closing the loop with the Phase 9 hypothesis tracker.
 
-#### The regime × branch matrix
+### The regime × branch matrix
 
 `analyze_regime_branch_matrix()` returns a `RegimeBranchMatrix` — a `branch × regime` table of `BranchStats`. This is the killer view: a branch that looks bad overall might be excellent in `calm_trend` and terrible in `choppy_range`. The matrix surfaces this and enables **regime-conditional tuning** (e.g., "disable `trail_stop` in `choppy_range`, keep it in `calm_trend`").
 
-#### Threshold feedback for auto-tuning
+### Threshold feedback for auto-tuning
 
 `get_threshold_feedback()` produces concrete, evidence-backed tuning recommendations by comparing each branch's actual avg R-multiple against its expected behavior. Each recommendation includes `current` value, `issue` description, `suggestion`, and `evidence` (n_trades + avg R):
 
@@ -977,7 +1404,7 @@ Feedback only fires when n_trades ≥ 5 per branch (statistical noise filter). T
 
 `get_decision_quality_report()` rolls everything up: branch stats + entry stats + regime matrix + hypothesis stats + threshold feedback + best/worst performing branches in one call.
 
-#### A/B testing framework
+### A/B testing framework
 
 `ABTestFramework.compare(config_a_name, config_a_returns, config_b_name, config_b_returns, significance_level=0.05)` runs two configs in parallel and compares them with proper statistics:
 
@@ -987,7 +1414,7 @@ Feedback only fires when n_trades ≥ 5 per branch (statistical noise filter). T
 
 Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), both p-values and t-stats. Requires n ≥ 10 returns before declaring significance (prevents spurious wins on tiny samples). Falls back to a normal approximation if `scipy` isn't installed.
 
-#### Signal window optimization
+### Signal window optimization
 
 `SignalWindowOptimizer.optimize_window(signals, price_data, windows=[5,10,15,20,30,45,60,90])` finds the optimal `signal_expiry_minutes` — how long after a Noble Trader heartbeat Hermes will still act on the signal. For each candidate window it simulates: "if we entered at the best price within N minutes of the signal, what would the PnL be?" Returns per-window `{n_signals, n_filled, avg_entry_alpha_bps, total_pnl}` plus `best_window` + `rationale`. Too short → miss opportunities; too long → act on stale signals.
 
@@ -995,7 +1422,7 @@ Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), bot
 
 ---
 
-## What You Might Have Missed
+## Appendix: What You Might Have Missed
 
 ### Items Added Beyond the Original Request
 
@@ -1011,13 +1438,13 @@ Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), bot
 
 6. **Post-incident checklist** — ensures nothing is missed after an incident
 
-7. **Config tuning guide** — the 7 most important tunable parameters with guidance on when to adjust
+7. **Config management & audit trail** — `platform config set/history/diff/rollback/promote` with per-key tier enforcement (tier 2 auto-promote, tier 3 human approval, tier 4 structural)
 
-8. **Daily/weekly/monthly maintenance schedules** — structured operational rhythm
+8. **Agent-owned cron schedule** — daily EOD, shadow promotion, underperformance checks; weekly optimization + rigor; monthly maintenance + meta-regime retrain. The agent installs the schedule on its host via `crontab -e`; no cron scripts live in the repo.
 
-9. **Troubleshooting guide** — 9 common issues with solutions
+9. **Troubleshooting guide** — common issues with solutions
 
-10. **Dashboard reference** — every page explained with what it shows and when to use it
+10. **Dashboard reference** — every page explained with what it shows and when to use it (12 Jinja2 + 8 SPA)
 
 ### Items to Consider for Future Phases
 
@@ -1037,6 +1464,6 @@ Returns `winner`, `confidence` (1 - p_value), `significant` flag (p < 0.05), bot
 
 8. **Macro clock** — deferred from Phase 2 (needs economic calendar data source)
 
-9. **Human-in-the-loop UI** — for tier 3 autonomy approvals (currently CLI-only)
+9. **Human-in-the-loop UI** — for tier 3 autonomy approvals (currently CLI-only via `platform config set`)
 
 10. **Multi-strategy capital allocation** — rotate capital between strategies by Sharpe + capacity
