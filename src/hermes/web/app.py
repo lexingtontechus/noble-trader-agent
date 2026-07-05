@@ -669,6 +669,77 @@ async def api_backtest_runs(limit: int = 20, _auth: dict[str, Any] = Depends(req
     )
 
 
+@app.get("/api/backtest/runs/{run_id}")
+async def api_backtest_run_detail(
+    run_id: str, _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Get a single backtest run with its tear_sheet (equity curve + per-trade stats)."""
+    import json as _json
+
+    config = get_config()
+    from hermes.web.status import get_backtest_run_detail
+
+    run = get_backtest_run_detail(config, run_id)
+    if run is None:
+        return JSONResponse({"error": f"Backtest run not found: {run_id}"}, status_code=404)
+    return JSONResponse(content=_json.loads(_json.dumps(run, default=str)))
+
+
+@app.get("/api/portfolio/var_history")
+async def api_portfolio_var_history(
+    limit: int = 500, _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Historical VaR + drawdown + leverage time series (from account_snapshots)."""
+    import json as _json
+
+    config = get_config()
+    from hermes.web.status import get_portfolio_var_history
+
+    rows = get_portfolio_var_history(config, limit=limit)
+    return JSONResponse(content=_json.loads(_json.dumps(
+        {"count": len(rows), "history": rows}, default=str,
+    )))
+
+
+@app.get("/api/portfolio/exposure")
+async def api_portfolio_exposure(
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Current exposure breakdown by venue + direction + asset class."""
+    import json as _json
+
+    config = get_config()
+    from hermes.web.status import get_portfolio_exposure_breakdown
+
+    breakdown = get_portfolio_exposure_breakdown(config)
+    return JSONResponse(content=_json.loads(_json.dumps(breakdown, default=str)))
+
+
+@app.get("/api/agent/decision_tree")
+async def api_agent_decision_tree(
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Static decision tree definition (interactive tree viz source)."""
+    from hermes.web.status import get_decision_tree_definition
+    return JSONResponse(get_decision_tree_definition())
+
+
+@app.get("/api/agent/trade_journal")
+async def api_agent_trade_journal(
+    limit: int = 50, _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Trade journal entries (with postmortems + lessons)."""
+    import json as _json
+
+    config = get_config()
+    from hermes.web.status import get_trade_journal_entries
+
+    entries = get_trade_journal_entries(config, limit=limit)
+    return JSONResponse(content=_json.loads(_json.dumps(
+        {"count": len(entries), "entries": entries}, default=str,
+    )))
+
+
 @app.get("/api/pnl/tear_sheet")
 async def api_pnl_tear_sheet(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
     """JSON tear sheet endpoint."""

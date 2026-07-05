@@ -75,8 +75,9 @@ dashboard/
 | **Monitor** | `/monitor` | Live tick stream via `/ws/{symbol}` WebSocket — pick a symbol, see real-time price updates + recent monitor events |
 | **Symbols** | `/symbols` | Symbol registry CRUD — list, add, activate, deactivate, validate (same operations as the Jinja2 page, but reactive) |
 | **PnL** | `/pnl` | Full tear sheet — equity curve, returns (best/worst trade, profit factor), risk-adjusted (Sharpe/Sortino/Calmar/Ulcer), trade stats, by-regime breakdown |
-| **Portfolio** | `/portfolio` | Stub — see Dashboard for portfolio metrics |
-| **Backtest** | `/backtest` | Backtest runs table (Sharpe, win rate, max DD, net P&L) |
+| **Portfolio** | `/portfolio` | Allocation pie + exposure bars + VaR distribution histogram + risk decisions table |
+| **Backtest** | `/backtest` | Runs table (clickable) + equity curve + trade list drill-down |
+| **Agent** | `/agent` | Interactive decision tree + hypotheses table + trade journal with postmortems |
 
 ## Auth model
 
@@ -190,16 +191,46 @@ Theme switcher is in the navbar (top-right). Selection persists to
 This scaffold is the foundation. The Jinja2 dashboard at `src/hermes/web/`
 stays untouched and continues to serve the admin pages. Migration order:
 
-| Phase | Page | Why migrate |
-|-------|------|-------------|
-| ✅ Done | Dashboard | Main view — account + PnL, was the worst meta-refresh offender |
-| ✅ Done | Status | Replaced 10s full-page reload with TanStack Query polling |
-| ✅ Done | Monitor | First page to actually consume the WebSocket infrastructure |
-| ✅ Done | Symbols | Reactive CRUD with optimistic updates |
-| ✅ Done | PnL | Charts + by-regime breakdown |
-| Next | Backtest | Add equity curve with trade markers, regime shading |
-| Next | Portfolio | Allocation pie, exposure bars, VaR distribution |
-| Skip | Heartbeats, Orders, Agent, Optimize, Config | Server-rendered tables — fine as Jinja2 |
+### Migrated to SPA (8 pages — all chart-heavy / interactive pages)
+
+| Page | Route | What the SPA version adds over Jinja2 |
+|------|-------|----------------------------------------|
+| Dashboard | `/` | Live account overview — equity curve (Recharts area chart) + 18-stat grid + open positions table + risk card + recent risk decisions. Replaces 10s meta-refresh with TanStack Query polling. |
+| Status | `/status` | Subsystem connection badges + ingest stats. Replaces meta-refresh with 10s TanStack Query polling — no full-page reload. |
+| Monitor | `/monitor` | Live tick stream via `/ws/{symbol}` WebSocket — first page to actually consume the WS infrastructure. Symbol picker + real-time price updates + monitor events. |
+| Symbols | `/symbols` | Symbol registry CRUD — reactive mutations, Add Symbol modal, per-row activate/deactivate/validate buttons, active-only toggle, sync-from-config. |
+| PnL | `/pnl` | Full tear sheet — equity curve + returns card + risk-adjusted card + trade stats card + by-regime breakdown table. |
+| Backtest | `/backtest` | 14-column runs table with clickable rows → drill-down panel showing 12-stat grid + equity curve + trade list (up to 100 trades). |
+| Portfolio | `/portfolio` | Allocation pie + exposure bars + VaR distribution histogram + 4 stat grids (account, PnL, risk) + 12-column risk decisions table. |
+| Agent | `/agent` | Collapsible decision tree viz (10 leaf nodes, threshold annotations) + action legend + hypotheses table + trade journal with postmortem indicators. |
+
+### Intentionally skipped (4 pages — pure server-rendered tables)
+
+These pages stay on Jinja2 indefinitely. Migrating them would produce a
+dashboard that looks identical but loads slightly faster — no value-add.
+The `/api/*` endpoints already exist for all four, so they can be
+migrated later if a specific need arises.
+
+| Page | Route | Jinja2 LOC | API endpoint exists? | Skip reason |
+|------|-------|-----------|----------------------|-------------|
+| Heartbeats | `/heartbeats` | 115 | ✅ `GET /api/heartbeats` | **Pure table + symbol filter.** No chart, no real-time updates (heartbeats are historical, not live), no interactivity beyond filtering. Server-side pagination works fine. Migrating = ~1 day of work for zero UX gain. |
+| Signals | `/signals` | 59 | ✅ `GET /api/signals` | **Single table.** Smallest Jinja2 page (59 lines). Shows blended signals (L4 output) — a flat list with no drill-down or chart. Filter by symbol is the only interactivity. Already shown in compact form on the Dashboard's recent heartbeats table. |
+| Orders | `/orders` | 112 | ✅ `GET /api/orders` + `GET /api/fills` | **Two tables side by side.** Order lifecycle (DRAFT→SUBMITTED→PARTIAL→FILLED) is already represented via status badges. A timeline visualization would be nice but is luxury for a single-user dashboard. |
+| Optimize | `/optimize` | 84 | ✅ `GET /api/simulations` | **Simulation runs table.** A parallel-coordinates plot showing which parameter combinations won would add value, but only if you're doing serious parameter analysis. The table is sufficient for "did this run beat the baseline?" |
+| Config | `/config` | 82 | ❌ (only `GET /config` HTML route) | **Read-only form rendering the YAML.** We just rebuilt this as a form in the Jinja2 dashboard (the 11-section recursive `field()` macro). All inputs are `disabled`. No chart, no interactivity, data doesn't change without a restart. Migrating = re-rendering the same disabled form in React. |
+
+### Outstanding items (not pages — feature gaps)
+
+| Item | Where | Status | Reason / Next step |
+|------|-------|--------|--------------------|
+| **Single-host deploy** (StaticFiles mount) | `src/hermes/web/app.py` | Not wired | 5-line change documented in [Build & deploy](#build--deploy) section. Recommended for single-user — no CORS, same-origin cookies. Add `app.mount("/", StaticFiles(directory="dashboard/dist", html=True))` after all route definitions. |
+| **HTTPS cookie flag** | `src/hermes/web/app.py` → `SessionMiddleware` | `https_only=False` | Set to `True` when deploying over HTTPS. Currently `False` so localhost dev works. Documented in `config/default.yaml` comment. |
+| **CORS middleware** | `src/hermes/web/app.py` | Not added | Only needed if SPA is hosted externally (Vercel/Netlify). For single-host deploy, same-origin means no CORS needed. |
+| **SPA bundle served by FastAPI** | `dashboard/dist/` | Built but not mounted | Run `cd dashboard && npm run build` then add the StaticFiles mount (see above). The `dist/` folder is gitignored. |
+| **WebSocket `/ws/{symbol}`** | `src/hermes/web/app.py` | Backend exists, SPA uses it on Monitor page | Working. Could add more live-updating pages (e.g., live P&L on Dashboard) but current 30s TanStack Query polling is sufficient. |
+| **SSE `/sse/alerts`** | `src/hermes/web/app.py` | Backend exists, SPA has `useSSEStream` hook but no page uses it | Could add a toast/notification system on the Dashboard. Low priority — alerts are also logged to DuckDB and visible in risk decisions table. |
+| **Generate types from OpenAPI** | `dashboard/src/lib/types.ts` | Hand-maintained | Optional: use `openapi-typescript` to generate types from `docs/openapi.yaml`. Currently types are hand-maintained and stay in sync manually. Worth it only if the API schema changes frequently. |
+| **Clerk auth swap (prod)** | `dashboard/src/lib/auth.tsx` | Dev API key works, prod needs Clerk | For single-user single-host, the current session cookie auth is sufficient. If you ever go multi-user, swap `auth.tsx` for `@clerk/clerk-react` — the API client already uses `withCredentials: true` so no other changes needed. |
 
 ## Development notes
 

@@ -778,6 +778,328 @@ def get_backtest_runs(config: HermesConfig, limit: int = 20) -> list[dict[str, A
         return []
 
 
+def get_backtest_run_detail(config: HermesConfig, run_id: str) -> dict[str, Any] | None:
+    """Get a single backtest run with its tear_sheet (which contains the
+    equity curve + per-trade stats). Returns None if not found.
+    """
+    try:
+        import duckdb
+
+        db_path = get_duckdb_path(config)
+        if not db_path.exists():
+            return None
+        with duckdb.connect(str(db_path), read_only=True) as conn:
+            try:
+                conn.execute("SELECT 1 FROM backtest_runs LIMIT 1")
+            except Exception:
+                return None
+
+            result = conn.execute(
+                """
+                SELECT run_id, ts_started, ts_finished, duration_sec,
+                       mode, start_ts, end_ts, symbols, initial_equity,
+                       n_heartbeats, n_signals_produced, n_signals_approved,
+                       n_signals_rejected, n_orders, n_fills,
+                       final_equity, total_return_pct, total_net_pnl,
+                       max_drawdown_pct, tear_sheet, config_hash, error
+                FROM backtest_runs
+                WHERE run_id = ?
+                """,
+                [run_id],
+            ).fetchdf()
+            if result.empty:
+                return None
+            row = result.iloc[0].to_dict()
+
+            # Parse tear_sheet JSON if present
+            import json as _json
+            tear_sheet_raw = row.get("tear_sheet")
+            if isinstance(tear_sheet_raw, str) and tear_sheet_raw:
+                try:
+                    row["tear_sheet"] = _json.loads(tear_sheet_raw)
+                except Exception:
+                    row["tear_sheet"] = {}
+            elif tear_sheet_raw is None:
+                row["tear_sheet"] = {}
+            return row
+    except Exception as e:
+        log.warning("get_backtest_run_detail_failed", error=str(e), run_id=run_id)
+        return None
+
+
+def get_portfolio_var_history(
+    config: HermesConfig, limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Get historical VaR + drawdown + leverage time series from account_snapshots.
+
+    Used by the Portfolio page's VaR distribution histogram + exposure bars over time.
+    """
+    try:
+        import duckdb
+
+        db_path = get_duckdb_path(config)
+        if not db_path.exists():
+            return []
+        with duckdb.connect(str(db_path), read_only=True) as conn:
+            try:
+                conn.execute("SELECT 1 FROM account_snapshots LIMIT 1")
+            except Exception:
+                return []
+
+            result = conn.execute(
+                f"""
+                SELECT ts, equity_total, drawdown_pct, leverage_gross, leverage_net,
+                       gross_exposure_usd, net_exposure_usd,
+                       long_exposure_usd, short_exposure_usd,
+                       var_1d_99, cvar_1d_99, n_open_positions
+                FROM account_snapshots
+                WHERE var_1d_99 IS NOT NULL
+                ORDER BY ts ASC
+                LIMIT {int(limit)}
+                """
+            ).fetchdf()
+            if result.empty:
+                return []
+            return result.to_dict("records")
+    except Exception as e:
+        log.warning("get_portfolio_var_history_failed", error=str(e))
+        return []
+
+
+def get_portfolio_exposure_breakdown(config: HermesConfig) -> dict[str, Any]:
+    """Get current portfolio exposure broken down by venue + asset class.
+
+    Used by the Portfolio page's allocation pie + exposure bars.
+    Returns: {by_venue: {...}, by_asset_class: {...}, totals: {...}}
+    """
+    try:
+        import duckdb
+
+        db_path = get_duckdb_path(config)
+        if not db_path.exists():
+            return {"by_venue": {}, "by_asset_class": {}, "totals": {}}
+        with duckdb.connect(str(db_path), read_only=True) as conn:
+            # Try the positions table — fall back to latest account_snapshot
+            try:
+                conn.execute("SELECT 1 FROM trade_journal LIMIT 1")
+                # Sum notional by venue + direction from closed trades (as a proxy
+                # for current allocation if positions table doesn't exist)
+                result = conn.execute(
+                    """
+                    SELECT venue, direction,
+                           COUNT(*) as n_trades,
+                           SUM(CASE WHEN exit_pnl IS NOT NULL THEN exit_pnl ELSE 0 END) as pnl
+                    FROM trade_journal
+                    WHERE closed_at IS NOT NULL
+                      AND closed_at > now() - INTERVAL '30 days'
+                    GROUP BY venue, direction
+                    ORDER BY pnl DESC
+                    """
+                ).fetchdf()
+                if result.empty:
+                    return {"by_venue": {}, "by_asset_class": {}, "totals": {}}
+                rows = result.to_dict("records")
+                by_venue: dict[str, float] = {}
+                for r in rows:
+                    v = r.get("venue", "unknown")
+                    by_venue[v] = by_venue.get(v, 0) + float(r.get("pnl", 0) or 0)
+                return {
+                    "by_venue": by_venue,
+                    "by_asset_class": {},  # not available without a positions table
+                    "by_direction": {r.get("direction", "?"): float(r.get("pnl", 0) or 0) for r in rows},
+                    "n_trades_30d": int(sum(r.get("n_trades", 0) or 0 for r in rows)),
+                }
+            except Exception:
+                # Fall back to latest snapshot's exposure numbers
+                snap = conn.execute(
+                    """
+                    SELECT gross_exposure_usd, net_exposure_usd,
+                           long_exposure_usd, short_exposure_usd, n_open_positions
+                    FROM account_snapshots
+                    ORDER BY ts DESC LIMIT 1
+                    """
+                ).fetchdf()
+                if snap.empty:
+                    return {"by_venue": {}, "by_asset_class": {}, "totals": {}}
+                row = snap.iloc[0].to_dict()
+                return {
+                    "by_venue": {},
+                    "by_asset_class": {},
+                    "totals": {
+                        "gross_exposure_usd": float(row.get("gross_exposure_usd", 0)),
+                        "net_exposure_usd": float(row.get("net_exposure_usd", 0)),
+                        "long_exposure_usd": float(row.get("long_exposure_usd", 0)),
+                        "short_exposure_usd": float(row.get("short_exposure_usd", 0)),
+                        "n_open_positions": int(row.get("n_open_positions", 0)),
+                    },
+                }
+    except Exception as e:
+        log.warning("get_portfolio_exposure_breakdown_failed", error=str(e))
+        return {"by_venue": {}, "by_asset_class": {}, "totals": {}}
+
+
+def get_decision_tree_definition() -> dict[str, Any]:
+    """Static definition of the Hermes Agent decision tree.
+
+    Returned as a nested JSON structure suitable for rendering as an
+    interactive tree visualization in the SPA. Thresholds come from
+    HermesDecisionTree defaults (configurable in config/default.yaml).
+    """
+    return {
+        "root": {
+            "id": "root",
+            "label": "Evaluate position",
+            "question": "Position exists?",
+            "thresholds": {},
+            "branches": {
+                "yes": {
+                    "id": "existing",
+                    "label": "Existing position",
+                    "question": "PnL ≤ -1% (stop-loss)?",
+                    "thresholds": {"stop_loss_pct": -0.01},
+                    "branches": {
+                        "yes": {
+                            "id": "close_sl",
+                            "label": "Close (stop-loss)",
+                            "action": "close_stop_loss",
+                            "color": "error",
+                            "icon": "🛑",
+                        },
+                        "no": {
+                            "id": "check_signal",
+                            "label": "Signal present?",
+                            "question": "BlendedSignal.direction ≠ neutral?",
+                            "branches": {
+                                "no": {
+                                    "id": "native_stops",
+                                    "label": "Native stops manage",
+                                    "question": "PnL ≥ 2.5% (native TP)?",
+                                    "thresholds": {"take_profit_pct": 0.025},
+                                    "branches": {
+                                        "yes": {
+                                            "id": "close_tp",
+                                            "label": "Close (take-profit)",
+                                            "action": "close_take_profit",
+                                            "color": "success",
+                                            "icon": "💰",
+                                        },
+                                        "no": {
+                                            "id": "hold_native",
+                                            "label": "Hold (native SL/TP)",
+                                            "action": "hold_native_stops",
+                                            "color": "neutral",
+                                            "icon": "⏸",
+                                        },
+                                    },
+                                },
+                                "yes": {
+                                    "id": "agent_takes_over",
+                                    "label": "Agent takes over (native TP suspended)",
+                                    "question": "Same direction as position?",
+                                    "branches": {
+                                        "yes": {
+                                            "id": "same_direction",
+                                            "label": "Same direction",
+                                            "question": "Which exit condition?",
+                                            "branches": {
+                                                "fading": {
+                                                    "id": "trail_stop",
+                                                    "label": "PnL > 0 + fading (2+ adverse bricks)",
+                                                    "action": "trail_stop",
+                                                    "color": "info",
+                                                    "icon": "📍",
+                                                    "thresholds": {"fading_brick_count": 2},
+                                                },
+                                                "early_profit": {
+                                                    "id": "close_early",
+                                                    "label": "PnL ≥ 4.5% (early profit)",
+                                                    "action": "close_early_profit",
+                                                    "color": "success",
+                                                    "icon": "💸",
+                                                    "thresholds": {"early_profit_pct": 0.045},
+                                                },
+                                                "default": {
+                                                    "id": "hold",
+                                                    "label": "No exit condition → hold",
+                                                    "action": "hold",
+                                                    "color": "neutral",
+                                                    "icon": "⏸",
+                                                },
+                                            },
+                                        },
+                                        "no": {
+                                            "id": "opposite_direction",
+                                            "label": "Opposite direction",
+                                            "question": "Strong signal? (conviction ≥ 0.7 + regime confirms)",
+                                            "thresholds": {"strong_conviction_threshold": 0.7},
+                                            "branches": {
+                                                "yes": {
+                                                    "id": "flip",
+                                                    "label": "Flip (close + reverse)",
+                                                    "action": "close_flip",
+                                                    "color": "warning",
+                                                    "icon": "🔄",
+                                                },
+                                                "no": {
+                                                    "id": "hold_opposite",
+                                                    "label": "Hold (native stops)",
+                                                    "action": "hold_native_stops",
+                                                    "color": "neutral",
+                                                    "icon": "⏸",
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "no": {
+                    "id": "new_signal",
+                    "label": "No existing position",
+                    "question": "Renko signal present?",
+                    "branches": {
+                        "no": {
+                            "id": "skip",
+                            "label": "Skip (no entry)",
+                            "action": "skip_no_signal",
+                            "color": "neutral",
+                            "icon": "⏭",
+                        },
+                        "yes": {
+                            "id": "enter",
+                            "label": "Kelly sizing + Execute",
+                            "action": "enter_new",
+                            "color": "primary",
+                            "icon": "✅",
+                        },
+                    },
+                },
+            },
+        },
+        "thresholds": {
+            "stop_loss_pct": -0.01,
+            "take_profit_pct": 0.025,
+            "early_profit_pct": 0.045,
+            "fading_brick_count": 2,
+            "strong_conviction_threshold": 0.7,
+            "trail_stop_activation_pct": 0.01,
+        },
+        "actions": [
+            {"id": "close_stop_loss", "label": "Close (stop-loss)", "color": "error"},
+            {"id": "close_take_profit", "label": "Close (take-profit)", "color": "success"},
+            {"id": "close_early_profit", "label": "Close (early profit)", "color": "success"},
+            {"id": "close_flip", "label": "Flip (close + reverse)", "color": "warning"},
+            {"id": "trail_stop", "label": "Trail stop", "color": "info"},
+            {"id": "hold", "label": "Hold", "color": "neutral"},
+            {"id": "hold_native_stops", "label": "Hold (native stops)", "color": "neutral"},
+            {"id": "enter_new", "label": "Enter new", "color": "primary"},
+            {"id": "skip_no_signal", "label": "Skip (no signal)", "color": "neutral"},
+        ],
+    }
+
+
 def get_simulation_runs(config: HermesConfig, limit: int = 50) -> list[dict[str, Any]]:
     """Get recent simulation runs from DuckDB."""
     try:

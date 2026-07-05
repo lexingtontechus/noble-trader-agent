@@ -197,6 +197,315 @@ def config_show(ctx: click.Context) -> None:
     click.echo(json.dumps(redacted, indent=2, default=str))
 
 
+@config.command(name="set")
+@click.argument("key_path")
+@click.argument("value")
+@click.option("--rationale", required=True, help="Why this change is being made (required for audit trail).")
+@click.option("--author", default=None, help="Who is making the change (default: $USER or 'operator').")
+@click.pass_context
+def config_set(
+    ctx: click.Context,
+    key_path: str,
+    value: str,
+    rationale: str,
+    author: str | None,
+) -> None:
+    """Set a single config value in config/default.yaml with audit trail.
+
+    KEY_PATH is a dotted path (e.g. 'circuit_breakers.volatility.vol_mult_threshold').
+    VALUE is the new value (coerced to bool/int/float/string/JSON automatically).
+
+    The change is written to config/default.yaml AND recorded in the
+    config_history DuckDB table with the rationale + author + diff.
+
+    A restart is required for the change to take effect.
+
+    \b
+    Examples:
+      platform config set circuit_breakers.volatility.vol_mult_threshold 3.0 \\
+        --rationale "tightening vol CB after July spike"
+      platform config set entry.brick_confirmation_count 3 \\
+        --rationale "more conservative entry confirmation"
+      platform config set signal.staleness_ms 60000 --rationale "longer staleness tolerance"
+    """
+    import os as _os
+    from hermes.db.config_history import apply_config_change
+    from hermes.portfolio.autonomy_gate import AutonomyGate
+
+    config = load_config(ctx.obj.get("config_path"))
+    author = author or _os.environ.get("USER", "operator")
+    caller = "human"  # CLI is always human-driven
+
+    # Build AutonomyGate from config
+    autonomy_cfg = config.autonomy if hasattr(config, "autonomy") else {}
+    if not isinstance(autonomy_cfg, dict):
+        autonomy_cfg = {}
+    gate = AutonomyGate(
+        tier2_config_keys=autonomy_cfg.get("tier_2", {}).get("config_keys", []),
+        tier3_config_keys=autonomy_cfg.get("tier_3", {}).get("config_keys", []),
+        tier4_config_keys=autonomy_cfg.get("tier_4", {}).get("config_keys", []),
+    )
+
+    # Classify the change
+    decision = gate.classify_config_change(key_path, caller=caller)
+    if not decision.approved:
+        click.echo(f"✗ Blocked by autonomy gate (tier {decision.tier}): {decision.reason}", err=True)
+        click.echo(f"  This key requires human approval. Use --author to confirm.", err=True)
+        sys.exit(1)
+
+    if decision.tier in (3, 4):
+        click.echo(f"  ⚠ Tier {decision.tier} key — changes are audited with extra scrutiny.", err=True)
+
+    try:
+        result = apply_config_change(
+            config, key_path, value,
+            source="human",
+            rationale=rationale,
+            author=author,
+        )
+    except KeyError as e:
+        click.echo(f"✗ {e}", err=True)
+        click.echo(f"  Available top-level keys: {sorted(config.model_dump().keys())}", err=True)
+        sys.exit(1)
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"✓ Config updated: {result['key_path']}")
+    click.echo(f"    old: {result['old_value']}")
+    click.echo(f"    new: {result['new_value']}")
+    click.echo(f"    hash: {result['config_hash']}")
+    click.echo(f"    author: {author}")
+    click.echo(f"    rationale: {rationale}")
+    click.echo("")
+    click.echo("  ⚠ Restart required for change to take effect:")
+    click.echo("    Ctrl+C the running platform, then re-run the commands.")
+
+
+@config.command(name="history")
+@click.option("--limit", default=20, type=int, help="Number of entries to show (default 20).")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON.")
+@click.pass_context
+def config_history(
+    ctx: click.Context,
+    limit: int,
+    as_json: bool,
+) -> None:
+    """Show config change history (audit trail)."""
+    from hermes.db.config_history import get_config_history
+
+    if as_json:
+        setup_logging(level="CRITICAL", format="text", output="stdout")
+    config = load_config(ctx.obj.get("config_path"))
+    rows = get_config_history(config, limit=limit)
+
+    if as_json:
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        click.echo("No config history yet. Run `platform init` to record the initial config.")
+        return
+
+    click.echo(f"{'Time':<20} {'Hash':<18} {'Source':<8} {'Author':<14} {'Rationale':<50}")
+    click.echo("-" * 115)
+    for r in rows:
+        ts = str(r.get("ts", ""))[:19].replace("T", " ")
+        h = (r.get("config_hash") or "")[:16]
+        src = r.get("source", "?")
+        author = (r.get("author") or "?")[:13]
+        rationale = (r.get("rationale") or "")[:49]
+        click.echo(f"{ts:<20} {h:<18} {src:<8} {author:<14} {rationale}")
+    click.echo(f"\nTotal: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}")
+
+
+@config.command(name="diff")
+@click.argument("hash_a")
+@click.argument("hash_b")
+@click.pass_context
+def config_diff(
+    ctx: click.Context,
+    hash_a: str,
+    hash_b: str,
+) -> None:
+    """Show the diff between two config_history entries.
+
+    HASH_A and HASH_B are config_hash values (use `platform config history` to find them).
+    """
+    from hermes.db.config_history import diff_configs
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        diffs = diff_configs(config, hash_a, hash_b)
+    except KeyError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    if not diffs:
+        click.echo("No differences — the two configs are identical.")
+        return
+
+    click.echo(f"Diff: {hash_a[:16]}... → {hash_b[:16]}...")
+    click.echo(f"{'Key':<55} {'Value A → Value B'}")
+    click.echo("-" * 100)
+    for d in diffs:
+        key = d["key_path"]
+        va = _truncate_val(d["value_a"])
+        vb = _truncate_val(d["value_b"])
+        click.echo(f"{key:<55} {va} → {vb}")
+    click.echo(f"\n{len(diffs)} field(s) differ.")
+
+
+@config.command(name="rollback")
+@click.argument("target_hash")
+@click.option("--rationale", required=True, help="Why are you rolling back? (required for audit).")
+@click.option("--author", default=None, help="Who is rolling back (default: $USER).")
+@click.pass_context
+def config_rollback(
+    ctx: click.Context,
+    target_hash: str,
+    rationale: str,
+    author: str | None,
+) -> None:
+    """Rollback config/default.yaml to a previous config_history entry.
+
+    TARGET_HASH is the config_hash to restore (use `platform config history` to find it).
+    The current config is preserved in history — rollback is itself an audited change.
+    """
+    import os as _os
+    from hermes.db.config_history import rollback_config
+
+    config = load_config(ctx.obj.get("config_path"))
+    author = author or _os.environ.get("USER", "operator")
+
+    try:
+        result = rollback_config(
+            config, target_hash,
+            author=author, rationale=rationale,
+        )
+    except KeyError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"✓ Rolled back to: {result['rolled_back_to']}")
+    click.echo(f"    target time: {result['target_ts']}")
+    click.echo(f"    new hash: {result['new_hash']}")
+    click.echo(f"    author: {author}")
+    click.echo(f"    rationale: {rationale}")
+    click.echo("")
+    click.echo("  ⚠ Restart required for change to take effect.")
+
+
+@config.command(name="promote")
+@click.option("--hypothesis-id", required=True, help="Hypothesis ID being promoted.")
+@click.option("--change", "changes", multiple=True, required=True,
+              help="Key=value pair to change (repeatable). E.g. --change entry.brick_confirmation_count=3")
+@click.option("--rationale", required=True, help="Why this promotion is being applied.")
+@click.option("--author", default="hermes", help="Who is promoting (default: hermes for auto-promote).")
+@click.pass_context
+def config_promote(
+    ctx: click.Context,
+    hypothesis_id: str,
+    changes: tuple[str, ...],
+    rationale: str,
+    author: str,
+) -> None:
+    """Promote an optimization hypothesis to live config (agent path).
+
+    Applies multiple key changes at once, records in config_history with
+    source='hermes' + hypothesis_id linked in rationale.
+
+    \b
+    Example:
+      platform config promote \\
+        --hypothesis-id abc123 \\
+        --change entry.brick_confirmation_count=3 \\
+        --change execution.limit_offset_bps=5 \\
+        --rationale "shadow Sharpe 1.6 ≥ 80% of backtest 1.8"
+    """
+    from hermes.db.config_history import promote_config
+    from hermes.portfolio.autonomy_gate import AutonomyGate
+
+    config = load_config(ctx.obj.get("config_path"))
+
+    # Build AutonomyGate from config
+    autonomy_cfg = config.autonomy if hasattr(config, "autonomy") else {}
+    if not isinstance(autonomy_cfg, dict):
+        autonomy_cfg = {}
+    gate = AutonomyGate(
+        tier2_config_keys=autonomy_cfg.get("tier_2", {}).get("config_keys", []),
+        tier3_config_keys=autonomy_cfg.get("tier_3", {}).get("config_keys", []),
+        tier4_config_keys=autonomy_cfg.get("tier_4", {}).get("config_keys", []),
+    )
+
+    # Parse --change key=value pairs
+    change_dict: dict[str, Any] = {}
+    for c in changes:
+        if "=" not in c:
+            click.echo(f"✗ Invalid --change format: '{c}' (expected key=value)", err=True)
+            sys.exit(1)
+        k, v = c.split("=", 1)
+        change_dict[k.strip()] = v.strip()  # promote_config will coerce
+
+    # Classify each change — agent (hermes) is blocked from tier 3/4 keys
+    caller = "hermes" if author == "hermes" else "human"
+    blocked_keys: list[str] = []
+    notify_keys: list[str] = []
+    for key_path in change_dict:
+        decision = gate.classify_config_change(key_path, caller=caller)
+        if not decision.approved:
+            blocked_keys.append(f"{key_path} (tier {decision.tier}: {decision.reason})")
+        elif decision.tier == 2:
+            notify_keys.append(key_path)
+
+    if blocked_keys:
+        click.echo(f"✗ Blocked by autonomy gate — agent cannot promote these keys:", err=True)
+        for k in blocked_keys:
+            click.echo(f"    {k}", err=True)
+        click.echo("", err=True)
+        click.echo("  These keys require human approval. Use `platform config set` instead.", err=True)
+        sys.exit(1)
+
+    if notify_keys:
+        click.echo(f"  ℹ Auto-promoting {len(notify_keys)} tier-2 key(s) with notification:")
+        for k in notify_keys:
+            click.echo(f"    {k}")
+
+    try:
+        result = promote_config(
+            config, change_dict,
+            rationale=rationale,
+            author=author,
+            hypothesis_id=hypothesis_id,
+        )
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+    except KeyError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"✓ Config promoted (hypothesis {hypothesis_id})")
+    click.echo(f"    changes applied: {result['changes_applied']}")
+    click.echo(f"    new hash: {result['config_hash']}")
+    click.echo(f"    author: {author}")
+    click.echo(f"    rationale: {rationale}")
+    click.echo("")
+    click.echo("  Diff:")
+    for k, v in result["diff"].items():
+        click.echo(f"    {k}: {v['old']} → {v['new']}")
+    click.echo("")
+    click.echo("  ⚠ Restart required for change to take effect.")
+
+
+def _truncate_val(v: Any, max_len: int = 30) -> str:
+    """Truncate a value for table display."""
+    s = str(v)
+    if len(s) > max_len:
+        return s[:max_len - 3] + "..."
+    return s
+
+
 # ============================================================
 # platform symbols — runtime-mutable symbol registry
 # ============================================================
@@ -2566,19 +2875,20 @@ def _init_duckdb(config: HermesConfig) -> bool:
         apply_migrations(config)
         click.echo("  ✓ Schema applied")
 
-        # Write a test row
-        import duckdb
-
-        with duckdb.connect(str(db_path)) as conn:
-            conn.execute(
-                """
-                INSERT INTO config_history (config_hash, ts, config_json, source, rationale)
-                VALUES (?, now(), ?, 'init', 'Phase 0 bootstrap test')
-                """,
-                [get_config_hash(config), json.dumps({"version": __version__})],
+        # Write the REAL config (not just a test row) to config_history.
+        # This is the baseline audit entry — every future change is diffed against this.
+        try:
+            from hermes.db.config_history import write_config_to_history
+            config_hash = write_config_to_history(
+                config,
+                source="init",
+                rationale=f"platform init baseline (v{__version__})",
+                author="init",
             )
-            count = conn.execute("SELECT COUNT(*) FROM config_history").fetchone()[0]
-            click.echo(f"  ✓ Test row written (config_history now has {count} rows)")
+            click.echo(f"  ✓ Config recorded in history (hash: {config_hash[:12]}...)")
+        except Exception as ce:
+            click.echo(f"  ⚠ Config history write skipped: {ce}")
+            log.warning("config_history_init_failed", error=str(ce))
 
         # Seed symbols table from config/default.yaml.initial_symbols.
         # Idempotent — only inserts rows that don't yet exist.

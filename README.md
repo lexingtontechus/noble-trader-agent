@@ -13,7 +13,7 @@
 |---|---|
 | **Phases completed** | 11/11 (Phase 0 through Phase 10) + 3 enhancements |
 | **Tests** | 297 (all passing) |
-| **CLI commands** | 31 |
+| **CLI commands** | 36 |
 | **Dashboard pages** | 12 (DaisyUI, 7 switchable themes) |
 | **DuckDB migrations** | 9 (schema v9) |
 | **DuckDB tables** | 24 |
@@ -404,6 +404,94 @@ production** — every `/api/*` route becomes open.
 
 ---
 
+## Config Management & Audit Trail
+
+Every change to `config/default.yaml` — manual or optimization-driven — is
+recorded in the `config_history` DuckDB table with full audit trail:
+**who** changed **what** **when** **why**.
+
+### Two paths for changing config
+
+| Path | Command | Who | Autonomy gate |
+|------|---------|-----|---------------|
+| **Manual (human)** | `platform config set <key> <value> --rationale "..."` | Operator (authenticated) | All keys allowed — gate logs but doesn't block |
+| **Optimization (agent)** | `platform config promote --hypothesis-id <id> --change k=v ...` | Hermes agent | Per-key tier enforcement (see below) |
+
+### Per-key tier enforcement
+
+The `AutonomyGate` classifies each config key into one of 4 tiers based on
+`config/default.yaml → autonomy.{tier}.config_keys`:
+
+| Tier | Who can change | Examples |
+|------|----------------|----------|
+| **Tier 2** (auto-promote + notify) | Agent (after shadow validation) | `entry.brick_confirmation_count`, `execution.limit_offset_bps`, `signal.staleness_ms` |
+| **Tier 3** (human approval required) | Human only; agent blocked | `circuit_breakers.volatility.vol_mult_threshold`, `account.daily_loss_limit_pct`, `meta_regime.hmm_n_components` |
+| **Tier 4** (structural — human only) | Human only; agent hard-blocked | `account.max_gross_exposure_pct`, `account.max_leverage_total`, `circuit_breakers.kill_switch.auto_triggers`, `venues.*.enabled` |
+| **Uncategorized** | Default to tier 3 (conservative) | Any key not explicitly listed |
+
+### Audit trail (config_history table)
+
+Every change writes a row with:
+- `config_hash` (SHA-256 of full config — deduplicates identical configs)
+- `ts` (timestamp)
+- `config_json` (full config snapshot at this point)
+- `source` (`init` | `human` | `hermes` | `file`)
+- `rationale` (required for `human` + `hermes` sources)
+- `author` (username, `hermes`, `init`, etc.)
+- `diff` (JSON: `{key_path: {old: ..., new: ...}}`)
+
+### Common commands
+
+```bash
+# Manual change (human path) — rationale required
+platform config set entry.brick_confirmation_count 3 \
+  --rationale "tightening entry confirmation after missed signals" \
+  --author alice
+
+# Optimization promotion (agent path) — multiple changes at once
+platform config promote \
+  --hypothesis-id abc123 \
+  --change entry.brick_confirmation_count=3 \
+  --change execution.limit_offset_bps=5 \
+  --rationale "shadow Sharpe 1.6 ≥ 80% of backtest 1.8"
+
+# View audit trail
+platform config history --limit 20
+
+# Diff two configs
+platform config diff <hash_a> <hash_b>
+
+# Rollback to a previous config
+platform config rollback <target_hash> --rationale "promoted config underperformed"
+```
+
+### Full optimization loop
+
+```
+1. EOD analysis → hypothesis generated (status: proposed)
+2. platform optimize --hypothesis-id abc123 → backtest sweep (status: backtested)
+3. platform shadow --hypothesis-id abc123 --duration-days 7 → parallel run (status: shadow)
+4. Shadow Sharpe ≥ 80% of backtest Sharpe? → AutonomyGate classifies "promote_config" as tier 2
+5. Hermes calls: platform config promote --hypothesis-id abc123 --change k=v --rationale "..."
+   → CLI checks AutonomyGate per key
+   → Tier 2 keys: auto-approved, written to config_history + default.yaml
+   → Tier 3/4 keys: BLOCKED (agent must request human approval)
+6. Operator restarts: platform restart → new config loads
+7. If underperforms: platform config rollback <hash> --rationale "..."
+```
+
+### Smoke tests
+
+```bash
+python scripts/test_config_management.py   # 8-step test: set/history/diff/promote/rollback
+python scripts/test_autonomy_loop.py        # 9-step test: gate enforcement + CLI integration
+```
+
+See `docs/roadmap.md §14` for the auth model that protects these endpoints,
+and `src/hermes/db/config_history.py` for the implementation.
+
+---
+
 ## Installing Dependencies
 
 ### Option A: Using `uv` (recommended — 10× faster)
@@ -438,13 +526,18 @@ pip install -r requirements-optional.txt
 
 ---
 
-## All CLI Commands (31)
+## All CLI Commands (36)
 
 ```powershell
 # Foundation (Phase 0)
 platform init              # Bootstrap: load config, open DuckDB, apply schema
 platform health            # Check health of all subsystems
 platform config show       # Print loaded config (secrets redacted)
+platform config set        # Set a config value with audit trail (tier-aware)
+platform config history    # Show config change history (audit log)
+platform config diff       # Diff two config_history entries
+platform config rollback   # Rollback to a previous config
+platform config promote    # Promote an optimization hypothesis (agent path)
 platform version           # Print version
 
 # Dashboard (Phase 0.5)

@@ -9,6 +9,7 @@ import { MonitorPage } from "@/pages/Monitor";
 import { PnLPage } from "@/pages/PnL";
 import { PortfolioPage } from "@/pages/Portfolio";
 import { BacktestPage } from "@/pages/Backtest";
+import { AgentPage } from "@/pages/Agent";
 import { LoginPage } from "@/pages/Login";
 
 export function App() {
@@ -41,6 +42,7 @@ export function App() {
           <Route path="/pnl" element={<PnLPage />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/agent" element={<AgentPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

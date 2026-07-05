@@ -339,6 +339,22 @@ autonomy:
     notify_channels: [discord, email]
     review_window_hours: 24
     actions: [promote_config]
+    # Config keys that the agent (Hermes) can auto-promote after shadow validation.
+    # Changes to these keys are auto-approved at tier 2 with notification only.
+    config_keys:
+      - signal.staleness_ms
+      - signal.min_edge_estimate_bps
+      - execution.limit_offset_bps
+      - execution.max_slippage_bps
+      - execution.twap_n_bricks
+      - execution.iceberg_child_pct
+      - entry.brick_confirmation_count
+      - entry.pullback_depth_brick_fraction
+      - entry.signal_expiry_minutes
+      - position_management.exit.brick_momentum_threshold
+      - position_management.trailing.atr_mult
+      - position_management.trailing.brick_count
+      - renko.rolling_window_bricks
   tier_3:
     approval: required
     max_notional_usd: 25000
@@ -346,6 +362,17 @@ autonomy:
     approval_timeout_hours: 4
     on_timeout: skip
     actions: [enter_large_trade, novel_strategy]
+    # Config keys that require human approval — agent CANNOT auto-promote these.
+    # Humans can change them via `platform config set` (they're authenticated).
+    config_keys:
+      - circuit_breakers.volatility.vol_mult_threshold
+      - circuit_breakers.volatility.atr_baseline_lookback_days
+      - circuit_breakers.risk.var_confidence
+      - account.max_portfolio_drawdown_pct
+      - account.daily_loss_limit_pct
+      - account.weekly_loss_limit_pct
+      - meta_regime.hmm_n_components
+      - meta_regime.confidence_floor
   tier_4:
     approval: human_only
     blocks:
@@ -355,6 +382,18 @@ autonomy:
       - promoting_failed_rigor_config
       - trading_in_blocked_regimes
     actions: [structural_change]
+    # Config keys that ALWAYS require human intervention — agent is hard-blocked.
+    # These are structural changes that affect the entire system's risk posture.
+    config_keys:
+      - circuit_breakers.kill_switch.auto_triggers
+      - circuit_breakers.enabled
+      - account.max_gross_exposure_pct
+      - account.max_leverage_total
+      - asset.max_position_notional
+      - autonomy.tier_1.max_notional_usd
+      - autonomy.tier_3.max_notional_usd
+      - venues.alpaca.enabled
+      - venues.hyperliquid.enabled
   active_hours:
     timezone: America/Los_Angeles
     start: "09:30"

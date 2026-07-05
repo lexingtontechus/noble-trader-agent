@@ -49,6 +49,10 @@ class AutonomyGate:
         crypto_24_7: bool = True,
         degrade_outside_hours: bool = True,
         timezone_name: str = "America/Los_Angeles",
+        # Per-tier config key classifications (loaded from config/default.yaml)
+        tier2_config_keys: list[str] | None = None,
+        tier3_config_keys: list[str] | None = None,
+        tier4_config_keys: list[str] | None = None,
     ) -> None:
         self._tier1_max = tier1_max_notional
         self._tier1_pct = tier1_max_position_pct
@@ -58,7 +62,99 @@ class AutonomyGate:
         self._crypto_24_7 = crypto_24_7
         self._degrade = degrade_outside_hours
         self._tz = timezone_name
+        # Per-tier config key lists — used by classify_config_change()
+        self._tier2_keys = set(tier2_config_keys or [])
+        self._tier3_keys = set(tier3_config_keys or [])
+        self._tier4_keys = set(tier4_config_keys or [])
         self._stats = {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0, "tier4": 0}
+
+    def classify_config_change(
+        self,
+        key_path: str,
+        caller: str = "human",
+    ) -> AutonomyDecision:
+        """Classify a config key change into an autonomy tier.
+
+        Used by `platform config set` and `platform config promote` to enforce
+        per-key tier rules. The tier depends on which list the key is in:
+
+        - Tier 4 (human_only): structural keys — agent is hard-blocked.
+          Humans can change via `platform config set` (authenticated).
+        - Tier 3 (human approval required): risk-sensitive keys — agent
+          must request approval; humans can change directly.
+        - Tier 2 (auto-promote + notify): tunable parameters — agent
+          can auto-promote after shadow validation.
+        - Default (uncategorized): treated as tier 3 (conservative).
+
+        Args:
+            key_path: Dotted config path (e.g. 'entry.brick_confirmation_count')
+            caller: 'human' | 'hermes' — who is making the change
+
+        Returns:
+            AutonomyDecision with tier, approved, requires_human_approval
+        """
+        # Tier 4: structural keys — always require human, agent is blocked
+        if key_path in self._tier4_keys:
+            self._stats["tier4"] += 1
+            if caller == "hermes":
+                return AutonomyDecision(
+                    tier=4,
+                    approved=False,
+                    requires_human_approval=True,
+                    reason=f"structural_key_blocked_for_agent: {key_path}",
+                )
+            return AutonomyDecision(
+                tier=4,
+                approved=True,
+                requires_human_approval=False,
+                reason=f"structural_key_human_override: {key_path}",
+            )
+
+        # Tier 3: risk-sensitive keys — human approval required for agent
+        if key_path in self._tier3_keys:
+            self._stats["tier3"] += 1
+            if caller == "hermes":
+                return AutonomyDecision(
+                    tier=3,
+                    approved=False,
+                    requires_human_approval=True,
+                    reason=f"risk_sensitive_key_requires_approval: {key_path}",
+                    timeout_hours=4.0,
+                )
+            return AutonomyDecision(
+                tier=3,
+                approved=True,
+                requires_human_approval=False,
+                reason=f"risk_sensitive_key_human_override: {key_path}",
+            )
+
+        # Tier 2: tunable parameters — agent can auto-promote
+        if key_path in self._tier2_keys:
+            self._stats["tier2"] += 1
+            return AutonomyDecision(
+                tier=2,
+                approved=True,
+                requires_human_approval=False,
+                reason=f"tunable_key_auto_promote: {key_path}",
+                notify_channels=["discord", "email"],
+            )
+
+        # Uncategorized key — conservative default to tier 3
+        self._stats["tier3"] += 1
+        if caller == "hermes":
+            return AutonomyDecision(
+                tier=3,
+                approved=False,
+                requires_human_approval=True,
+                reason=f"uncategorized_key_requires_approval: {key_path}",
+                timeout_hours=4.0,
+            )
+        return AutonomyDecision(
+            tier=3,
+            approved=True,
+            requires_human_approval=False,
+            reason=f"uncategorized_key_human_override: {key_path}",
+        )
 
     def classify(
         self,

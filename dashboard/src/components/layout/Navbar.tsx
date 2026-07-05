@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { to: "/pnl", label: "PnL" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/backtest", label: "Backtest" },
+  { to: "/agent", label: "Agent" },
 ];
 
 export function Navbar() {
