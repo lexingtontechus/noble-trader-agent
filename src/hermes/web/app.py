@@ -25,6 +25,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from hermes.web.rate_limit_middleware import RateLimitMiddleware
+from hermes.web.csrf_middleware import CSRFMiddleware
+from hermes.web.csrf import get_csrf_token
 
 from hermes import __version__
 from hermes.core.config import (
@@ -36,6 +42,32 @@ from hermes.core.secrets import get_secret_or_none
 from hermes.web.status import check_all, get_ingest_stats, get_recent_heartbeats
 
 log = structlog.get_logger(__name__)
+
+# Security headers middleware
+async def security_headers_middleware(request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    
+    # Prevent clickjacking
+    response.headers["X-Frame-Options"] = "DENY"
+    
+    # Prevent MIME type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    
+    # Enable XSS protection
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    
+    # Referrer policy
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    
+    # Content Security Policy
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    
+    # Strict Transport Security (HSTS) - only for HTTPS
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    
+    return response
 
 # Paths
 WEB_DIR = Path(__file__).parent
@@ -80,12 +112,42 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
     # SessionMiddleware must be added BEFORE any route that uses request.session.
     # Max age defaults to 24h; can be overridden via config.
     max_age = auth_cfg.get("session_max_age_sec", 86400) if isinstance(auth_cfg, dict) else 86400
+    
+    # Validate session secret is configured
+    if not session_secret or session_secret == "dev-only-secret-change-me":
+        raise RuntimeError(
+            "HERMES_SESSION_SECRET must be configured. "
+            "Set it in .env or config/default.yaml → auth.session_secret. "
+            "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+        )
+    
     app.add_middleware(
         SessionMiddleware,
         secret_key=session_secret,
         max_age=max_age,
         same_site="strict",     # cookie only sent on same-site requests
-        https_only=False,       # set True if serving over HTTPS (recommended in prod)
+        https_only=True,        # Always require HTTPS for session cookies in production
+    )
+    
+    # Add security headers middleware
+    app.add_middleware(
+        BaseHTTPMiddleware,
+        dispatch=security_headers_middleware
+    )
+    
+    # Add rate limiting middleware
+    # Rate limits are enforced per-endpoint with venue-specific limits from config
+    app.add_middleware(
+        RateLimitMiddleware,
+        config=config
+    )
+    
+    # Add CSRF protection middleware
+    # CSRF tokens are required for all state-changing requests (POST, PUT, DELETE, PATCH)
+    # Tokens are validated against the session and must match
+    app.add_middleware(
+        CSRFMiddleware,
+        exempt_paths=['/health', '/api/health', '/api/status'],  # Health endpoints don't need CSRF
     )
 
     log.info("auth_middleware_added", enabled=auth_enabled, max_age_sec=max_age)
@@ -112,23 +174,52 @@ def _get_auth_settings() -> dict[str, Any]:
     auth_cfg = getattr(cfg, "auth", {}) or {}
     if not isinstance(auth_cfg, dict):
         auth_cfg = {}
+    
+    # Extract credentials from config or secrets
+    admin_username = (
+        auth_cfg.get("admin_username")
+        or get_secret_or_none("hermes.admin_username")
+    )
+    admin_password = (
+        auth_cfg.get("admin_password")
+        or get_secret_or_none("hermes.admin_password")
+    )
+    agent_token = (
+        auth_cfg.get("agent_token")
+        or get_secret_or_none("hermes.agent_token")
+        or ""
+    )
+    
+    # Validate required credentials
+    if not admin_username:
+        raise RuntimeError(
+            "HERMES_ADMIN_USERNAME must be configured. "
+            "Set it in .env or config/default.yaml → auth.admin_username"
+        )
+    if not admin_password:
+        raise RuntimeError(
+            "HERMES_ADMIN_PASSWORD must be configured. "
+            "Set it in .env or config/default.yaml → auth.admin_password. "
+            "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    
+    # Validate password strength
+    if len(admin_password) < 8:
+        raise RuntimeError(
+            f"HERMES_ADMIN_PASSWORD must be at least 8 characters (got {len(admin_password)})"
+        )
+    
+    # Prevent default credentials
+    if admin_username.lower() == "admin" and admin_password == "change-me":
+        raise RuntimeError(
+            "Default credentials detected. Please set unique HERMES_ADMIN_USERNAME and HERMES_ADMIN_PASSWORD"
+        )
+    
     return {
         "enabled": auth_cfg.get("enabled", True),
-        "admin_username": (
-            auth_cfg.get("admin_username")
-            or get_secret_or_none("hermes.admin_username")
-            or "admin"
-        ),
-        "admin_password": (
-            auth_cfg.get("admin_password")
-            or get_secret_or_none("hermes.admin_password")
-            or "change-me"
-        ),
-        "agent_token": (
-            auth_cfg.get("agent_token")
-            or get_secret_or_none("hermes.agent_token")
-            or ""
-        ),
+        "admin_username": admin_username,
+        "admin_password": admin_password,
+        "agent_token": agent_token,
     }
 
 
@@ -999,3 +1090,52 @@ async def api_symbols_sync(_auth: dict[str, Any] = Depends(require_auth)) -> JSO
 
     inserted = seed_from_config(config, added_by="dashboard")
     return JSONResponse({"inserted": inserted})
+
+
+# === CSRF Token Endpoint ===
+
+
+@app.get("/api/csrf/token")
+async def get_csrf_token_endpoint(
+    request: Request,
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Get a fresh CSRF token for form submissions.
+    
+    Returns a new CSRF token that should be included in POST/PUT/DELETE requests.
+    The token is tied to the current session and expires after 1 hour.
+    """
+    from hermes.web.csrf import get_csrf_token as csrf_generate
+    
+    # Get session ID from request
+    session_id = _get_session_id(request)
+    if not session_id:
+        return JSONResponse({"error": "No session found"}, status_code=401)
+    
+    token = csrf_generate(session_id)
+    return JSONResponse({"csrf_token": token})
+
+
+def _get_session_id(request: Request) -> str | None:
+    """Extract session ID from request for CSRF token generation."""
+    if hasattr(request, 'session'):
+        session = request.session
+        if isinstance(session, dict) and 'user' in session:
+            user = session.get('user')
+            if isinstance(user, dict) and 'username' in user:
+                return f"user:{user['username']}"
+    
+    # Check for session cookie
+    session_id = request.cookies.get('session')
+    if session_id:
+        return f"session:{session_id}"
+    
+    # Check for bearer token (agent auth)
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        import hashlib
+        token = auth_header[7:]
+        token_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
+        return f"agent:{token_hash}"
+    
+    return None

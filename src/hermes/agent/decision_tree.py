@@ -169,7 +169,23 @@ class HermesDecisionTree:
             pnl_usd = (entry - price) * position.qty
 
         risk_amount = position.risk_amount
-        r_multiple = pnl_usd / risk_amount if risk_amount > 0 else 0
+        
+        # Safe R-multiple calculation with comprehensive validation
+        if risk_amount <= 0:
+            log.warning(
+                "invalid_risk_amount_for_r_multiple",
+                position_id=position.position_id,
+                symbol=position.symbol,
+                risk_amount=risk_amount,
+                pnl_usd=pnl_usd,
+                note="Using safe fallback to avoid division by zero"
+            )
+            # Use a safe fallback - treat as 1 unit of risk
+            r_multiple = pnl_usd if pnl_usd != 0 else 0.0
+        elif pnl_usd == 0:
+            r_multiple = 0.0
+        else:
+            r_multiple = pnl_usd / risk_amount
 
         # === Step 1: HARD stop-loss (always fires — risk management override) ===
         if pnl_pct <= self._sl_pct:

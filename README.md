@@ -174,24 +174,34 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 ### 2. Configure
 
+⚠️ **SECURITY: Generate and set ALL authentication values before proceeding!**
+
 Edit `.env` with paper credentials + dashboard auth secrets:
 ```powershell
 code .env
-# Replace all <placeholder> values, including the four HERMES_* auth vars
+# Replace ALL placeholder values, including the four HERMES_* auth vars
 ```
 
-Generate strong secrets for the auth vars:
+**Generate strong secrets for the auth vars:**
 ```powershell
-python -c "import secrets; print(secrets.token_urlsafe(48))"   # HERMES_SESSION_SECRET
-python -c "import secrets; print(secrets.token_urlsafe(48))"   # HERMES_AGENT_TOKEN
+# Generate all required authentication secrets
+python -c "
+import secrets
+print('# Copy these into your .env file:')
+print('HERMES_ADMIN_USERNAME=admin')
+print('HERMES_ADMIN_PASSWORD=' + secrets.token_urlsafe(32))
+print('HERMES_SESSION_SECRET=' + secrets.token_urlsafe(48))
+print('HERMES_AGENT_TOKEN=' + secrets.token_urlsafe(64))
+"
 ```
 
-Required auth vars (see [Auth](#auth) section below for details):
+**Required auth vars (see [Auth](#auth) section below for details):**
 ```bash
-HERMES_ADMIN_USERNAME=admin
-HERMES_ADMIN_PASSWORD=<strong-password>
-HERMES_SESSION_SECRET=<64-char-random-string>
-HERMES_AGENT_TOKEN=<long-random-string>
+# ⚠️ NO DEFAULT VALUES - You MUST set these explicitly!
+HERMES_ADMIN_USERNAME=your-unique-username
+HERMES_ADMIN_PASSWORD=your-strong-password-minimum-16-characters
+HERMES_SESSION_SECRET=your-64-char-random-session-secret
+HERMES_AGENT_TOKEN=your-64-char-agent-bearer-token
 ```
 
 ### 3. Initialize
@@ -306,6 +316,8 @@ platform synthesize
 
 ## Auth
 
+⚠️ **SECURITY WARNING: All authentication values MUST be explicitly configured. There are NO default credentials.**
+
 Hermes uses **server-side session cookies** for browser access + a
 **long-lived bearer token** for programmatic agent access. No third-party
 auth service (Clerk, Auth0, etc.) required — single-host, single-user.
@@ -323,17 +335,29 @@ which tries the session cookie first, then the bearer token, then returns
 
 ### Configuration (in `.env`)
 
+**⚠️ IMPORTANT: All values below MUST be set before running the dashboard. There are no default fallbacks.**
+
 ```bash
-HERMES_ADMIN_USERNAME=admin
-HERMES_ADMIN_PASSWORD=<strong-password>
-HERMES_SESSION_SECRET=<64-char-random-string>     # signs session cookies
-HERMES_AGENT_TOKEN=<long-random-string>           # for AI agent / scripts
+# Required authentication values - generate unique ones for each deployment
+HERMES_ADMIN_USERNAME=your-unique-username
+HERMES_ADMIN_PASSWORD=your-strong-password-minimum-16-characters
+HERMES_SESSION_SECRET=your-64-char-random-string     # signs session cookies
+HERMES_AGENT_TOKEN=your-64-char-random-string       # for AI agent / scripts
 ```
 
-Generate strong values with:
+**Generate strong values with:**
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
+# Generate all required secrets at once:
+python -c "
+import secrets
+print('HERMES_ADMIN_USERNAME=admin')
+print('HERMES_ADMIN_PASSWORD=' + secrets.token_urlsafe(32))
+print('HERMES_SESSION_SECRET=' + secrets.token_urlsafe(48))
+print('HERMES_AGENT_TOKEN=' + secrets.token_urlsafe(64))
+"
 ```
+
+**⚠️ NEVER use default values like "admin"/"change-me" in production!**
 
 ### Browser login flow
 

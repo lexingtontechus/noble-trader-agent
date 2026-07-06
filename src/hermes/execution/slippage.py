@@ -56,6 +56,28 @@ class SlippageModeler:
             Slippage in basis points (positive = unfavorable)
         """
         adv = adv_usd or self._default_adv
+        
+        # Protect against division by zero
+        if adv <= 0:
+            log.warning(
+                "invalid_adv_for_slippage_calculation",
+                adv_usd=adv_usd,
+                default_adv=self._default_adv,
+                order_size_usd=order_size_usd,
+                note="Using default ADV to avoid division by zero"
+            )
+            adv = self._default_adv
+        
+        if adv <= 0:
+            # Final fallback - this should never happen with proper defaults
+            adv = 10_000_000  # Safe default
+            log.error(
+                "critical_adv_error",
+                adv_usd=adv_usd,
+                default_adv=self._default_adv,
+                note="Using hardcoded fallback ADV"
+            )
+        
         participation_rate = order_size_usd / adv
 
         # Square-root impact: slip = k * σ * sqrt(participation)

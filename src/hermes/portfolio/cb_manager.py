@@ -21,6 +21,7 @@ See roadmap §4 + user requirements.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -258,6 +259,8 @@ class CircuitBreakerManager:
             "total_expired": 0,
             "by_category": defaultdict(int),
         }
+        # Thread safety lock for concurrent access
+        self._lock = threading.RLock()
 
     @classmethod
     def from_config(cls, config_dict: dict | None = None) -> CircuitBreakerManager:
@@ -393,107 +396,113 @@ class CircuitBreakerManager:
         payload: dict,
     ) -> list[BreakerTrip]:
         """Check a value against tiered thresholds."""
-        self._stats["total_checks"] += 1
-        config = self._configs.get(category)
+        with self._lock:
+            self._stats["total_checks"] += 1
+            config = self._configs.get(category)
 
-        if not config or not config.enabled:
-            return []
+            if not config or not config.enabled:
+                return []
 
-        # First, check if existing trip has expired (time-decay)
-        self._check_expiry(category)
+            # First, check if existing trip has expired (time-decay)
+            self._check_expiry(category)
 
-        # Find the highest exceeded tier
-        tier = config.get_tier_for_value(value)
+            # Find the highest exceeded tier
+            tier = config.get_tier_for_value(value)
 
-        if tier is None:
-            # No tier exceeded — clear any existing trip
-            self._clear_if_tripped(category)
-            return []
+            if tier is None:
+                # No tier exceeded — clear any existing trip
+                self._clear_if_tripped(category)
+                return []
 
-        # Check if already tripped at this tier
-        existing = self._trips.get(category)
-        if existing and existing.active and existing.threshold == tier.threshold:
-            return []  # Already tripped at this level, don't re-trigger
+            # Check if already tripped at this tier
+            existing = self._trips.get(category)
+            if existing and existing.active and existing.threshold == tier.threshold:
+                return []  # Already tripped at this level, don't re-trigger
 
-        # Create new trip
-        trip = BreakerTrip(
-            breaker_name=config.name,
-            category=category,
-            tier_label=tier.label,
-            threshold=tier.threshold,
-            trigger_value=value,
-            action=tier.action,
-            cooldown_sec=tier.cooldown_sec,
-            expires_at=(
-                datetime.now(timezone.utc) + timedelta(seconds=tier.cooldown_sec)
-                if tier.cooldown_sec > 0
-                else None
-            ),
-            payload=payload,
-        )
+            # Create new trip
+            trip = BreakerTrip(
+                breaker_name=config.name,
+                category=category,
+                tier_label=tier.label,
+                threshold=tier.threshold,
+                trigger_value=value,
+                action=tier.action,
+                cooldown_sec=tier.cooldown_sec,
+                expires_at=(
+                    datetime.now(timezone.utc) + timedelta(seconds=tier.cooldown_sec)
+                    if tier.cooldown_sec > 0
+                    else None
+                ),
+                payload=payload,
+            )
 
-        self._trips[category] = trip
-        self._stats["total_trips"] += 1
-        self._stats["by_category"][category] += 1
+            self._trips[category] = trip
+            self._stats["total_trips"] += 1
+            self._stats["by_category"][category] += 1
 
-        log.warning(
-            "circuit_breaker_tripped",
-            category=category,
-            tier=tier.label,
-            action=tier.action.value,
-            trigger_value=value,
-            threshold=tier.threshold,
-            cooldown_sec=tier.cooldown_sec,
-        )
+            log.warning(
+                "circuit_breaker_tripped",
+                category=category,
+                tier=tier.label,
+                action=tier.action.value,
+                trigger_value=value,
+                threshold=tier.threshold,
+                cooldown_sec=tier.cooldown_sec,
+            )
 
-        return [trip]
+            return [trip]
 
     def _check_expiry(self, category: str) -> None:
         """Check if a trip has expired (time-decay)."""
-        trip = self._trips.get(category)
-        if not trip or not trip.active:
-            return
+        with self._lock:
+            trip = self._trips.get(category)
+            if not trip or not trip.active:
+                return
 
-        if trip.expires_at and datetime.now(timezone.utc) >= trip.expires_at:
-            trip.active = False
-            self._stats["total_expired"] += 1
-            log.info(
-                "circuit_breaker_expired",
-                category=category,
-                tier=trip.tier_label,
-                expired_at=trip.expires_at.isoformat(),
-            )
-            del self._trips[category]
+            if trip.expires_at and datetime.now(timezone.utc) >= trip.expires_at:
+                trip.active = False
+                self._stats["total_expired"] += 1
+                log.info(
+                    "circuit_breaker_expired",
+                    category=category,
+                    tier=trip.tier_label,
+                    expired_at=trip.expires_at.isoformat(),
+                )
+                del self._trips[category]
 
     def _clear_if_tripped(self, category: str) -> None:
         """Clear a trip if it exists (conditions normalized)."""
-        if category in self._trips:
-            trip = self._trips[category]
-            trip.active = False
-            log.info(
-                "circuit_breaker_cleared",
-                category=category,
-                tier=trip.tier_label,
-            )
-            del self._trips[category]
+        with self._lock:
+            if category in self._trips:
+                trip = self._trips[category]
+                trip.active = False
+                log.info(
+                    "circuit_breaker_cleared",
+                    category=category,
+                    tier=trip.tier_label,
+                )
+                del self._trips[category]
 
     def is_any_tripped(self) -> bool:
         """Check if any circuit breaker is currently tripped (active)."""
-        # First, expire any stale trips
-        for category in list(self._trips.keys()):
-            self._check_expiry(category)
-        return len(self._trips) > 0
+        with self._lock:
+            # First, expire any stale trips
+            for category in list(self._trips.keys()):
+                self._check_expiry(category)
+            return len(self._trips) > 0
 
     def is_category_tripped(self, category: str) -> bool:
         """Check if a specific category is tripped."""
-        self._check_expiry(category)
-        return category in self._trips and self._trips[category].active
+        with self._lock:
+            self._check_expiry(category)
+            return category in self._trips and self._trips[category].active
 
     def get_active_trips(self) -> list[BreakerTrip]:
         """Get all currently active trips."""
-        for category in list(self._trips.keys()):
-            self._check_expiry(category)
-        return [t for t in self._trips.values() if t.active]
+        with self._lock:
+            for category in list(self._trips.keys()):
+                self._check_expiry(category)
+            return [t for t in self._trips.values() if t.active]
 
     def get_blocking_action(self) -> BreakerAction | None:
         """

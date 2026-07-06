@@ -111,12 +111,49 @@ class VaRCalculator:
         # Z-score for confidence level (e.g., 99% → z = -2.326)
         from scipy.stats import norm  # type: ignore
 
-        z = norm.ppf(1 - confidence)
+        # Protect against edge cases in confidence level
+        if confidence >= 1.0:
+            log.warning(
+                "invalid_confidence_level_for_var",
+                confidence=confidence,
+                note="Confidence level must be < 1.0, using 0.999 as fallback"
+            )
+            confidence = 0.999
+        elif confidence <= 0.0:
+            log.warning(
+                "invalid_confidence_level_for_var",
+                confidence=confidence,
+                note="Confidence level must be > 0.0, using 0.99 as fallback"
+            )
+            confidence = 0.99
+
+        try:
+            z = norm.ppf(1 - confidence)
+        except Exception as e:
+            log.error(
+                "var_calculation_error",
+                confidence=confidence,
+                error=str(e),
+                note="Using conservative VaR estimate"
+            )
+            # Fallback to historical method or conservative estimate
+            return self.compute_historical(confidence, position_value)
+
         var = mean + z * std
 
         # CVaR for normal distribution: mean - std * phi(z) / (1 - confidence)
         # where phi is the PDF
-        cvar = mean - std * norm.pdf(z) / (1 - confidence)
+        denominator = (1 - confidence)
+        if denominator <= 0:
+            log.warning(
+                "invalid_denominator_for_cvar",
+                confidence=confidence,
+                denominator=denominator,
+                note="Using VaR as CVaR fallback"
+            )
+            cvar = var  # Fallback to VaR if denominator is invalid
+        else:
+            cvar = mean - std * norm.pdf(z) / denominator
 
         if position_value is not None:
             return var * position_value, cvar * position_value

@@ -219,7 +219,7 @@ class PortfolioStateService:
             "exit_price": exit_price,
             "qty": pos.qty,
             "realized_pnl": realized,
-            "r_multiple": realized / pos.risk_amount if pos.risk_amount > 0 else 0,
+            "r_multiple": realized / pos.risk_amount if pos.risk_amount > 0 else 0.0,
             "hold_duration_sec": (datetime.now(timezone.utc) - pos.opened_at).total_seconds(),
             "exit_reason": exit_reason,
         }
@@ -260,16 +260,39 @@ class PortfolioStateService:
         # Equity
         equity = self._cash_usd + self._cash_usdc + gross_exposure + unrealized
 
-        # Leverage
-        leverage_gross = gross_exposure / equity if equity > 0 else 0
-        leverage_net = net_exposure / equity if equity > 0 else 0
+        # Leverage - protect against division by zero
+        if equity <= 0:
+            log.warning(
+                "invalid_equity_for_leverage_calculation",
+                equity=equity,
+                gross_exposure=gross_exposure,
+                net_exposure=net_exposure,
+                note="Equity is zero or negative - using safe defaults"
+            )
+            leverage_gross = 0.0
+            leverage_net = 0.0
+        else:
+            leverage_gross = gross_exposure / equity
+            leverage_net = net_exposure / equity
 
         # Drawdown
         if equity > self._peak_equity:
             self._peak_equity = equity
             self._dd_start_time = None
-        drawdown_usd = self._peak_equity - equity
-        drawdown_pct = drawdown_usd / self._peak_equity if self._peak_equity > 0 else 0
+        
+        # Protect against division by zero in drawdown calculation
+        if self._peak_equity <= 0:
+            log.warning(
+                "invalid_peak_equity_for_drawdown_calculation",
+                peak_equity=self._peak_equity,
+                equity=equity,
+                note="Peak equity is zero or negative - using safe defaults"
+            )
+            drawdown_usd = 0.0
+            drawdown_pct = 0.0
+        else:
+            drawdown_usd = self._peak_equity - equity
+            drawdown_pct = drawdown_usd / self._peak_equity
 
         if drawdown_pct > 0:
             if self._dd_start_time is None:
