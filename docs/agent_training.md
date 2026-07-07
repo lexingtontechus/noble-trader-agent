@@ -179,7 +179,7 @@
 - Hyperliquid docs: https://hyperliquid.gitbook.io/
 - *Cryptoassets* — Chris Burniske and Jack Tatar (McGraw-Hill)
 - *The Bitcoin Standard* — Saifedean Ammous (Wiley)
-- Order book imbalance research: https://arxiv.org/abs/2103.13629
+- Order book imbalance research: "Market Microstructure in Electronic Trading" — Joel Hasbrouck (2007)
 
 **Hermes Exercise:**
 - Run `platform monitor --symbols BTC-PERP` and watch the L2 order book

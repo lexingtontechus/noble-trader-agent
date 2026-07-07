@@ -831,11 +831,11 @@ Hermes maintains its own internal pub/sub bus. L0 is the **only** subscriber to 
    ↓
 7. L4 queries Hermes's own 7-state meta-regime HMM (updated continuously by L2.8 events)
    ↓
-8. L4 re-derives Kelly (Bayesian prior = upstream effective_kelly, posterior from Hermes pnl_realized)
+8. L4 trusts NT's effective_kelly and applies portfolio overlay multiplier
    ↓
-9. L4 re-derives Masaniello stake (using Hermes's own p_win, not upstream p_win)
+9. L4 sizing = NT effective_kelly × meta-regime multiplier × drawdown adjustment × risk caps
    ↓
-10. L4 computes Hermes's own P_win via log-odds pooling (meta_regime + upstream_signal + microstructure)
+10. L4 uses NT's p_win signal directly (no re-computation)
     ↓
 11. L4 BEV combiner produces final {action, conviction, size, entry, stop, target, regime_tag}
     ↓
