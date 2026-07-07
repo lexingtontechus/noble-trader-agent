@@ -84,12 +84,51 @@ app = FastAPI(
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Mount React dashboard assets
+DIST_DIR = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
+if DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
+    # Add /app route for React dashboard
+    @app.get("/app", response_class=HTMLResponse)
+    async def react_dashboard(request: Request) -> HTMLResponse:
+        """Serve React dashboard."""
+        index_path = DIST_DIR / "index.html"
+        if index_path.exists():
+            content = index_path.read_text()
+            # Update CSP to allow inline styles and scripts
+            content = content.replace(
+                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;',
+                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;'
+            )
+            return HTMLResponse(content=content)
+        else:
+            return HTMLResponse(content="Dashboard not built. Run 'npm run build' in dashboard directory.", status_code=503)
+
+    # Catch-all route for React app routing
+    @app.get("/app/{path:path}", response_class=HTMLResponse)
+    async def react_app_catchall(request: Request, path: str) -> HTMLResponse:
+        """Serve React app for client-side routing."""
+        index_path = DIST_DIR / "index.html"
+        if index_path.exists():
+            content = index_path.read_text()
+            # Update CSP to allow inline styles and scripts
+            content = content.replace(
+                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;',
+                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;'
+            )
+            return HTMLResponse(content=content)
+        else:
+            return HTMLResponse(content="Dashboard not built. Run 'npm run build' in dashboard directory.", status_code=503)
+
 # Templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Global config + optional monitor reference
 _config: HermesConfig | None = None
 _monitor = None  # Set by dashboard if monitor is running in same process
+
+# Flag to indicate React dashboard is available
+_react_dashboard_available = (DIST_DIR / "index.html").exists()
 
 
 def create_app(config: HermesConfig, monitor=None) -> FastAPI:
@@ -326,6 +365,11 @@ async def auth_me(request: Request, authorization: str | None = Header(None)) ->
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
+    # Redirect to React dashboard if available
+    if _react_dashboard_available:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/app/")
+    
     """Status overview page."""
     config = get_config()
     status = await check_all(config)

@@ -4,7 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import { AuthProvider } from "@/lib/auth";
 import { QueryProvider } from "@/lib/query";
-import "@/styles/globals.css";
+import "@/globals.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

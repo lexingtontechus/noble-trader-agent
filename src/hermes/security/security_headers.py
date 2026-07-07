@@ -91,11 +91,11 @@ class SecurityHeadersMiddleware:
             self.headers['Content-Security-Policy'] = "default-src 'self'"
             return
         
-        # Base policy
+        # Base policy - more permissive for TailwindCSS v4 and DaisyUI v5
         policy_parts = [
             "default-src 'self'",
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' cdn.jsdelivr.net",
-            "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net",
+            "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net *.tailwindcss.com",
             "img-src 'self' data: https:",
             "connect-src 'self' https:",
             "font-src 'self' cdn.jsdelivr.net",
@@ -110,9 +110,6 @@ class SecurityHeadersMiddleware:
         # Add reporting if enabled
         if self.config.enable_reporting:
             policy_parts.append("report-uri /csp-violation-report-endpoint/")
-        
-        # Add nonce for inline scripts (would be set per request in real implementation)
-        policy_parts.append("script-src 'self' 'unsafe-inline'")
         
         self.headers['Content-Security-Policy'] = "; ".join(policy_parts)
     
