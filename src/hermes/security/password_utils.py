@@ -97,7 +97,7 @@ class PasswordSecurity:
         else:
             # Fallback to PBKDF2
             hash_value = self._hash_with_pbkdf2(password, salt)
-            return f"pbkdf2:{salt.hex()}:{hash_value}:{self.HASH_ITERATIONS}"
+            return f"pbkdf2:{salt.hex()}:{hash_value.hex()}:{self.HASH_ITERATIONS}"
     
     def _hash_with_argon2(self, password: str, salt: bytes) -> str:
         """Hash password using Argon2id."""

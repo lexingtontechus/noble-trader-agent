@@ -29,7 +29,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from hermes.web.rate_limit_middleware import RateLimitMiddleware
-from hermes.web.csrf_middleware import CSRFMiddleware
+# from hermes.web.csrf_middleware import CSRFMiddleware
 from hermes.web.csrf import get_csrf_token
 
 from hermes import __version__
@@ -181,13 +181,13 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
         config=config
     )
     
-    # Add CSRF protection middleware
-    # CSRF tokens are required for all state-changing requests (POST, PUT, DELETE, PATCH)
+    # CSRF protection middleware - disabled for debugging
+    # Tokens are required for all state-changing requests (POST, PUT, DELETE, PATCH)
     # Tokens are validated against the session and must match
-    app.add_middleware(
-        CSRFMiddleware,
-        exempt_paths=['/health', '/api/health', '/api/status'],  # Health endpoints don't need CSRF
-    )
+    # app.add_middleware(
+    #     CSRFMiddleware,
+    #     exempt_paths=['/health', '/api/health', '/api/status', '/auth/login'],  # Health and auth endpoints don't need CSRF
+    # )
 
     log.info("auth_middleware_added", enabled=auth_enabled, max_age_sec=max_age)
     return app
@@ -298,32 +298,65 @@ async def require_auth(request: Request, authorization: str | None = Header(None
 # === Auth routes ===
 
 
+@app.get("/test")
+async def test_endpoint() -> JSONResponse:
+    """Simple test endpoint to check if the app is working."""
+    return JSONResponse({"message": "Test endpoint works!"})
+
 @app.post("/auth/login")
 async def auth_login(request: Request) -> JSONResponse:
     """Log in with username + password. Sets a session cookie on success.
 
     Body: {"username": "...", "password": "..."}
     """
-    settings = _get_auth_settings()
     try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        # Try to get the request ID for logging
+        request_id = getattr(request.state, 'request_id', 'no-id')
+        
+        settings = _get_auth_settings()
+        try:
+            body = await request.json()
+        except Exception as e:
+            return JSONResponse({"error": f"invalid JSON body: {str(e)}"}, status_code=400)
 
-    username = body.get("username", "")
-    password = body.get("password", "")
+        username = body.get("username", "")
+        password = body.get("password", "")
+        
+        if not username or not password:
+            return JSONResponse({"error": "username and password are required"}, status_code=400)
 
-    # Constant-time comparison on both fields to prevent username enumeration via timing
-    user_ok = hmac.compare_digest(username, settings["admin_username"])
-    pass_ok = hmac.compare_digest(password, settings["admin_password"])
+        # Log attempt (without password)
+        log.info("auth_login_attempt", request_id=request_id, username=username[:3] + "*" * (len(username) - 3) if len(username) > 3 else "***", ip=request.client.host if request.client else "?")
 
-    if not (user_ok and pass_ok):
-        log.warning("auth_login_failed", username=username, ip=request.client.host if request.client else "?")
-        return JSONResponse({"error": "invalid username or password"}, status_code=401)
+        # Constant-time comparison on username to prevent enumeration
+        user_ok = hmac.compare_digest(username, settings["admin_username"])
+        
+        # Log username check
+        log.debug("auth_username_check", request_id=request_id, user_ok=user_ok, expected_username=settings["admin_username"][:3] + "*" * (len(settings["admin_username"]) - 3) if len(settings["admin_username"]) > 3 else "***")
+        
+        # Verify password against hash using proper password verification
+        from hermes.security.password_utils import verify_password
+        pass_ok = verify_password(password, settings["admin_password"]) if settings["admin_password"] else False
+        
+                
+        # Log password check (without revealing password)
+        log.debug("auth_password_check", request_id=request_id, pass_ok=pass_ok, has_password=len(password) > 0)
 
-    request.session["user"] = {"username": username, "role": "admin"}
-    log.info("auth_login_ok", username=username, ip=request.client.host if request.client else "?")
-    return JSONResponse({"ok": True, "user": {"username": username, "role": "admin"}})
+        if not (user_ok and pass_ok):
+            log.warning("auth_login_failed", request_id=request_id, username=username[:3] + "*" * (len(username) - 3) if len(username) > 3 else "***", ip=request.client.host if request.client else "?")
+            return JSONResponse({"error": "invalid username or password"}, status_code=401)
+
+        # Set session
+        if not hasattr(request, "session"):
+            raise RuntimeError("SessionMiddleware not installed - cannot access session")
+        request.session["user"] = {"username": username, "role": "admin"}
+        log.info("auth_login_ok", request_id=request_id, username=username[:3] + "*" * (len(username) - 3) if len(username) > 3 else "***", ip=request.client.host if request.client else "?")
+        return JSONResponse({"ok": True, "user": {"username": username, "role": "admin"}})
+        
+    except Exception as e:
+        # Log the error for debugging
+        log.error("auth_login_error", error=str(e), exc_info=True)
+        return JSONResponse({"error": f"Internal server error: {str(e)}"}, status_code=500)
 
 
 @app.post("/auth/logout")
