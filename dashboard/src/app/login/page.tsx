@@ -1,9 +1,10 @@
+"use client";
+
 import { useAuth } from "@/lib/auth-simple";
 import { useState } from "react";
 import { Card } from "@/components/layout/Card";
 
-/** Login form — POSTs to /auth/login, server sets a session cookie. */
-export function LoginPage() {
+export default function LoginPage() {
   const { login } = useAuth();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");

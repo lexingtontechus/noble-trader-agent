@@ -10,7 +10,9 @@ interface CardProps {
 
 export function Card({ title, extra, className, children }: CardProps) {
   return (
-    <div className={cn("card bg-base-200 shadow-xl mb-4", className)}>
+    <div
+      className={cn("card card-border bg-base-200 shadow-xl mb-4", className)}
+    >
       <div className="card-body">
         {title && (
           <>

@@ -79,3 +79,8 @@ desktop.ini
 .secrets.baseline.local
 backups/
 *.bak
+
+# === Dashboard ===
+#
+.next/
+node_modules/

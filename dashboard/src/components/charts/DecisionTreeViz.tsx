@@ -1,3 +1,4 @@
+"use client";
 import { useState } from "react";
 import type { DecisionTreeNode } from "@/lib/types";
 import { cn } from "@/lib/format";
