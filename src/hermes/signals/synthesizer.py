@@ -145,6 +145,9 @@ class SignalSynthesizer:
 
         # Per-symbol renko constructors (keyed by symbol)
         self._renko_constructors: dict[str, RenkoConstructor] = {}
+        # Last bar ts fed to each renko constructor (prevents double-counting volume
+        # when synthesize() runs repeatedly on the same monitor window).
+        self._renko_last_ts: dict[str, Any] = {}
         self._pattern_analyzer = BrickPatternAnalyzer(lookback=10)
 
         # Redis for publishing blended signals
@@ -221,18 +224,25 @@ class SignalSynthesizer:
 
         renko = self._renko_constructors[sym]
 
-        # 2. Feed recent ticks to renko constructor (if monitor available)
+        # 2. Feed recent ticks to renko constructor (if monitor available).
+        # CRITICAL: only feed bars NEWER than the last one we already fed. The
+        # synthesizer runs on every L4 cycle, so re-feeding the same last 100 bars
+        # every pass DOUBLE-COUNTS volume and rebuilds bricks from duplicate ticks.
         if self._monitor:
-            # Get recent bars from monitor and feed to renko as synthetic ticks
+            last_fed = self._renko_last_ts.get(sym)
             bars = self._monitor.get_bars(sym, "1s", n=500)
-            for bar in bars[-100:]:  # feed last 100 1s bars
+            for bar in bars[-100:]:  # candidate window
+                bar_ts = bar.ts_close or bar.ts_open
+                if last_fed is not None and bar_ts <= last_fed:
+                    continue  # already fed this bar in a prior cycle
                 renko.on_tick(Tick(
-                    ts=bar.ts_close or bar.ts_open,
+                    ts=bar_ts,
                     venue=bar.venue,
                     symbol=sym,
                     price=bar.close,
                     size=bar.volume,
                 ))
+                self._renko_last_ts[sym] = bar_ts
 
         # 3. Classify meta-regime
         # Gather inputs from monitor if available

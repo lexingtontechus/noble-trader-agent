@@ -13,7 +13,7 @@ from typing import Any
 import structlog
 
 from hermes.core.config import HermesConfig
-from hermes.db.migrate import get_duckdb_path
+from hermes.db.migrate import get_duckdb_path, safe_duckdb_connect
 from hermes.execution.orders import Fill, Order, OrderEvent
 
 log = structlog.get_logger(__name__)
@@ -31,7 +31,7 @@ class ExecutionWriter:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO orders (
@@ -80,7 +80,7 @@ class ExecutionWriter:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO order_events (event_id, order_id, ts, event_type, payload, seq_num)
@@ -105,7 +105,7 @@ class ExecutionWriter:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO fills (

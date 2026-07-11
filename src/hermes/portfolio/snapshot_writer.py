@@ -95,57 +95,76 @@ class SnapshotWriter:
         snapshot_type: str,
         metrics: PortfolioMetrics,
     ) -> None:
-        """Synchronous DuckDB write (called from executor)."""
+        """Synchronous DuckDB write (called from executor).
+
+        DuckDB is single-writer; on Windows a concurrent process (another
+        CLI/cron job touching the same file) raises "file is already open".
+        Retry with small backoff so a transient lock does not drop the
+        snapshot.
+        """
         import duckdb
 
-        with duckdb.connect(str(self._db_path)) as conn:
-            conn.execute(
-                """
-                INSERT INTO account_snapshots (
-                    snapshot_id, ts, snapshot_type,
-                    equity_total, cash_usd, cash_usdc,
-                    margin_used, margin_available,
-                    leverage_gross, leverage_net,
-                    realized_pnl, unrealized_pnl, funding_pnl, fees_paid,
-                    gross_exposure_usd, net_exposure_usd,
-                    long_exposure_usd, short_exposure_usd,
-                    n_open_positions, n_venues,
-                    peak_equity, drawdown_pct, drawdown_usd, time_in_dd_sec,
-                    var_1d_99, cvar_1d_99, beta_to_spy,
-                    config_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    snapshot_id,
-                    metrics.ts,
-                    snapshot_type,
-                    metrics.equity_total,
-                    metrics.cash_usd,
-                    metrics.cash_usdc,
-                    metrics.margin_used,
-                    metrics.margin_available,
-                    metrics.leverage_gross,
-                    metrics.leverage_net,
-                    metrics.realized_pnl,
-                    metrics.unrealized_pnl,
-                    metrics.funding_pnl,
-                    metrics.fees_paid,
-                    metrics.gross_exposure_usd,
-                    metrics.net_exposure_usd,
-                    metrics.long_exposure_usd,
-                    metrics.short_exposure_usd,
-                    metrics.n_open_positions,
-                    metrics.n_venues,
-                    metrics.peak_equity,
-                    metrics.drawdown_pct,
-                    metrics.drawdown_usd,
-                    metrics.time_in_dd_sec,
-                    metrics.var_1d_99,
-                    metrics.cvar_1d_99,
-                    metrics.beta_to_spy,
-                    metrics.config_hash,
-                ],
-            )
+        last_err: Exception | None = None
+        for attempt in range(5):
+            try:
+                with duckdb.connect(str(self._db_path)) as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO account_snapshots (
+                            snapshot_id, ts, snapshot_type,
+                            equity_total, cash_usd, cash_usdc,
+                            margin_used, margin_available,
+                            leverage_gross, leverage_net,
+                            realized_pnl, unrealized_pnl, funding_pnl, fees_paid,
+                            gross_exposure_usd, net_exposure_usd,
+                            long_exposure_usd, short_exposure_usd,
+                            n_open_positions, n_venues,
+                            peak_equity, drawdown_pct, drawdown_usd, time_in_dd_sec,
+                            var_1d_99, cvar_1d_99, beta_to_spy,
+                            config_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            snapshot_id,
+                            metrics.ts,
+                            snapshot_type,
+                            metrics.equity_total,
+                            metrics.cash_usd,
+                            metrics.cash_usdc,
+                            metrics.margin_used,
+                            metrics.margin_available,
+                            metrics.leverage_gross,
+                            metrics.leverage_net,
+                            metrics.realized_pnl,
+                            metrics.unrealized_pnl,
+                            metrics.funding_pnl,
+                            metrics.fees_paid,
+                            metrics.gross_exposure_usd,
+                            metrics.net_exposure_usd,
+                            metrics.long_exposure_usd,
+                            metrics.short_exposure_usd,
+                            metrics.n_open_positions,
+                            metrics.n_venues,
+                            metrics.peak_equity,
+                            metrics.drawdown_pct,
+                            metrics.drawdown_usd,
+                            metrics.time_in_dd_sec,
+                            metrics.var_1d_99,
+                            metrics.cvar_1d_99,
+                            metrics.beta_to_spy,
+                            metrics.config_hash,
+                        ],
+                    )
+                return
+            except Exception as e:  # noqa: BLE001 - DuckDB lock errors vary by version
+                last_err = e
+                if attempt < 4:
+                    import time
+
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+        # All retries exhausted — record but don't crash the loop.
+        raise last_err if last_err else RuntimeError("snapshot write failed")
 
     def get_stats(self) -> dict[str, int]:
         return self._stats.copy()

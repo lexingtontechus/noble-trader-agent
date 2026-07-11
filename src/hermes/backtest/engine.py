@@ -99,6 +99,7 @@ class BacktestEngine:
         self._config = config
         self._db_path = get_duckdb_path(config)
         self._config_hash = get_config_hash(config)
+        self._price_hours = 72  # lookback window for real price series
 
     async def run_heartbeat_replay(
         self,
@@ -188,6 +189,11 @@ class BacktestEngine:
                 synthesizer._db_path = temp_db
 
                 risk_engine = PortfolioRiskEngine(self._config, initial_equity=initial_equity)
+                # Backtest mode: auto-approve trade actions (bypass live autonomy gate)
+                try:
+                    risk_engine._autonomy_gate.set_paper_mode(True)
+                except Exception:
+                    pass
                 risk_engine._db_path = temp_db
                 risk_engine._snapshot_writer._db_path = temp_db
                 risk_engine._state = portfolio_state  # share state
@@ -199,6 +205,18 @@ class BacktestEngine:
                 await synthesizer.start()
                 await risk_engine.start()
                 await exec_engine.start()
+
+                # Fetch REAL price series per symbol (HL candleSnapshot / Alpaca bars)
+                from hermes.marketdata.price_feed import fetch_price_series
+                price_series = {}
+                for _sym in sorted({hb_data.get("symbol") for hb_data in heartbeats}):
+                    try:
+                        ps = await fetch_price_series(_sym, hours=max(24, self._price_hours), config=self._config)
+                        price_series[_sym] = ps
+                        log.info("price_series_loaded", symbol=_sym, candles=len(ps.candles))
+                    except Exception as e:
+                        log.warning("price_series_failed", symbol=_sym, error=str(e)[:120])
+                        price_series[_sym] = None
 
                 # Process each heartbeat
                 for hb_data in heartbeats:
@@ -227,7 +245,10 @@ class BacktestEngine:
                             p_markov=hb_data.get("p_markov", 0.5),
                             ev_scale=hb_data.get("ev_scale", 1.0),
                             markov_current_state=hb_data.get("markov_current_state", "FLAT"),
-                            regime_shift=hb_data.get("regime_shift", "false"),
+                            regime_shift=(
+                                "true" if hb_data.get("regime_shift", False) in (True, "true")
+                                else "false"
+                            ),
                             prev_regime=hb_data.get("prev_regime"),
                             shift_at=0,
                             shifts_24h=hb_data.get("shifts_24h", 0),
@@ -258,10 +279,69 @@ class BacktestEngine:
                                 1 for o in orders if o.status == OrderStatus.FILLED
                             )
 
-                        # Check stop/target hits using entry price as "current price"
-                        # (in real backtest, we'd use actual historical prices per tick)
-                        for pos in portfolio_state.get_all_positions():
-                            portfolio_state.update_price(pos.symbol, hb.entry_price)
+                        # Mark positions against the REAL price series for this symbol.
+                        _ps = price_series.get(hb_data.get("symbol"))
+                        if _ps and _ps.candles:
+                            for _c in _ps.candles:
+                                for _pos in list(portfolio_state.get_all_positions()):
+                                    if _pos.symbol != hb_data.get("symbol"):
+                                        continue
+                                    portfolio_state.update_price(_pos.symbol, _c.close)
+                                    _sl = getattr(_pos, "stop_loss", 0) or 0
+                                    _tp = getattr(_pos, "take_profit", 0) or 0
+                                    if _sl and _c.low <= _sl:
+                                        portfolio_state.remove_position(_pos.position_id, _sl, "stop_loss_hit")
+                                        break
+                                    if _tp and _c.high >= _tp:
+                                        portfolio_state.remove_position(_pos.position_id, _tp, "take_profit_hit")
+                                        break
+                                # Persist equity snapshot so the tear sheet has a real curve
+                                _m = portfolio_state.get_metrics()
+                                try:
+                                    import duckdb as _duck
+                                    with _duck.connect(str(temp_db)) as _c2:
+                                        _c2.execute(
+                                            "INSERT INTO account_snapshots "
+                                            "(snapshot_id, ts, snapshot_type, equity_total, cash_usd, cash_usdc, "
+                                            "margin_used, margin_available, leverage_gross, leverage_net, "
+                                            "realized_pnl, unrealized_pnl, funding_pnl, fees_paid, "
+                                            "gross_exposure_usd, net_exposure_usd, long_exposure_usd, short_exposure_usd, "
+                                            "n_open_positions, n_venues, peak_equity, drawdown_pct, drawdown_usd, "
+                                            "time_in_dd_sec, config_hash) "
+                                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                            [
+                                                f"bt_{_c.ts_ms}_{hb_data.get('symbol')}",
+                                                __import__("datetime").datetime.fromtimestamp(_c.ts_ms / 1000, tz=__import__("datetime").timezone.utc),
+                                                "on_event",
+                                                float(_m.equity_total),
+                                                float(_m.cash_usd),
+                                                float(_m.cash_usdc),
+                                                float(_m.margin_used),
+                                                float(_m.margin_available),
+                                                float(_m.leverage_gross),
+                                                float(_m.leverage_net),
+                                                float(_m.realized_pnl),
+                                                float(_m.unrealized_pnl),
+                                                float(_m.funding_pnl),
+                                                float(_m.fees_paid),
+                                                float(_m.gross_exposure_usd),
+                                                float(_m.net_exposure_usd),
+                                                float(_m.long_exposure_usd),
+                                                float(_m.short_exposure_usd),
+                                                int(_m.n_open_positions),
+                                                int(_m.n_venues),
+                                                float(_m.peak_equity),
+                                                float(_m.drawdown_pct),
+                                                float(_m.drawdown_usd),
+                                                int(_m.time_in_dd_sec),
+                                                self._config_hash or "backtest",
+                                            ],
+                                        )
+                                except Exception as _se:
+                                    log.debug("snapshot_write_failed", error=str(_se)[:80])
+                        else:
+                            for pos in portfolio_state.get_all_positions():
+                                portfolio_state.update_price(pos.symbol, hb.entry_price)
 
                         if speed > 0:
                             await asyncio.sleep(speed)
@@ -269,10 +349,10 @@ class BacktestEngine:
                     except Exception as e:
                         log.warning("backtest_heartbeat_error", error=str(e), symbol=hb_data.get("symbol"))
 
-                # Close all remaining positions at last price
+                # Close remaining positions at last REAL price for that symbol
                 for pos in list(portfolio_state.get_all_positions()):
-                    last_hb = heartbeats[-1] if heartbeats else None
-                    exit_price = last_hb.get("entry_price", pos.entry_price) if last_hb else pos.entry_price
+                    _ps = price_series.get(pos.symbol)
+                    exit_price = _ps.candles[-1].close if _ps and _ps.candles else pos.entry_price
                     portfolio_state.remove_position(pos.position_id, exit_price, "backtest_end")
 
                 result.n_positions_closed = result.n_fills  # simplified
@@ -316,9 +396,10 @@ class BacktestEngine:
                 await risk_engine.stop()
                 await exec_engine.stop()
 
-                migrate_mod.get_duckdb_path = original_get_path
-
             finally:
+                # Restore the global get_duckdb_path in FINALLY so it never leaks
+                # to temp_db if an exception occurs mid-replay.
+                migrate_mod.get_duckdb_path = original_get_path
                 # Cleanup temp DB
                 shutil.rmtree(temp_dir, ignore_errors=True)
 

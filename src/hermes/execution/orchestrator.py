@@ -222,9 +222,11 @@ class ExecutionEngine:
             if order.status == OrderStatus.FILLED and order.avg_fill_price:
                 position_id = await self._register_position(order, signal, decision)
 
-                # Record entry decision branch
+                # Record entry decision branch — use position_id so it links to the
+                # exit branch (record_exit uses position.position_id). order.trade_id !=
+                # position_id, which broke entry/exit attribution in the self-learning loop.
                 self._branch_tracker.record_entry(
-                    trade_id=order.trade_id,
+                    trade_id=position_id,
                     symbol=order.symbol,
                     venue=order.venue,
                     entry_action=AgentAction.ENTER_NEW,

@@ -784,8 +784,8 @@ The Hermes Trading Platform now implements a comprehensive security architecture
 | **Network** | Rate limiting, IP blocking | High |
 | **Application** | Input validation, CSRF protection | Critical |
 | **Session** | Session management, hijacking protection | High |
-| **Authentication** | Password hashing, MFA support | Critical |
-| **Authorization** | RBAC, privilege checking | High |
+| **Authentication** | Password hashing (implemented); **MFA: NOT IMPLEMENTED** | Critical |
+| **Authorization** | **RBAC: NOT IMPLEMENTED** (session-cookie auth only; no role/permission model) | High |
 | **Data** | Encryption, audit logging | Critical |
 | **Monitoring** | Real-time alerts, behavioral analysis | High |
 

@@ -1,8 +1,10 @@
 """
 Async Redis subscriber for Noble Trader heartbeats.
 
-Uses a Redis consumer group so we can recover from disconnects without losing
-messages. Reconnects with exponential backoff on failure.
+Reads from the `signal.raw.noble_trader` Redis STREAM (XADD/XREAD) — NT pushes
+qualified heartbeat records there. Uses a consumer group (`hermes-l0`) so we can
+recover from disconnects without losing messages, and replay from the beginning
+when needed. Reconnects with exponential backoff on failure.
 
 Re-publishes normalized heartbeats on `signal.raw.hermes.{symbol}` for
 downstream consumption — L4 never reads from the upstream channel directly.
@@ -162,34 +164,86 @@ class HeartbeatSubscriber:
                     backoff = min(backoff * 2, max_backoff)
 
     async def _subscribe_loop(self) -> None:
-        """Subscribe to upstream Redis and process messages."""
+        """Read from the upstream Redis STREAM via XREAD (consumer group).
+
+        NT pushes qualified heartbeats to `signal.raw.noble_trader` as a Redis
+        Stream (XADD). We read new entries (id ">") in real-time; the 
+        `replay_from_start` flag (set when the stream is empty on first connect)
+        reads from "0" to ingest any backlog.
+        """
         import redis.asyncio as aioredis
 
-        # Upstream Redis (Noble Trader's)
         upstream = aioredis.from_url(self._redis_url, decode_responses=True)
         try:
             await upstream.ping()
             log.info("upstream_redis_connected", url=self._safe_url(self._redis_url))
 
-            # Use pub/sub (not consumer groups — NT publishes via pub/sub)
-            pubsub = upstream.pubsub()
-            await pubsub.subscribe(self._channel)
-            log.info("subscribed_to_channel", channel=self._channel)
+            # Ensure consumer group exists (mkstream creates the stream if absent)
+            try:
+                await upstream.xgroup_create(
+                    name=self._channel,
+                    groupname=self._consumer_group,
+                    id="0",
+                    mkstream=True,
+                )
+                log.info("consumer_group_created", channel=self._channel, group=self._consumer_group)
+            except Exception as e:
+                # BUSYGROUP = already exists; ignore. Other errors bubble.
+                if "BUSYGROUP" not in str(e):
+                    log.warning("consumer_group_create_failed", error=str(e))
 
+            log.info("stream_read_started", channel=self._channel, group=self._consumer_group)
+            last_id = ">"  # only new messages
             while self._running:
                 try:
-                    message = await pubsub.get_message(
-                        timeout=1.0, ignore_subscribe_messages=True
+                    resp = await upstream.xreadgroup(
+                        groupname=self._consumer_group,
+                        consumername="hermes-l0-worker",
+                        streams={self._channel: last_id},
+                        count=10,
+                        block=5000,
                     )
-                    if message and message["type"] == "message":
-                        await self._process_message(message["data"])
+                    if not resp:
+                        continue
+                    for _stream, entries in resp:
+                        for entry_id, fields in entries:
+                            raw = self._extract_payload(fields)
+                            if raw is not None:
+                                await self._process_message(raw)
+                            # Acknowledge so we don't reprocess on restart
+                            try:
+                                await upstream.xack(self._channel, self._consumer_group, entry_id)
+                            except Exception:
+                                pass
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    log.error("message_processing_error", error=str(e))
-                    # Don't break the loop — keep processing next messages
+                    log.error("stream_read_error", error=str(e))
+                    await asyncio.sleep(1.0)
         finally:
             await upstream.close()
+
+    @staticmethod
+    def _extract_payload(fields: dict) -> "str | None":
+        """Extract the raw heartbeat JSON string from a stream entry.
+
+        NT may store the payload as a single field (e.g. `data`, `payload`, or
+        `heartbeat`) containing JSON, or spread flat key/values. We handle both:
+        prefer a JSON-bearing field; otherwise serialize the flat map back to
+        JSON so parse_heartbeat can validate it.
+        """
+        if not fields:
+            return None
+        # Common single-field payload keys
+        for key in ("data", "payload", "heartbeat", "message"):
+            if key in fields:
+                return fields[key]
+        # Exactly one field and it looks like JSON
+        if len(fields) == 1:
+            return next(iter(fields.values()))
+        # Flat map -> re-serialize to JSON for the schema parser
+        import json
+        return json.dumps(fields)
 
     async def _process_message(self, raw_payload: str | bytes) -> None:
         """Process a single heartbeat message."""

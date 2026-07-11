@@ -16,7 +16,7 @@ This guide provides secure configuration settings and recommendations for the He
 The Hermes Trading Platform implements a security-first approach with configurable thresholds, escalation procedures, and monitoring capabilities. The security system includes:
 
 - **Authentication Security**: Rate limiting, brute force protection, session management
-- **Authorization Security**: RBAC, privilege escalation detection, access control
+- **Authorization Security**: **RBAC: NOT IMPLEMENTED** (planned). Current auth is session-cookie only - no role/permission model or privilege-escalation detection yet.
 - **Input Validation**: Sanitization, CSRF protection, injection prevention
 - **Monitoring and Alerting**: Real-time monitoring, configurable thresholds, escalation procedures
 - **Incident Response**: Automated response procedures, forensic capabilities

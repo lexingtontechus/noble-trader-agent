@@ -325,6 +325,45 @@ class CircuitBreakerManager:
             "loss_amount": loss_amount,
         })
 
+    def check_daily_wins(
+        self,
+        wins_today: int,
+        avg_daily_wins: float,
+    ) -> list[BreakerTrip]:
+        """Win-streak cooloff: wins_today / avg_daily_wins ratio.
+
+        Fires when today's win COUNT runs hot vs the rolling baseline — a
+        signal to stop adding risk (ride open positions to exit). Only triggers
+        when a baseline exists (avg_daily_wins > 0).
+        """
+        if avg_daily_wins <= 0:
+            self._clear_if_tripped("daily_wins")
+            return []
+        ratio = wins_today / avg_daily_wins
+        return self._check_tiered("daily_wins", ratio, {
+            "wins_today": wins_today,
+            "avg_daily_wins": avg_daily_wins,
+            "ratio": ratio,
+        })
+
+    def check_daily_profit(
+        self,
+        daily_profit_usd: float,
+    ) -> list[BreakerTrip]:
+        """Daily realized-PROFIT cooloff (inverse of daily_loss).
+
+        Fires on positive realized PnL for the session — a "too good, step
+        back" halt so open positions ride to their exits before a likely
+        mean-reversion / regime shift. block_entries/halt_all never force-close
+        open positions.
+        """
+        if daily_profit_usd <= 0:
+            self._clear_if_tripped("daily_profit")
+            return []
+        return self._check_tiered("daily_profit", daily_profit_usd, {
+            "daily_profit_usd": daily_profit_usd,
+        })
+
     def check_var(
         self,
         var_1d_99_usd: float,

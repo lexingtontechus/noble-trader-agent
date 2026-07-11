@@ -43,7 +43,7 @@ class AnomalyDetector:
         vol_percentile_threshold: float = 99.0,
         spread_multiplier_threshold: float = 5.0,
         imbalance_sigma_threshold: float = 3.0,
-        lookback_bars: int = 1440,  # ~60 days of 1m bars (1440 minutes * 60 days)
+        lookback_bars: int = 1440,  # 1440 1m bars = 1 day of history (not 60 days)
     ) -> None:
         self._return_sigma = return_sigma_threshold
         self._vol_pct = vol_percentile_threshold

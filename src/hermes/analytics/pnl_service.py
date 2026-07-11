@@ -111,6 +111,7 @@ class PnLAttribution:
         fees: float,
         slippage: float,
         funding: float,
+        direction: str = "long",
     ) -> dict[str, float]:
         """
         Compute PnL attribution.
@@ -122,8 +123,11 @@ class PnLAttribution:
 
         # Timing: PnL from entry timing alpha
         # If Hermes entered better than NT suggested, that's timing alpha
-        entry_alpha = (nt_entry_price - entry_price) * qty  # positive = Hermes entered better
-        timing_pnl = entry_alpha
+        entry_alpha = (nt_entry_price - entry_price) * qty  # positive = Hermes entered better (long)
+        # For SHORTS a better entry is HIGHER than NT's suggested entry, so the sign
+        # flips. Without this, short timing alpha is reported inverted (penalised when
+        # Hermes actually entered better).
+        timing_pnl = entry_alpha if direction == "long" else -entry_alpha
 
         # Sizing: PnL from position sizing (relative to a "baseline" size)
         # Baseline = risk_amount / stop_distance (standard risk-based sizing)
@@ -174,6 +178,24 @@ class DrawdownTracker:
         self._underwater_periods: int = 0
         self._total_periods: int = 0
 
+    def _compute_stats(self, equity: float, ts: datetime) -> dict[str, Any]:
+        """Compute drawdown stats for a given equity WITHOUT mutating history."""
+        current_dd_usd = self._peak_equity - equity
+        current_dd_pct = current_dd_usd / self._peak_equity if self._peak_equity > 0 else 0
+        return {
+            "peak_equity": round(self._peak_equity, 2),
+            "current_dd_pct": round(current_dd_pct, 6),
+            "current_dd_usd": round(current_dd_usd, 2),
+            "max_dd_pct": round(self._max_dd_pct, 6),
+            "max_dd_usd": round(self._max_dd_usd, 2),
+            "time_in_dd_sec": self._total_time_in_dd_sec + (
+                int((ts - self._dd_start).total_seconds()) if self._dd_start else 0
+            ),
+            "underwater_pct": round(
+                self._underwater_periods / self._total_periods if self._total_periods > 0 else 0, 4
+            ),
+        }
+
     def update(self, equity: float, ts: datetime | None = None) -> dict[str, Any]:
         """Update drawdown tracking with new equity value."""
         ts = ts or datetime.now(timezone.utc)
@@ -199,26 +221,18 @@ class DrawdownTracker:
             self._max_dd_pct = current_dd_pct
             self._max_dd_usd = current_dd_usd
 
-        return {
-            "peak_equity": round(self._peak_equity, 2),
-            "current_dd_pct": round(current_dd_pct, 6),
-            "current_dd_usd": round(current_dd_usd, 2),
-            "max_dd_pct": round(self._max_dd_pct, 6),
-            "max_dd_usd": round(self._max_dd_usd, 2),
-            "time_in_dd_sec": self._total_time_in_dd_sec + (
-                int((ts - self._dd_start).total_seconds()) if self._dd_start else 0
-            ),
-            "underwater_pct": round(
-                self._underwater_periods / self._total_periods if self._total_periods > 0 else 0, 4
-            ),
-        }
+        return self._compute_stats(equity, ts)
 
     def get_stats(self) -> dict[str, Any]:
-        """Get current drawdown statistics."""
+        """Get current drawdown statistics.
+
+        NOTE: must NOT call update() -- that would append a DUPLICATE equity entry
+        to _equity_history on every read, corrupting the equity curve / drawdown math.
+        """
         if not self._equity_history:
             return {}
         latest_ts, latest_equity = self._equity_history[-1]
-        return self.update(latest_equity, latest_ts)
+        return self._compute_stats(latest_equity, latest_ts)
 
     def get_equity_curve(self) -> list[tuple[str, float]]:
         """Get equity curve as list of (iso_ts, equity) tuples."""
@@ -315,6 +329,7 @@ class PnLService:
             fees=fees,
             slippage=slippage,
             funding=funding,
+            direction=direction,
         )
 
         realized = RealizedPnL(
@@ -418,7 +433,7 @@ class PnLService:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO pnl_realized (
@@ -449,7 +464,7 @@ class PnLService:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO pnl_unrealized (

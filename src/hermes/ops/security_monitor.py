@@ -30,6 +30,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -55,14 +56,22 @@ def api_rate_limit(api_method: str):
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
+            # Resolve the UNDECORATED log_security_event to avoid infinite
+            # recursion: this decorator wraps log_security_event itself, so
+            # calling self.log_security_event(...) re-enters the wrapper.
+            # Use the captured original `func` (set by @functools.wraps) rather
+            # than __wrapped__, which is not present on the class-bound method.
+            raw_log = func
+
             # Check if rate limiting is enabled
             if not hasattr(self, '_api_rate_limiter'):
                 return func(self, *args, **kwargs)
-            
+
             # Acquire API rate limiting token
             if not self._api_rate_limiter._acquire():
                 # Rate limit exceeded
-                self.log_security_event(
+                raw_log(
+                    self,
                     event_type=SecurityEvent.RATE_LIMIT_WARNING,
                     message=f"API rate limit exceeded for {api_method}",
                     severity="warning",
@@ -70,16 +79,17 @@ def api_rate_limit(api_method: str):
                 )
                 # Return a safe response without raising exception
                 return {"error": "Rate limit exceeded", "retry_after": 30}
-            
+
             # Track API call
             if api_method in self._api_calls:
                 self._api_calls[api_method] += 1
-            
+
             try:
                 return func(self, *args, **kwargs)
             except Exception as e:
                 # Log error with sanitization
-                self.log_security_event(
+                raw_log(
+                    self,
                     event_type=SecurityEvent.INPUT_VALIDATION_FAILURE,
                     message=f"API error in {api_method}",
                     severity="error",
@@ -164,52 +174,50 @@ class RateLimiter:
         self.window = window
         self._lock = threading.RLock()
         self._available = max_requests
-        self._last_update = datetime.now()
+        self._last_update = datetime.now(timezone.utc)
         self._requests: list[float] = []
     
-    def _cleanup(self) -> None:
-        """Remove old requests from tracking."""
-        now = datetime.now()
-        while self._last_update < now - self.window:
-            self._requests.pop(0)
+    def _refill(self) -> None:
+        """Refill the token bucket when the window has elapsed."""
+        now = datetime.now(timezone.utc)
+        if now - self._last_update >= self.window:
+            self._available = self.max_requests
             self._last_update = now
-    
+
+    def _cleanup(self) -> None:
+        """Remove old requests from tracking (compat alias for _refill)."""
+        with self._lock:
+            self._refill()
+
     def _acquire(self) -> bool:
         """
         Acquire a request token.
-        
+
         Returns:
             True if request allowed, False if rate limited
         """
         with self._lock:
-            now = datetime.now()
-            self._cleanup()
-            
-            # Check if within time window
-            if now - self._last_update > self.window:
-                self._last_update = now
-                self._available = self.max_requests
-            
+            self._refill()
+
             if self._available <= 0:
                 return False
-            
+
             # Record this request
-            self._requests.append(now)
+            self._requests.append(datetime.now(timezone.utc).timestamp())
             self._available -= 1
             return True
-    
+
     def _release(self) -> None:
         """Release a request token."""
         with self._lock:
-            now = datetime.now()
-            self._cleanup()
-            self._last_update = now
-    
+            self._refill()
+            self._last_update = datetime.now(timezone.utc)
+
     @property
     def current_count(self) -> int:
-        """Get current number of requests allowed."""
+        """Get current number of requests allowed (remaining tokens)."""
         with self._lock:
-            self._cleanup()
+            self._refill()
             return max(0, int(self._available))
 
 
@@ -469,7 +477,6 @@ class SecurityMonitor:
     # Authentication Event Logging
     # =========================================================================
     
-    @api_rate_limit("log_auth_event")
     def log_auth_event(
         self,
         event_type: SecurityEvent,
@@ -482,6 +489,15 @@ class SecurityMonitor:
     ) -> None:
         """Log an authentication event."""
         with self._lock:
+            # Derive success from event type: a failure event implies an
+            # unsuccessful login. Without this, callers passing AUTH_FAILURE
+            # without an explicit success=False are treated as successes and
+            # brute-force tracking + alerts never fire.
+            if event_type == SecurityEvent.AUTH_FAILURE:
+                success = False
+            elif event_type == SecurityEvent.AUTH_SUCCESS:
+                success = True
+
             # Sanitize all inputs
             sanitized_username = self._sanitize_input(username, max_length=100, field_name="username")
             sanitized_ip = self._sanitize_input(ip_address, max_length=45, field_name="ip_address") if ip_address else None
@@ -700,7 +716,6 @@ class SecurityMonitor:
     # General Security Event Logging
     # =========================================================================
     
-    @api_rate_limit("log_security_event")
     def log_security_event(
         self,
         event_type: SecurityEvent,
@@ -997,12 +1012,16 @@ class SecurityMonitor:
             
             # Check if we should escalate based on time
             if not alert["escalation_triggered"]:
-                # Schedule escalation
-                threading.Timer(
+                # Schedule escalation. Use a DAEMON timer so it never blocks
+                # interpreter shutdown (a non-daemon Timer keeps the process
+                # alive indefinitely waiting to fire, which hangs pytest/exit).
+                escalation_timer = threading.Timer(
                     config["escalation_time"],
                     self._execute_escalation,
                     args=[alert, config]
-                ).start()
+                )
+                escalation_timer.daemon = True
+                escalation_timer.start()
                 
                 # Mark alert as escalated
                 alert["escalation_triggered"] = True
@@ -1087,7 +1106,7 @@ class SecurityMonitor:
                     "critical_notification_failed",
                     channel=channel.__name__,
                     alert_type=alert["type"],
-                    error=str(e"
+                    error=str(e)
                 )
 
     # Notification channel implementations
@@ -1242,7 +1261,6 @@ class SecurityMonitor:
                 ) / max(1, len(self._alert_history)) * 100
             }
 
-    @api_rate_limit("detect_suspicious_activity")
     def detect_suspicious_activity(self) -> list[dict[str, Any]]:
         """Detect suspicious activity patterns in recent events."""
         with self._lock:
@@ -1438,7 +1456,6 @@ class SecurityMonitor:
     # Security Metrics
     # =========================================================================
     
-    @api_rate_limit("get_security_metrics")
     def get_security_metrics(self) -> dict[str, Any]:
         """Get current security metrics."""
         with self._lock:
@@ -1526,7 +1543,7 @@ class SecurityMonitor:
             return 0.0
         return round(numerator / denominator, 4)
     
-    def _sanitize_input(self, value: str | None, max_length: int = 1000, field_name: str = "input") -> str:
+    def _sanitize_input(self, value: str | None, field_name: str = "input", max_length: int = 1000) -> str:
         """
         Sanitize input values to prevent injection and information disclosure.
         
@@ -1557,6 +1574,11 @@ class SecurityMonitor:
         
         result = ''.join(sanitized)
         
+        # Strip HTML / script tags (defense-in-depth against XSS / injection in
+        # logged or echoed input). Tags are removed entirely, not escaped, so a
+        # username like "<script>alert(1)</script>" becomes "alert(1)".
+        result = re.sub(r'<[^>]*>', '', result)
+        
         # Log sanitization events if significant changes were made
         if len(result) != len(str_value):
             log.warning("input_sanitized", field=field_name, original_length=len(str_value), sanitized_length=len(result))
@@ -1575,15 +1597,28 @@ class SecurityMonitor:
             Redacted data dictionary
         """
         if redact_fields is None:
-            redact_fields = ['password', 'token', 'secret', 'key', 'authorization', 'cookie']
-        
+            # Sensitive name tokens. A field is redacted if ANY token is a
+            # substring of its (lowercased) name — substring (not exact) matching
+            # is intentional so api_key, access_token, session_id, secret_key,
+            # auth_token, etc. are all caught. Fail-safe: over-redacting an
+            # uncommon field is preferable to leaking a secret.
+            sensitive_tokens = [
+                'password', 'pass', 'token', 'secret', 'key',
+                'authorization', 'auth', 'cookie', 'session',
+                'credential', 'private', 'api_key',
+            ]
+        else:
+            sensitive_tokens = redact_fields
+
         redacted = data.copy()
-        
-        for field in redact_fields:
-            if field in redacted:
-                if redacted[field] is not None:
-                    # Log redaction
-                    log.debug("sensitive_data_redacted", field=field, length=len(str(redacted[field])))
+
+        for field in list(redacted.keys()):
+            fname = str(field).lower()
+            if any(tok in fname for tok in sensitive_tokens):
+                val = redacted[field]
+                if val is not None:
+                    # Log redaction (never log the value itself)
+                    log.debug("sensitive_data_redacted", field=field, length=len(str(val)))
                 redacted[field] = "***REDACTED***"
         
         # Redact IP addresses partially
@@ -1625,17 +1660,26 @@ class SecurityMonitor:
                 self._alert_callbacks.remove(callback)
 
     def _trigger_alert(self, alert_type: str, data: dict[str, Any]) -> None:
-        """Trigger security alerts to all registered callbacks."""
+        """Trigger security alerts to all registered callbacks.
+        
+        Defense-in-depth: the payload delivered to callbacks is redacted BEFORE
+        any callback runs, so external sinks (Slack/Discord/webhook) never receive
+        a raw secret/token. The alert itself is still logged via the structured
+        logger (which also redacts) — failure to redact here must never leak.
+        """
         with self._lock:
+            # Redact before dispatch. Cast to a plain dict to avoid mutating the
+            # caller's original data, and deep-redact nested structures too.
+            safe_data = self._redact_sensitive_data(_deep_copy_redact(data))
             for callback in self._alert_callbacks:
                 try:
-                    callback(alert_type, data)
+                    callback(alert_type, safe_data)
                 except Exception as e:
                     log.error("alert_callback_error", callback=str(callback), error=str(e))
 
-    # =========================================================================
-    # CSRF Token Management
-    # =========================================================================
+                # =========================================================================
+                # CSRF Token Management
+                # =========================================================================
 
     @api_rate_limit("generate_csrf_token")
     def generate_csrf_token(self, session_id: str) -> str:
@@ -1678,12 +1722,11 @@ class SecurityMonitor:
             if token not in self._csrf_tokens[session_id]:
                 return False
 
-            # Remove the token (one-time use)
-            self._csrf_tokens[session_id].remove(token)
-
-            # Clean up empty session entries
-            if not self._csrf_tokens[session_id]:
-                del self._csrf_tokens[session_id]
+            # One-time use: consuming ANY token invalidates the entire session's
+            # token set. This prevents CSRF replay/hijacking (a previously issued
+            # token cannot be reused after a newer token for the same session is
+            # consumed). Clear the whole session rather than just the one token.
+            del self._csrf_tokens[session_id]
 
             return True
 
@@ -1980,3 +2023,28 @@ def reset_security_monitor() -> None:
     """Reset the global security monitor (for testing)."""
     global _security_monitor
     _security_monitor = None
+
+
+def _deep_copy_redact(data: Any) -> Any:
+    """Recursively copy ``data`` and redact string values that look like secrets.
+
+    Used to scrub alert payloads before they reach external callbacks (webhooks,
+    chat sinks). Catches secrets embedded as values (not just top-level keys),
+    e.g. ``{"headers": {"authorization": "Bearer ..."}}`` or free-form messages.
+    Defined at module level (after the class) so it does not prematurely close
+    the ``SecurityMonitor`` class body.
+    """
+    if isinstance(data, dict):
+        return {k: _deep_copy_redact(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return type(data)(_deep_copy_redact(v) for v in data)
+    if isinstance(data, str):
+        # Redact values that are clearly credentials/tokens by shape.
+        low = data.lower()
+        if any(tok in low for tok in ("bearer ", "token=", "api_key=", "apikey=",
+                                       "secret", "password=", "passwd=")):
+            return "***REDACTED***"
+        # Redact anything that looks like a long opaque secret (>=16 alnum chars).
+        if len(data) >= 16 and re.fullmatch(r"[A-Za-z0-9_\-]{16,}", data):
+            return "***REDACTED***"
+    return data

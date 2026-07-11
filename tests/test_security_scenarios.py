@@ -62,7 +62,7 @@ class TestSecurityScenarios:
     def test_input_sanitization_length_truncation(self, security_monitor):
         """Test input length truncation."""
         long_input = "a" * 2000
-        result = security_monitor._sanitize_input(long_input, max_length=100, "username")
+        result = security_monitor._sanitize_input(long_input, max_length=100, field_name="username")
         assert len(result) <= 100
         assert result == "a" * 100
         
@@ -76,12 +76,19 @@ class TestSecurityScenarios:
         result = security_monitor._sanitize_input("user😊test", "username")
         assert "😊" in result
         
-        # Test binary data
+        # Test binary/control data. Control chars (\x00 \x01 \x02) are non-printable
+        # and MUST be stripped. NOTE: "\xff" in a Python str is the printable
+        # Latin-1 char 'ÿ' (U+00FF) — indistinguishable from a legitimate Unicode
+        # letter, so the sanitizer KEEPS it (same rule as ü/ä/😊 above). Binary
+        # bytes should be passed as bytes and decoded explicitly upstream; the
+        # sanitizer's contract is "strip control chars + HTML, keep printable text".
         binary_data = "test\x00\x01\x02\xff"
         result = security_monitor._sanitize_input(binary_data, "username")
         assert "\x00" not in result
         assert "\x01" not in result
-        assert "\xff" not in result
+        assert "\x02" not in result
+        # \xff (ÿ) is a valid printable char -> preserved
+        assert "\xff" in result
 
     def test_data_redaction_sensitive_fields(self, security_monitor):
         """Test redaction of sensitive data fields."""
@@ -481,6 +488,58 @@ class TestSecurityScenarios:
         # Both callbacks should be called
         callback1.assert_called()
         callback2.assert_called()
+
+    def test_alert_callback_payload_redaction(self, security_monitor):
+        """Alert payloads delivered to callbacks MUST be redacted (no raw secrets).
+
+        Defense-in-depth: even if a caller passes sensitive fields in alert data,
+        ``_trigger_alert`` must scrub them before any external sink (Slack/Discord/
+        webhook) receives the payload. This prevents secret leakage via alert sinks.
+
+        We call ``_trigger_alert`` directly (the test suite already exercises
+        private methods such as ``_sanitize_input``); the public ``log_auth_event``
+        path only forwards a fixed subset of fields to the alert, so it cannot be
+        used to assert arbitrary-field redaction.
+        """
+        captured = {}
+
+        def sink(alert_type, data):
+            captured["alert_type"] = alert_type
+            captured["data"] = data
+
+        security_monitor.add_alert_callback(sink)
+
+        # Sensitive material both as top-level keys and as nested/value-shaped
+        # secrets.
+        secret_payload = {
+            "username": "attacker",  # non-sensitive -> preserved
+            "password": "super-secret-pw",
+            "api_key": "sk_live_abcdef1234567890xyz",
+            "headers": {"authorization": "Bearer tok_live_abcdef1234567890"},
+            "note": "Bearer tok_live_abcdef1234567890",
+        }
+
+        security_monitor._trigger_alert("test_alert", secret_payload)
+
+        assert captured, "alert callback was never invoked"
+        got = captured["data"]
+
+        # Sensitive keys redacted
+        assert got.get("password") == "***REDACTED***"
+        assert got.get("api_key") == "***REDACTED***"
+
+        # Nested sensitive values redacted
+        assert got.get("headers", {}).get("authorization") == "***REDACTED***"
+
+        # Value-shaped secret in a free-form field redacted
+        assert got.get("note") == "***REDACTED***"
+
+        # Non-sensitive fields preserved
+        assert got.get("username") == "attacker"
+
+        # The caller's original payload must NOT have been mutated in place.
+        assert secret_payload.get("password") == "super-secret-pw"
+        assert secret_payload.get("api_key") == "sk_live_abcdef1234567890xyz"
 
 
 class TestRateLimiter:

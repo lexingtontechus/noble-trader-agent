@@ -502,8 +502,15 @@ class AuditLogger:
         return output.getvalue()
     
     def _generate_html_report(self, events: List[AuditEvent]) -> str:
-        """Generate HTML report."""
-        html_template = """
+        """Generate HTML report.
+
+        NOTE: uses string.Template ($ placeholders), NOT str.format(). The
+        template contains CSS braces (e.g. `body { font-family: ... }`) which
+        str.format() would try to parse as field markers and raise KeyError.
+        string.Template ignores `{`/`}`, so it is safe here.
+        """
+        from string import Template
+        html_template = Template("""
         <!DOCTYPE html>
         <html>
         <head>
@@ -520,8 +527,8 @@ class AuditLogger:
         </head>
         <body>
             <h1>Audit Report</h1>
-            <p>Generated: {generated}</p>
-            <p>Total Events: {total_events}</p>
+            <p>Generated: $generated</p>
+            <p>Total Events: $total_events</p>
             <table>
                 <tr>
                     <th>Timestamp</th>
@@ -532,30 +539,34 @@ class AuditLogger:
                     <th>Action</th>
                     <th>Result</th>
                 </tr>
-                {rows}
+                $rows
             </table>
         </body>
         </html>
-        """
-        
+        """)
+
         generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        
+
+        import html as _html
         rows = []
         for event in events:
-            row_class = f"severity-{event.severity.value}"
+            row_class = f"severity-{_html.escape(event.severity.value)}"
+            # Escape ALL user-influenced fields to prevent stored XSS in the report.
+            # A username/resource/action like '<img src=x onerror=alert(1)>' would
+            # otherwise execute when an operator opens the HTML audit report.
             rows.append(f"""
                 <tr class="{row_class}">
-                    <td>{event.timestamp.strftime("%Y-%m-%d %H:%M:%S")}</td>
-                    <td>{event.event_type.value}</td>
-                    <td>{event.severity.value}</td>
-                    <td>{event.username or event.user_id or 'N/A'}</td>
-                    <td>{event.resource or 'N/A'}</td>
-                    <td>{event.action or 'N/A'}</td>
-                    <td>{event.result or 'N/A'}</td>
+                    <td>{_html.escape(event.timestamp.strftime("%Y-%m-%d %H:%M:%S"))}</td>
+                    <td>{_html.escape(str(event.event_type.value))}</td>
+                    <td>{_html.escape(event.severity.value)}</td>
+                    <td>{_html.escape(str(event.username or event.user_id or 'N/A'))}</td>
+                    <td>{_html.escape(str(event.resource or 'N/A'))}</td>
+                    <td>{_html.escape(str(event.action or 'N/A'))}</td>
+                    <td>{_html.escape(str(event.result or 'N/A'))}</td>
                 </tr>
             """)
-        
-        return html_template.format(
+
+        return html_template.substitute(
             generated=generated,
             total_events=len(events),
             rows="".join(rows)

@@ -134,8 +134,13 @@ class StopWatcher:
                 self.remove_position(pid)
                 continue
 
-            # Update trailing stop
-            if position.trailing_method and current_atr is not None:
+            # Update trailing stop.
+            # Only the 'atr' / 'brick_boundary' methods need ATR. The 'percentage'
+            # method does NOT use ATR, so gating it on `current_atr is not None`
+            # made percentage trailing stops never fire. Require ATR only for the
+            # methods that actually consume it.
+            needs_atr = position.trailing_method in ("atr", "brick_boundary")
+            if position.trailing_method and (not needs_atr or current_atr is not None):
                 new_trail = self._compute_trailing_stop(
                     position, tick.price, current_atr
                 )

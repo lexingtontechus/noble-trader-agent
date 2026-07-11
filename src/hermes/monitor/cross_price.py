@@ -92,7 +92,14 @@ class CrossPriceMonitor:
         returns_a = returns_a[-min_len:]
         returns_b = returns_b[-min_len:]
 
-        current_corr = float(np.corrcoef(returns_a, returns_b)[0, 1])
+        corr_mat = np.corrcoef(returns_a, returns_b)
+        current_corr = float(corr_mat[0, 1])
+
+        # Guard against NaN/Inf (constant prices -> zero variance -> NaN). Storing a
+        # NaN in _last_correlations would POISON the cache permanently (every later
+        # delta comparison against NaN is False, so no shift ever fires for that pair).
+        if not np.isfinite(current_corr):
+            return None
 
         # Get baseline correlation (longer window)
         baseline_n = min(len(prices_a), len(prices_b), self._baseline_window)

@@ -1,42 +1,40 @@
-# ============================================================
-# Hermes Trading Platform — Default Configuration
-# All values can be overridden via environment variables or .env
-# See roadmap §3 for full documentation of every parameter
-# ============================================================
-
-# === Environment ===
-environment: development                    # development | staging | production
-log_level: INFO                             # DEBUG | INFO | WARNING | ERROR
-
-# === Portfolio Allocation (§3.0) ===
+environment: development
+log_level: INFO
 portfolio:
   target_allocation:
-    crypto:      0.70
-    equities:    0.15
-    commodities: 0.00
-    forex:       0.15                      # reserved — unallocated until forex venue added
-
-  rebalance_threshold_drift_pct: 0.10
-  rebalance_frequency: on_drift            # on_drift | daily | weekly | monthly
-  rebalance_method: threshold              # threshold | target_weight | risk_parity
-
+    crypto: 0.7
+    equities: 0.15
+    commodities: 0.0
+    forex: 0.15
+  rebalance_threshold_drift_pct: 0.1
+  rebalance_frequency: on_drift
+  rebalance_method: threshold
   start_small: true
   initial_symbols:
-    - { symbol: "BTC/USD",     venue: "alpaca",       asset_class: "crypto" }
-    - { symbol: "SOL/USD",     venue: "alpaca",       asset_class: "crypto" }
-    - { symbol: "BTC-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
-    - { symbol: "ETH-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
-
-# === Venue Registry (§3.0) ===
+  - symbol: BTC/USD
+    venue: alpaca
+    asset_class: crypto
+  - symbol: SOL/USD
+    venue: alpaca
+    asset_class: crypto
+  - symbol: BTC-PERP
+    venue: hyperliquid
+    asset_class: crypto
+  - symbol: ETH-PERP
+    venue: hyperliquid
+    asset_class: crypto
 venues:
   alpaca:
     enabled: true
-    asset_classes: ["crypto", "equities", "commodities"]
+    asset_classes:
+    - crypto
+    - equities
+    - commodities
     credentials:
-      api_key:    "secret:alpaca.api_key"
-      api_secret: "secret:alpaca.api_secret"
-      base_url:   "secret:alpaca.base_url"
-      data_url:   "secret:alpaca.data_url"
+      api_key: secret:alpaca.api_key
+      api_secret: secret:alpaca.api_secret
+      base_url: secret:alpaca.base_url
+      data_url: secret:alpaca.data_url
     rate_limit_per_min: 200
     data_modes:
       live: true
@@ -46,18 +44,22 @@ venues:
       options: false
       shorting: true
       leverage: 4.0
-      # Crypto-specific (Alpaca v1beta3 crypto endpoint)
       crypto_24_7: true
-      crypto_pairs: ["BTC/USD", "SOL/USD", "ETH/USD", "LTC/USD", "BCH/USD"]
-
+      crypto_pairs:
+      - BTC/USD
+      - SOL/USD
+      - ETH/USD
+      - LTC/USD
+      - BCH/USD
   hyperliquid:
     enabled: true
-    asset_classes: ["crypto"]
+    asset_classes:
+    - crypto
     credentials:
-      wallet_address: "secret:hyperliquid.wallet_address"
-      private_key:    "secret:hyperliquid.private_key"
-      api_url:        "secret:hyperliquid.api_url"
-      vault_address:  "secret:hyperliquid.vault_address"
+      wallet_address: secret:hyperliquid.wallet_address
+      private_key: secret:hyperliquid.private_key
+      api_url: secret:hyperliquid.api_url
+      vault_address: secret:hyperliquid.vault_address
     rate_limit_per_min: 1200
     data_modes:
       live: true
@@ -68,111 +70,89 @@ venues:
       funding: true
       post_only: true
       reduce_only: true
-      max_leverage: 50.0
-
-  # Future venues (uncomment when added)
-  # oanda:
-  #   enabled: false
-  #   asset_classes: ["forex"]
-  #   credentials:
-  #     api_key:    "secret:oanda.api_key"
-  #     account_id: "secret:oanda.account_id"
-  #   features: { forex: true, leverage: 30.0 }
-
-# === Upstream — Noble Trader (§3.0) ===
+      max_leverage: 5.0
 upstream:
   noble_trader:
     redis:
-      url:             "secret:noble_trader.redis_url"
-      channel:         "signal.raw.noble_trader"
-      consumer_group:  "hermes-l0"
-      staleness_ms:    30000                # reject heartbeats older than 30s
+      url: secret:noble_trader.redis_url
+      channel: signal.raw.noble_trader
+      consumer_group: hermes-l0
+      staleness_ms: 30000
     supabase:
-      url:                    "secret:supabase.url"
-      anon_key:               "secret:supabase.anon_key"
-      sweep_result_table:     "nt_sweep_result"
-      regime_log_table:       "nt_regime_log"
-      backfill_on_startup:    true
+      url: secret:supabase.url
+      anon_key: secret:supabase.anon_key
+      sweep_result_table: nt_sweep_result
+      regime_log_table: nt_regime_log
+      backfill_on_startup: true
       backfill_lookback_days: 365
-
-# === Data Sources Policy (§3.0) ===
 data_sources:
   policy: venue_native_only
   prohibited_sources:
-    - yfinance
-    - alpha_vantage
-    - iex
-    - any_third_party_price_feed
+  - yfinance
+  - alpha_vantage
+  - iex
+  - any_third_party_price_feed
   fallback_behavior: fail_hard
-
-# === Account-Level Risk (§3.1) ===
 account:
   max_portfolio_drawdown_pct: 0.15
-  daily_loss_limit_pct:       0.03
-  weekly_loss_limit_pct:      0.06
-  max_leverage_total:         2.0
-  max_gross_exposure_pct:     1.50
-  max_net_exposure_pct:       0.50
-  margin_usage_limit_pct:     0.70
-  min_cash_buffer_pct:        0.05
-
-# === Asset-Level Risk (§3.2) ===
+  daily_loss_limit_pct: 0.03
+  weekly_loss_limit_pct: 0.06
+  max_leverage_total: 3.0
+  max_gross_exposure_pct: 1.5
+  max_net_exposure_pct: 0.5
+  margin_usage_limit_pct: 0.7
+  min_cash_buffer_pct: 0.05
 asset:
-  max_position_size_pct:      0.05
-  max_position_notional:      25000
-  max_asset_drawdown_pct:     0.08
-  max_concentration_pct:      0.15
-  sector_exposure_cap:        0.40
-  venue_exposure_cap:         0.60
-
-# === Signal & Entry/Execution (§3.3) ===
+  max_position_size_pct: 0.05
+  max_position_notional: 25000
+  max_asset_drawdown_pct: 0.08
+  max_concentration_pct: 0.15
+  sector_exposure_cap: 0.4
+  venue_exposure_cap: 0.6
 signal:
-  staleness_ms:               30000
-  min_edge_estimate_bps:      5
-  reward_risk_min:            1.5
-  regime_filter_allowlist:    all_states
-  tail_risk_action_override:  more_conservative
-
+  staleness_ms: 30000
+  min_edge_estimate_bps: 5
+  reward_risk_min: 1.5
+  regime_filter_allowlist: all_states
+  tail_risk_action_override: more_conservative
 entry:
   strategies:
-    calm_trend:         enter_now
-    choppy_range:       wait_for_brick_close
-    high_vol_breakout:  wait_for_pullback
-    regime_transition:  wait_for_retest
-    risk_off:           block
-    funding_stress:     block
-    liquidity_drained:  maker_only
-  brick_confirmation_count:    2
+    calm_trend: enter_now
+    choppy_range: wait_for_brick_close
+    high_vol_breakout: wait_for_pullback
+    regime_transition: wait_for_retest
+    risk_off: block
+    funding_stress: block
+    liquidity_drained: maker_only
+  brick_confirmation_count: 2
   pullback_depth_brick_fraction: 0.5
-  signal_expiry_minutes:       30
-
+  signal_expiry_minutes: 30
 execution:
-  default_method:             limit_at_brick
-  large_size_threshold_usd:   10000
-  twap_n_bricks:              3
-  iceberg_child_pct:          10
-  limit_offset_bps:           0
-  post_only_preference:       true
-  max_slippage_bps:           20
-
+  default_method: limit_at_brick
+  large_size_threshold_usd: 10000
+  twap_n_bricks: 3
+  iceberg_child_pct: 10
+  limit_offset_bps: 0
+  post_only_preference: true
+  max_slippage_bps: 20
 position_management:
   trailing:
-    method:        brick_boundary          # brick_boundary | atr | percentage
-    atr_mult:      3.0
-    brick_count:   1
+    method: brick_boundary
+    atr_mult: 3.0
+    brick_count: 1
   exit:
-    strategy:                  at_tp        # at_tp | trailing | brick_momentum | time_based
-    brick_momentum_threshold:  0.5
+    strategy: at_tp
+    brick_momentum_threshold: 0.5
   regime_exit:
-    trigger_states:            [risk_off, funding_stress]
-
-# === Circuit Breakers (§4) ===
+    trigger_states:
+    - risk_off
+    - funding_stress
 circuit_breakers:
   volatility:
-    atr_baseline_lookback_days:  20
-    atr_current_window_minutes:  60
-    vol_mult_threshold:          2.5
-    k_constant:                  0.3
+    atr_baseline_lookback_days: 20
+    atr_current_window_minutes: 60
+    vol_mult_threshold: 2.5
+    k_constant: 0.3
     action_ladder:
       level_1: reduce_size_50pct
       level_2: block_new_entries
@@ -180,246 +160,273 @@ circuit_breakers:
       level_4: liquidate
   risk:
     checks:
-      account_allocation:    true
-      risk_fraction:         true
-      risk_amount:           true
-      reward_risk:           true
-    var_confidence:          0.99
-    var_window_days:         1
+      account_allocation: true
+      risk_fraction: true
+      risk_amount: true
+      reward_risk: true
+    var_confidence: 0.99
+    var_window_days: 1
   kill_switch:
     auto_triggers:
-      daily_loss_hit:        true
-      venue_disconnect_sec:  60
-      audit_log_failure:     true
-
-  # === Advanced Circuit Breaker Manager (Phase 10 enhancement) ===
-  # Tiered thresholds with time-decay and rolling windows.
-  # Each category has tiers: threshold → action → cooldown_sec (0 = no auto-clear)
+      daily_loss_hit: true
+      venue_disconnect_sec: 60
+      audit_log_failure: true
   manager:
     portfolio_exposure:
       enabled: true
-      description: "Gross exposure as % of equity"
+      description: Gross exposure as % of equity
       tiers:
-        - threshold: 0.80
-          action: reduce_25pct
-          label: "80% exposure"
-          cooldown_sec: 0
-        - threshold: 0.90
-          action: reduce_50pct
-          label: "90% exposure"
-          cooldown_sec: 0
-        - threshold: 1.00
-          action: block_entries
-          label: "100% exposure (max)"
-          cooldown_sec: 0
-        - threshold: 1.50
-          action: halt_all
-          label: "150% exposure (over-leveraged)"
-          cooldown_sec: 3600
-
+      - threshold: 0.8
+        action: reduce_25pct
+        label: 80% exposure
+        cooldown_sec: 0
+      - threshold: 0.9
+        action: reduce_50pct
+        label: 90% exposure
+        cooldown_sec: 0
+      - threshold: 1.0
+        action: block_entries
+        label: 100% exposure (max)
+        cooldown_sec: 0
+      - threshold: 1.5
+        action: halt_all
+        label: 150% exposure (over-leveraged)
+        cooldown_sec: 3600
     position_size:
       enabled: true
-      description: "Absolute $ notional per position"
+      description: Absolute $ notional per position
       tiers:
-        - threshold: 50000
-          action: reduce_25pct
-          label: "$50k position"
-          cooldown_sec: 0
-        - threshold: 75000
-          action: reduce_50pct
-          label: "$75k position"
-          cooldown_sec: 0
-        - threshold: 100000
-          action: block_entries
-          label: "$100k position (max)"
-          cooldown_sec: 0
-
+      - threshold: 50000
+        action: reduce_25pct
+        label: $50k position
+        cooldown_sec: 0
+      - threshold: 75000
+        action: reduce_50pct
+        label: $75k position
+        cooldown_sec: 0
+      - threshold: 100000
+        action: block_entries
+        label: $100k position (max)
+        cooldown_sec: 0
     daily_loss:
       enabled: true
-      description: "Absolute $ daily loss"
+      description: Absolute $ daily loss
       tiers:
-        - threshold: 5000
-          action: reduce_50pct
-          label: "$5k daily loss"
-          cooldown_sec: 0
-        - threshold: 10000
-          action: block_entries
-          label: "$10k daily loss"
-          cooldown_sec: 14400  # 4h cooldown
-        - threshold: 15000
-          action: halt_all
-          label: "$15k daily loss (critical)"
-          cooldown_sec: 86400  # 24h cooldown
-
+      - threshold: 5000
+        action: reduce_50pct
+        label: $5k daily loss
+        cooldown_sec: 0
+      - threshold: 10000
+        action: block_entries
+        label: $10k daily loss
+        cooldown_sec: 14400
+      - threshold: 15000
+        action: halt_all
+        label: $15k daily loss (critical)
+        cooldown_sec: 86400
     var:
       enabled: true
-      description: "Absolute $ VaR (1-day, 99% confidence)"
+      description: Absolute $ VaR (1-day, 99% confidence)
       tiers:
-        - threshold: 50000
-          action: reduce_50pct
-          label: "$50k VaR"
-          cooldown_sec: 0
-        - threshold: 100000
-          action: block_entries
-          label: "$100k VaR"
-          cooldown_sec: 3600
-
+      - threshold: 50000
+        action: reduce_50pct
+        label: $50k VaR
+        cooldown_sec: 0
+      - threshold: 100000
+        action: block_entries
+        label: $100k VaR
+        cooldown_sec: 3600
     drawdown:
       enabled: true
-      description: "Portfolio drawdown % from peak equity"
+      description: Portfolio drawdown % from peak equity
       tiers:
-        - threshold: 0.15
-          action: reduce_50pct
-          label: "15% drawdown"
-          cooldown_sec: 0
-        - threshold: 0.20
-          action: block_entries
-          label: "20% drawdown"
-          cooldown_sec: 14400  # 4h
-        - threshold: 0.25
-          action: liquidate
-          label: "25% drawdown (critical)"
-          cooldown_sec: 86400  # 24h
-
+      - threshold: 0.15
+        action: reduce_50pct
+        label: 15% drawdown
+        cooldown_sec: 0
+      - threshold: 0.2
+        action: block_entries
+        label: 20% drawdown
+        cooldown_sec: 14400
+      - threshold: 0.25
+        action: liquidate
+        label: 25% drawdown (critical)
+        cooldown_sec: 86400
     funding_rate:
       enabled: true
-      description: "Daily funding cost in $ for crypto perps"
+      description: Daily funding cost in $ for crypto perps
       tiers:
-        - threshold: 50
-          action: temp_block
-          label: "$50/day funding"
-          cooldown_sec: 1800  # 30min
-        - threshold: 200
-          action: block_entries
-          label: "$200/day funding (extreme)"
-          cooldown_sec: 7200  # 2h
-
+      - threshold: 50
+        action: temp_block
+        label: $50/day funding
+        cooldown_sec: 1800
+      - threshold: 200
+        action: block_entries
+        label: $200/day funding (extreme)
+        cooldown_sec: 7200
     consecutive_losses:
       enabled: true
-      description: "Rolling 24h: consecutive losing trades"
+      description: 'Rolling 24h: consecutive losing trades'
       tiers:
-        - threshold: 3
-          action: reduce_50pct
-          label: "3 consecutive losses"
-          cooldown_sec: 0
-        - threshold: 5
-          action: block_entries
-          label: "5 consecutive losses"
-          cooldown_sec: 3600
-
+      - threshold: 3
+        action: reduce_50pct
+        label: 3 consecutive losses
+        cooldown_sec: 0
+      - threshold: 5
+        action: block_entries
+        label: 5 consecutive losses
+        cooldown_sec: 3600
+    daily_wins:
+      enabled: true
+      description: 'Win-streak cooloff: wins_today / avg_daily_wins ratio'
+      win_lookback_days: 30
+      min_history: 5
+      tiers:
+      - threshold: 1.5
+        action: reduce_50pct
+        label: Win streak 150% of avg (trim size)
+        cooldown_sec: 0
+      - threshold: 2.0
+        action: block_entries
+        label: Win streak 200% of avg (cooloff halt)
+        cooldown_sec: 14400
+      - threshold: 3.0
+        action: halt_all
+        label: Win streak 300% of avg (session halt)
+        cooldown_sec: 28800
+    daily_profit:
+      enabled: true
+      description: Daily realized-profit cooloff (ride-and-exit halt)
+      tiers:
+      - threshold: 3000
+        action: reduce_50pct
+        label: $3k daily profit (trim size)
+        cooldown_sec: 0
+      - threshold: 5000
+        action: block_entries
+        label: $5k daily profit (cooloff halt, ~4.6% of ~$108k equity)
+        cooldown_sec: 14400
+      - threshold: 8000
+        action: halt_all
+        label: $8k daily profit (session halt, ~7.4% of equity)
+        cooldown_sec: 28800
     trip_frequency:
       enabled: true
-      description: "Rolling 24h: number of CB trips"
+      description: 'Rolling 24h: number of CB trips'
       tiers:
-        - threshold: 5
-          action: reduce_50pct
-          label: "5 trips in 24h"
-          cooldown_sec: 0
-        - threshold: 10
-          action: halt_all
-          label: "10 trips in 24h (system unstable)"
-          cooldown_sec: 86400
-
-# === Autonomy Tiers (§3.5) ===
+      - threshold: 5
+        action: reduce_50pct
+        label: 5 trips in 24h
+        cooldown_sec: 0
+      - threshold: 10
+        action: halt_all
+        label: 10 trips in 24h (system unstable)
+        cooldown_sec: 86400
 autonomy:
   tier_0:
     approval: none
-    actions: [query_duckdb, run_backtest, generate_report, run_optimization]
+    actions:
+    - query_duckdb
+    - run_backtest
+    - generate_report
+    - run_optimization
   tier_1:
     approval: none
     max_notional_usd: 5000
     max_position_pct_of_equity: 0.02
     requires_shadow_days: 7
     requires_rigor_pass: 8
-    actions: [enter_trade, close_trade, adjust_stop]
+    actions:
+    - enter_trade
+    - close_trade
+    - adjust_stop
   tier_2:
     approval: notify_only
     max_size_change_pct: 50
     requires_shadow_sharpe_pct: 80
-    notify_channels: [discord, email]
+    notify_channels:
+    - discord
+    - email
     review_window_hours: 24
-    actions: [promote_config]
-    # Config keys that the agent (Hermes) can auto-promote after shadow validation.
-    # Changes to these keys are auto-approved at tier 2 with notification only.
+    actions:
+    - promote_config
     config_keys:
-      - signal.staleness_ms
-      - signal.min_edge_estimate_bps
-      - execution.limit_offset_bps
-      - execution.max_slippage_bps
-      - execution.twap_n_bricks
-      - execution.iceberg_child_pct
-      - entry.brick_confirmation_count
-      - entry.pullback_depth_brick_fraction
-      - entry.signal_expiry_minutes
-      - position_management.exit.brick_momentum_threshold
-      - position_management.trailing.atr_mult
-      - position_management.trailing.brick_count
-      - renko.rolling_window_bricks
+    - signal.staleness_ms
+    - signal.min_edge_estimate_bps
+    - execution.limit_offset_bps
+    - execution.max_slippage_bps
+    - execution.twap_n_bricks
+    - execution.iceberg_child_pct
+    - entry.brick_confirmation_count
+    - entry.pullback_depth_brick_fraction
+    - entry.signal_expiry_minutes
+    - position_management.exit.brick_momentum_threshold
+    - position_management.trailing.atr_mult
+    - position_management.trailing.brick_count
+    - renko.rolling_window_bricks
   tier_3:
     approval: required
     max_notional_usd: 25000
     or_novel_strategy: true
     approval_timeout_hours: 4
     on_timeout: skip
-    actions: [enter_large_trade, novel_strategy]
-    # Config keys that require human approval — agent CANNOT auto-promote these.
-    # Humans can change them via `platform config set` (they're authenticated).
+    actions:
+    - enter_large_trade
+    - novel_strategy
     config_keys:
-      - circuit_breakers.volatility.vol_mult_threshold
-      - circuit_breakers.volatility.atr_baseline_lookback_days
-      - circuit_breakers.risk.var_confidence
-      - account.max_portfolio_drawdown_pct
-      - account.daily_loss_limit_pct
-      - account.weekly_loss_limit_pct
-      - meta_regime.hmm_n_components
-      - meta_regime.confidence_floor
+    - circuit_breakers.volatility.vol_mult_threshold
+    - circuit_breakers.volatility.atr_baseline_lookback_days
+    - circuit_breakers.risk.var_confidence
+    - account.max_portfolio_drawdown_pct
+    - account.daily_loss_limit_pct
+    - account.weekly_loss_limit_pct
+    - meta_regime.hmm_n_components
+    - meta_regime.confidence_floor
   tier_4:
     approval: human_only
     blocks:
-      - changing_meta_regime_hmm_state_count
-      - disabling_circuit_breakers
-      - increasing_max_gross_exposure_beyond_2
-      - promoting_failed_rigor_config
-      - trading_in_blocked_regimes
-    actions: [structural_change]
-    # Config keys that ALWAYS require human intervention — agent is hard-blocked.
-    # These are structural changes that affect the entire system's risk posture.
+    - changing_meta_regime_hmm_state_count
+    - disabling_circuit_breakers
+    - increasing_max_gross_exposure_beyond_2
+    - promoting_failed_rigor_config
+    - trading_in_blocked_regimes
+    actions:
+    - structural_change
     config_keys:
-      - circuit_breakers.kill_switch.auto_triggers
-      - circuit_breakers.enabled
-      - account.max_gross_exposure_pct
-      - account.max_leverage_total
-      - asset.max_position_notional
-      - autonomy.tier_1.max_notional_usd
-      - autonomy.tier_3.max_notional_usd
-      - venues.alpaca.enabled
-      - venues.hyperliquid.enabled
+    - circuit_breakers.kill_switch.auto_triggers
+    - circuit_breakers.enabled
+    - account.max_gross_exposure_pct
+    - account.max_leverage_total
+    - asset.max_position_notional
+    - autonomy.tier_1.max_notional_usd
+    - autonomy.tier_3.max_notional_usd
+    - venues.alpaca.enabled
+    - venues.hyperliquid.enabled
   active_hours:
     timezone: America/Los_Angeles
-    start: "09:30"
-    end: "16:00"
+    start: 09:30
+    end: '16:00'
     crypto_24_7: true
     degrade_outside_hours: true
-
-# === Meta-Regime Classifier (§2.2.1) ===
 meta_regime:
-  hmm_n_components: 7                      # 5 | 7 | 9
+  hmm_n_components: 7
   retrain_frequency_days: 30
   confidence_floor: 0.55
   thresholds:
-    risk_off_corr_threshold:           0.75
-    funding_stress_annualized_pct:     50.0
-    liquidity_depth_percentile:        10
-    transition_entropy_bits:           1.5
-
-# === Renko Simulation (§2.2.3) ===
+    risk_off_corr_threshold: 0.75
+    funding_stress_annualized_pct: 50.0
+    liquidity_depth_percentile: 10
+    transition_entropy_bits: 1.5
 renko:
   rolling_window_bricks: 500
-  simulation_multipliers: [0.5, 0.75, 1.0, 1.25, 1.5]   # offline analysis only
-
-# === DuckDB (§6) ===
+  simulation_multipliers:
+  - 0.5
+  - 0.75
+  - 1.0
+  - 1.25
+  - 1.5
 duckdb:
-  path: "secret:hermes.duckdb_path"
+  path: secret:hermes.duckdb_path
   backup:
     daily: true
     backup_dir: ./backups
@@ -427,38 +434,26 @@ duckdb:
   compaction:
     weekly_vacuum: true
     day_of_week: sunday
-
-# === Hermes Redis (internal pub/sub) ===
 hermes_redis:
-  url: "secret:hermes.redis_url"
-
-# === Dashboard / API auth (single-user + agent) ===
-# Browser login uses a server-side session cookie (signed with HERMES_SESSION_SECRET).
-# Programmatic agent access uses a long-lived bearer token (HERMES_AGENT_TOKEN).
-# All values are resolved from .env via the SecretResolver.
+  url: secret:hermes.redis_url
 auth:
-  admin_username: "secret:hermes.admin_username"
-  admin_password: "secret:hermes.admin_password"
-  session_secret: "secret:hermes.session_secret"
-  agent_token:    "secret:hermes.agent_token"
-  session_max_age_sec: 86400          # 24h — cookie expiry
-  # Set to false to disable auth entirely (dev only — never do this in prod)
+  admin_username: secret:hermes.admin_username
+  admin_password: secret:hermes.admin_password
+  session_secret: secret:hermes.session_secret
+  agent_token: secret:hermes.agent_token
+  session_max_age_sec: 86400
   enabled: true
-
-# === Notifications ===
 notifications:
   discord:
-    webhook_url: "secret:discord.webhook_url"
+    webhook_url: secret:discord.webhook_url
     enabled: false
   telegram:
-    bot_token: "secret:telegram.bot_token"
+    bot_token: secret:telegram.bot_token
     enabled: false
-
-# === Logging ===
 logging:
   level: INFO
-  format: json                               # json | text
-  output: stdout                             # stdout | file
+  format: json
+  output: stdout
   file_path: ./logs/hermes.log
   rotate_max_mb: 100
   rotate_backup_count: 5

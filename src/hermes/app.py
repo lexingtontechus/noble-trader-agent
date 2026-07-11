@@ -1548,8 +1548,14 @@ def synthesize(ctx: click.Context, symbols: str, equity: float) -> None:
     type=float,
     help="Initial account equity in USD (default 100000)",
 )
+@click.option(
+    "--sync-brokerage",
+    is_flag=True,
+    default=True,
+    help="Anchor equity/drawdown to live Alpaca+Hyperliquid brokerage equity (default on)",
+)
 @click.pass_context
-def risk(ctx: click.Context, equity: float) -> None:
+def risk(ctx: click.Context, equity: float, sync_brokerage: bool) -> None:
     """Start the L5 Portfolio & Risk Engine.
 
     Subscribes to blended signals from L4 (signal.blended.{symbol}),
@@ -1576,6 +1582,7 @@ def risk(ctx: click.Context, equity: float) -> None:
 
     click.echo(f"Starting L5 Portfolio & Risk Engine...")
     click.echo(f"  Initial equity: ${equity:,.2f}")
+    click.echo(f"  Brokerage sync: {'ON (live Alpaca+Hyperliquid)' if sync_brokerage else 'OFF (static)'}")
 
     from hermes.portfolio.orchestrator import PortfolioRiskEngine
 
@@ -1670,17 +1677,40 @@ def risk(ctx: click.Context, equity: float) -> None:
                     f"positions={metrics.n_open_positions}"
                 )
 
+        async def _brokerage_sync_loop():
+            """Periodically re-anchor equity/drawdown to live brokerage equity."""
+            from hermes.portfolio.live_equity import get_live_total_equity
+
+            await asyncio.sleep(30)  # let upstream L4 signals warm up first
+            while not stop_event.is_set():
+                try:
+                    live = await get_live_total_equity()
+                    if live and live > 0:
+                        engine.sync_external_equity(live)
+                        click.echo(f"  [brokerage-sync] live equity=${live:,.0f}")
+                except Exception as e:
+                    log.warning("brokerage_sync_failed", error=str(e))
+                await asyncio.sleep(60)
+
         processor = asyncio.create_task(_process_loop())
         breaker_task = asyncio.create_task(_breaker_loop())
         stats_task = asyncio.create_task(_stats_loop())
+        sync_task = asyncio.create_task(_brokerage_sync_loop()) if sync_brokerage else None
 
         await stop_event.wait()
 
         for t in [processor, breaker_task, stats_task]:
             t.cancel()
+        if sync_task:
+            sync_task.cancel()
         for t in [processor, breaker_task, stats_task]:
             try:
                 await t
+            except asyncio.CancelledError:
+                pass
+        if sync_task:
+            try:
+                await sync_task
             except asyncio.CancelledError:
                 pass
 
@@ -1808,10 +1838,10 @@ def execute(ctx: click.Context, equity: float, paper: bool) -> None:
                             # In production, L5 would include signal in the decision payload
                             # or we'd query DuckDB trade_signals_blended
                             import duckdb
-                            from hermes.db.migrate import get_duckdb_path
+                            from hermes.db.migrate import get_duckdb_path, safe_duckdb_connect
 
                             db_path = get_duckdb_path(config)
-                            with duckdb.connect(str(db_path), read_only=True) as conn:
+                            with safe_duckdb_connect(str(db_path), read_only=True) as conn:
                                 result = conn.execute(
                                     "SELECT * FROM trade_signals_blended WHERE signal_id = ?",
                                     [decision.signal_id],
@@ -3182,6 +3212,12 @@ def _check_secrets(config: HermesConfig) -> dict:
             "message": f"placeholders remain: {', '.join(placeholders)}",
         }
     return {"ok": True, "message": "all required secrets resolved"}
+
+
+# --- Noble Trader command group (/noble) ---
+from hermes.commands.noble_cli import register_noble  # noqa: E402
+
+register_noble(cli)
 
 
 if __name__ == "__main__":

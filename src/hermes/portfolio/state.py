@@ -9,7 +9,7 @@ See roadmap §2.3 for design.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -103,6 +103,7 @@ class PortfolioStateService:
         initial_cash_usd: float = 50000,
         initial_cash_usdc: float = 50000,
         config_hash: str = "",
+        win_lookback_days: int = 30,
     ) -> None:
         self._positions: dict[str, PortfolioPosition] = {}  # position_id → position
         self._symbol_positions: dict[str, list[str]] = defaultdict(list)  # symbol → [position_ids]
@@ -112,8 +113,17 @@ class PortfolioStateService:
         self._initial_equity = initial_equity
 
         self._realized_pnl = 0.0
+        self._realized_pnl_today = 0.0  # reset at local midnight for daily-loss CB
+        self._last_pnl_day = None
         self._funding_pnl = 0.0
         self._fees_paid = 0.0
+
+        # Daily-wins cooloff CB: count of winning closes since local midnight,
+        # plus a rolling history of past daily win counts to compute the average.
+        self._wins_today = 0
+        self._daily_wins_history: deque[int] = deque(maxlen=win_lookback_days)
+        self._last_win_day = None
+        self._win_lookback_days = win_lookback_days
 
         self._peak_equity = initial_equity
         self._dd_start_time: datetime | None = None
@@ -186,6 +196,26 @@ class PortfolioStateService:
             realized = (pos.entry_price - exit_price) * pos.qty
 
         self._realized_pnl += realized
+        # daily-loss circuit breaker: track today's realized PnL
+        from datetime import datetime as _dt
+        _today = _dt.now().date()
+        if self._last_pnl_day is None:
+            self._last_pnl_day = _today
+        elif self._last_pnl_day != _today:
+            self._last_pnl_day = _today
+            self._realized_pnl_today = 0.0
+        self._realized_pnl_today += realized
+
+        # daily-wins cooloff CB: count winning closes since local midnight,
+        # rolling the prior day's count into history at the day boundary.
+        if self._last_win_day is None:
+            self._last_win_day = _today
+        elif self._last_win_day != _today:
+            self._daily_wins_history.append(self._wins_today)
+            self._wins_today = 0
+            self._last_win_day = _today
+        if realized > 0:
+            self._wins_today += 1
 
         # Return cash
         notional = pos.qty * exit_price
@@ -257,8 +287,15 @@ class PortfolioStateService:
         # Unrealized PnL
         unrealized = sum(p.unrealized_pnl for p in positions)
 
-        # Equity
-        equity = self._cash_usd + self._cash_usdc + gross_exposure + unrealized
+        # Equity (mark-to-market)
+        # Cash is debited by full notional on entry (add_position) and credited by
+        # exit notional on close (remove_position). So:
+        #   cash + gross_exposure = (initial_cash - entry*qty) + current*qty
+        #                        = initial_cash + (current-entry)*qty
+        #                        = initial_cash + unrealized_pnl
+        # Adding unrealized_pnl AGAIN would double-count the PnL (cash+gross+unreal
+        # = initial_cash + 2*unrealized). Drop unrealized here.
+        equity = self._cash_usd + self._cash_usdc + gross_exposure
 
         # Leverage - protect against division by zero
         if equity <= 0:
@@ -305,8 +342,10 @@ class PortfolioStateService:
         # Venues
         venues = set(p.venue for p in positions)
 
-        # Margin (simplified: margin = gross_exposure / leverage)
-        margin_used = gross_exposure / 4.0 if leverage_gross > 1 else gross_exposure  # assume 4x max
+        # Margin (simplified: margin = gross_exposure / max_leverage_total).
+        # Uses the enforced account cap (3.0), NOT the per-venue reference flag,
+        # so reported margin reflects the real exposure ceiling.
+        margin_used = gross_exposure / 3.0 if leverage_gross > 1 else gross_exposure
         margin_available = equity - margin_used
 
         return PortfolioMetrics(
@@ -343,6 +382,50 @@ class PortfolioStateService:
     def add_fees(self, amount: float) -> None:
         """Track fees paid."""
         self._fees_paid += amount
+
+    def set_external_equity(self, total: float) -> None:
+        """Re-anchor the equity baseline to live brokerage equity.
+
+        Keeps position-driven exposure/unrealized intact (the paper engine's
+        own PnL model is untouched) and only adjusts cash so that the computed
+        equity equals `total`. Also raises the peak-equity tracker so drawdown
+        is measured against the true brokerage high-water mark.
+        """
+        positions = list(self._positions.values())
+        gross = sum(p.qty * p.current_price for p in positions)
+        unrealized = sum(p.unrealized_pnl for p in positions)
+        non_cash = gross + unrealized
+        target_cash = total - non_cash
+
+        total_cash_now = self._cash_usd + self._cash_usdc
+        ratio = (self._cash_usd / total_cash_now) if total_cash_now > 0 else 0.5
+        self._cash_usd = round(target_cash * ratio, 2)
+        self._cash_usdc = round(target_cash * (1 - ratio), 2)
+        self._peak_equity = max(self._peak_equity, total)
+
+    def get_realized_pnl_today(self) -> float:
+        """Realized PnL since local midnight (for the daily-loss circuit breaker)."""
+        from datetime import datetime as _dt
+        _today = _dt.now().date()
+        if self._last_pnl_day != _today:
+            self._realized_pnl_today = 0.0
+            self._last_pnl_day = _today
+        return self._realized_pnl_today
+
+    def get_wins_today(self) -> int:
+        """Count of winning closes since local midnight (daily-wins cooloff CB)."""
+        return self._wins_today
+
+    def get_avg_daily_wins(self) -> float:
+        """Rolling average of daily win counts over the lookback window.
+
+        Returns 0.0 until enough baseline days exist (min_history guard is in
+        the config; this just returns the mean of whatever history exists, and
+        0.0 when empty so the CB safely no-ops).
+        """
+        if not self._daily_wins_history:
+            return 0.0
+        return sum(self._daily_wins_history) / len(self._daily_wins_history)
 
     def get_stats(self) -> dict[str, Any]:
         return self._stats.copy()

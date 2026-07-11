@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -174,7 +174,7 @@ class ParquetWriter:
             cols_to_drop = ["venue", "symbol", "timeframe", "date_str"]
             group = group.drop(columns=[c for c in cols_to_drop if c in group.columns])
 
-            file_path = partition_path / f"part-{datetime.now().strftime('%H%M%S%f')}.parquet"
+            file_path = partition_path / f"part-{datetime.now(timezone.utc).strftime('%H%M%S%f')}.parquet"
             group.to_parquet(file_path, engine="pyarrow", compression="snappy")
             self._stats["files_written"] += 1
             log.debug("parquet_bars_written", path=str(file_path), n_rows=len(group))
@@ -198,7 +198,7 @@ class ParquetWriter:
             cols_to_drop = ["venue", "symbol", "date_str"]
             group = group.drop(columns=[c for c in cols_to_drop if c in group.columns])
 
-            file_path = partition_path / f"part-{datetime.now().strftime('%H%M%S%f')}.parquet"
+            file_path = partition_path / f"part-{datetime.now(timezone.utc).strftime('%H%M%S%f')}.parquet"
             group.to_parquet(file_path, engine="pyarrow", compression="snappy")
             self._stats["files_written"] += 1
             log.debug("parquet_ticks_written", path=str(file_path), n_rows=len(group))

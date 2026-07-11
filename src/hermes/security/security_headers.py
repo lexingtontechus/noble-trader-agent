@@ -276,7 +276,7 @@ class HTTPSRedirectMiddleware:
     
     def __init__(self, exempt_paths: List[str] = None, 
                  redirect_code: int = 301,
-                 trust_proxy_headers: bool = True):
+                 trust_proxy_headers: bool = False):
         """
         Initialize HTTPS redirect middleware.
         
@@ -288,6 +288,7 @@ class HTTPSRedirectMiddleware:
         self.exempt_paths = exempt_paths or ["/health", "/metrics"]
         self.redirect_code = redirect_code
         self.trust_proxy_headers = trust_proxy_headers
+        self._app = None
     
     def should_redirect(self, request_path: str, headers: Dict[str, str]) -> bool:
         """
@@ -322,6 +323,43 @@ class HTTPSRedirectMiddleware:
         # Check X-Forwarded-Ssl header
         if headers.get('X-Forwarded-Ssl', '').lower() == 'on':
             return True
+
+        return False
+
+    async def __call__(self, scope, receive, send) -> None:
+        """ASGI entrypoint. Redirects plaintext HTTP requests to HTTPS.
+
+        NOTE: previously this class only had should_redirect()/_is_https_request()
+        helpers and NO __call__, so adding it as middleware did nothing (non-ASGI
+        stub). This makes it a real ASGI middleware.
+        """
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers", []))
+        # Reconstruct a case-insensitive header view
+        header_view = {
+            (k.decode().lower() if isinstance(k, bytes) else k.lower()): (
+                v.decode() if isinstance(v, bytes) else v)
+            for k, v in headers.items()
+        }
+        path = scope.get("path", "/")
+        if not self.should_redirect(path, header_view):
+            await self._app(scope, receive, send)
+            return
+        # Build redirect to https
+        host = header_view.get("host", "localhost")
+        location = f"https://{host}{path}"
+        await send({
+            "type": "http.response.start",
+            "status": self.redirect_code,
+            "headers": [(b"location", location.encode()), (b"content-length", b"0")],
+        })
+        await send({"type": "http.response.body", "body": b""})
+
+    def set_app(self, app) -> None:
+        """Bind the downstream ASGI app (call before adding to the stack)."""
+        self._app = app
         
         # Check other common headers
         if headers.get('X-Url-Scheme', '').lower() == 'https':

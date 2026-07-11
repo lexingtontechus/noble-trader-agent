@@ -30,6 +30,33 @@ def get_duckdb_path(config: HermesConfig) -> Path:
     return path
 
 
+def safe_duckdb_connect(db_path: str | Path, read_only: bool = False, retries: int = 5):
+    """Open DuckDB with retry/backoff.
+
+    DuckDB is single-writer; on Windows a concurrent process holding the file
+    (e.g. another CLI/cron job, or a second loop) raises
+    "IO Error: file is already open". Retry with exponential backoff so a
+    transient lock does not drop the operation. Use as a context manager:
+        with safe_duckdb_connect(path) as conn: ...
+    """
+    import time
+
+    import duckdb
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return duckdb.connect(str(db_path), read_only=read_only)
+        except Exception as e:  # noqa: BLE001 - DuckDB lock errors vary by version
+            last_err = e
+            if "already open" in str(e).lower() or "cannot access" in str(e).lower():
+                if attempt < retries - 1:
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+            raise
+    raise last_err if last_err else RuntimeError("duckdb connect failed")
+
+
 def apply_migrations(config: HermesConfig) -> None:
     """
     Apply all pending migrations to the DuckDB database.

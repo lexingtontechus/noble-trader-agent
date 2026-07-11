@@ -30,7 +30,7 @@ from uuid import uuid4
 import structlog
 
 from hermes.core.config import HermesConfig, get_config_hash
-from hermes.db.migrate import get_duckdb_path
+from hermes.db.migrate import get_duckdb_path, safe_duckdb_connect
 from hermes.ops.alerting import Alert, AlertManager, AlertSeverity
 from hermes.ops.dead_mans_switch import DeadMansSwitch
 from hermes.portfolio.autonomy_gate import AutonomyDecision, AutonomyGate
@@ -187,6 +187,10 @@ class PortfolioRiskEngine:
         """Signal that the engine is alive (feeds Dead Man's Switch)."""
         self._dms.heartbeat(source)
 
+    def sync_external_equity(self, total: float) -> None:
+        """Re-anchor equity/drawdown baseline to live brokerage equity."""
+        self._state.set_external_equity(total)
+
     async def evaluate_signal(
         self,
         signal: BlendedSignal,
@@ -240,9 +244,23 @@ class PortfolioRiskEngine:
                 symbol=signal.symbol,
             ))
 
-            # Daily loss
+            # Daily loss — use TODAY's realized PnL, not all-time cumulative.
+            # metrics.realized_pnl is cumulative; the daily-loss CB must compare
+            # against today's loss or it never trips correctly.
             cb_trips.extend(self._cb_manager.check_daily_loss(
-                daily_loss_usd=metrics.realized_pnl,
+                daily_loss_usd=self._state.get_realized_pnl_today(),
+            ))
+
+            # Daily-WINS cooloff: win-count ratio vs rolling baseline.
+            cb_trips.extend(self._cb_manager.check_daily_wins(
+                wins_today=self._state.get_wins_today(),
+                avg_daily_wins=self._state.get_avg_daily_wins(),
+            ))
+
+            # Daily-PROFIT cooloff: realized profit for the session (ride-and-exit
+            # halt before a likely regime shift / mean-reversion).
+            cb_trips.extend(self._cb_manager.check_daily_profit(
+                daily_profit_usd=self._state.get_realized_pnl_today(),
             ))
 
             # VaR
@@ -426,7 +444,7 @@ class PortfolioRiskEngine:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO risk_decisions (
@@ -466,7 +484,7 @@ class PortfolioRiskEngine:
         import duckdb
 
         try:
-            with duckdb.connect(str(self._db_path)) as conn:
+            with safe_duckdb_connect(str(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO circuit_breaker_events (

@@ -198,13 +198,10 @@ class RiskGate:
                     position_value=metrics.equity_total + approved_size,
                 )
 
-        approved = approved_size > 0 and len(limits_hit) == 0
-
-        # Handle the case where limits_hit only contains "capping" limits (not blockers)
-        if approved_size > 0:
-            # Check if any limits_hit are blockers (not just capping)
-            blocker_limits = [l for l in limits_hit if not l.startswith("volatility_cb_reduce")]
-            approved = len(blocker_limits) == 0
+        # A size-capped trade is APPROVED at the reduced size. Only a hard limit that
+        # drives approved_size to 0 is a true blocker. Capping limits (e.g.
+        # volatility_cb_reduce, notional/size caps) reduce size but must not reject.
+        approved = approved_size > 0
 
         if approved:
             self._stats["approved"] += 1

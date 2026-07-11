@@ -324,7 +324,7 @@ def _compute_live_sharpe(
                 """
                 SELECT net_pnl
                 FROM pnl_realized
-                WHERE ts_closed >= ? AND ts_closed <= ?
+                WHERE ts >= ? AND ts <= ?
                 ORDER BY ts_closed ASC
                 """,
                 [since, until],

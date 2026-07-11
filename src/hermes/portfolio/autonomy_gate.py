@@ -67,6 +67,15 @@ class AutonomyGate:
         self._tier3_keys = set(tier3_config_keys or [])
         self._tier4_keys = set(tier4_config_keys or [])
         self._stats = {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0, "tier4": 0}
+        self._paper_mode = False  # backtest/simulation: bypass human-approval tiers
+
+    def set_paper_mode(self, enabled: bool = True) -> None:
+        """Enable paper/backtest mode: trade actions auto-approved (tier 0).
+
+        Used by BacktestEngine so simulated replays don't get blocked by the
+        live autonomy gate (human approval). Backtests are tier-0 per config.
+        """
+        self._paper_mode = enabled
 
     def classify_config_change(
         self,
@@ -177,6 +186,14 @@ class AutonomyGate:
         Returns:
             AutonomyDecision with tier, approved, requires_human_approval
         """
+        # Paper/backtest mode: auto-approve all trade actions (tier 0)
+        if self._paper_mode and action_type not in ("query", "run_backtest", "generate_report", "run_optimization"):
+            self._stats["tier0"] += 1
+            return AutonomyDecision(
+                tier=0, approved=True, requires_human_approval=False,
+                reason="paper_mode_backtest_auto_approve",
+            )
+
         # Tier 4: structural changes — always blocked
         if action_type == "structural_change":
             self._stats["tier4"] += 1
