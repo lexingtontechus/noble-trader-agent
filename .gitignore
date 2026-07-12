@@ -81,6 +81,17 @@ backups/
 *.bak
 
 # === Dashboard ===
-#
+# NOTE: dashboard/* is intentionally NOT committed — the user owns it as local WIP.
+# Ignore the whole dir so it never shows as untracked.
+dashboard/
+
 .next/
 node_modules/
+
+# === Runtime PID / process-state junk (watchdog + loops) ===
+.pids/
+scripts/_pid_*.txt
+
+# === Bundled tooling / lockfiles ===
+tools/
+uv.lock
