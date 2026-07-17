@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 class Venue(str, Enum):
     ALPACA = "alpaca"
     HYPERLIQUID = "hyperliquid"
+    TRADINGVIEW = "tradingview"  # TradingViewAPI (RapidAPI) — venue-agnostic price source
 
 
 class AssetClass(str, Enum):

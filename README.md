@@ -3,7 +3,7 @@
 > Entry/execution optimization layer for Noble Trader signals.
 > Hermes consumes Noble Trader's strategy signals and optimizes **when** to enter and **how** to execute — it does NOT replicate Noble Trader's strategy sweeps.
 
-**Status:** ✅ All 11 phases complete — 297 tests passing, 31 CLI commands, 12 dashboard pages, 9 DuckDB migrations, 24 tables, DaisyUI UI with 7 themes. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine), and a DuckDB-backed Symbol Registry (runtime-mutable symbol universe with is_active lifecycle and live validation).
+**Status:** ✅ All 11 phases complete — 297 tests passing, 37 CLI commands, 13 FastAPI web pages (self-hosted Tailwind+DaisyUI, 7 themes, CSP-clean — no CDN), 9 DuckDB migrations, 24 tables. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine), and a DuckDB-backed Symbol Registry (runtime-mutable symbol universe with is_active lifecycle and live validation).
 
 ---
 
@@ -34,7 +34,7 @@ Config loader with `secret:` prefix resolution. SecretResolver supporting 4 back
 ### Phase 0.5 — Web Dashboard ✅
 **Status:** Complete · **Tests:** 12 · **Commit:** `71a0302`
 
-FastAPI + Jinja2 web dashboard at `http://127.0.0.1:8080`. Status page with connection badges for 6 subsystems (DuckDB, Hermes Redis, NT Redis, Supabase, Alpaca, Hyperliquid). Heartbeats page with full NT field table. Config page (secrets redacted). Health JSON endpoint for monitoring/CI. Async status checks in parallel. Read-only DuckDB access (safe alongside ingest pipeline).
+FastAPI + Jinja2 web dashboard at `http://127.0.0.1:8080`. Server-rendered, self-hosted Tailwind+DaisyUI (no CDN — assets vendored under `src/hermes/web/static`, CSP-clean). Status page with connection badges for 6 subsystems (DuckDB, Hermes Redis, NT Redis, Supabase, Alpaca, Hyperliquid). Heartbeats page with full NT field table. Config page (secrets redacted, curated 2-column layout). Health JSON endpoint for monitoring/CI. Async status checks in parallel. Read-only DuckDB access (safe alongside ingest pipeline). The old Next.js/React SPA was retired and archived to `.archive/dashboard-2026-07-16`.
 
 ---
 

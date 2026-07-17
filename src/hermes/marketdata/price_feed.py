@@ -233,6 +233,12 @@ async def fetch_price_series(
     config: Any | None = None,
 ) -> PriceSeries:
     """Fetch a real price series for `symbol`, routed by venue/type."""
+    # TradingViewAPI: venue-agnostic source (matches Noble Trader backend).
+    # Preferred when explicitly requested or when no Alpaca/HL creds exist.
+    if venue == "tradingview" or (venue is None and config is not None and _tv_configured(config)):
+        candles = await fetch_tv_bars(symbol, hours=hours, config=config)
+        return PriceSeries(symbol=symbol, candles=candles)
+
     if _is_hyperliquid(symbol, venue):
         coin = _hl_coin(symbol)
         hl_url = "https://api.hyperliquid.xyz"
@@ -261,6 +267,80 @@ async def fetch_price_series(
     kind = "crypto" if symbol.upper().endswith("USD") else "stock"
     candles = await fetch_alpaca_bars(symbol, api_key, api_secret, days=max(1, hours // 24), kind=kind)
     return PriceSeries(symbol=symbol, candles=candles)
+
+
+def _tv_configured(config: Any | None) -> bool:
+    if config is None:
+        return False
+    try:
+        key = config.venues.tradingview.credentials.get("api_key", "")
+        return bool(key) and "YOUR_" not in key
+    except Exception:
+        return False
+
+
+async def fetch_tv_bars(
+    symbol: str,
+    hours: int = 72,
+    interval: str = "1h",
+    config: Any | None = None,
+) -> list[Candle]:
+    """Fetch historical bars from TradingViewAPI (single-symbol history endpoint).
+
+    Uses the RapidAPI proxy convention (X-RapidAPI-Key + X-RapidAPI-Host),
+    matching the live TradingViewApiAdapter, so backtests/backfill resolve the
+    same host/key as the monitor loop.
+    """
+    import httpx
+
+    base = "https://tradingview-data1.p.rapidapi.com"
+    host = "tradingview-data1.p.rapidapi.com"
+    key = ""
+    if config is not None:
+        try:
+            base = config.venues.tradingview.api_url or base
+            host = config.venues.tradingview.get("api_host", host)
+            key = config.venues.tradingview.credentials.get("api_key", "")
+        except Exception:
+            pass
+    # Env override (TRADINGVIEW_* in .env) wins for quick local testing.
+    from hermes.core.secrets import get_secret_or_none
+
+    key = key or (get_secret_or_none("tradingview.api_key") or "")
+    base = get_secret_or_none("tradingview.base_url") or base
+    host = get_secret_or_none("tradingview.api_host") or host
+
+    end = int(time.time())
+    start = end - hours * 3600
+    url = f"{base.rstrip('/')}/api/history/{symbol.replace('/', '').upper()}"
+    params = {"tf": interval, "from": start, "to": end, "limit": 500}
+    headers = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": host} if key else {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.warning("tv_bars_fetch_failed", symbol=symbol, error=str(exc)[:120])
+        return []
+    rows = data.get("bars", data if isinstance(data, list) else [])
+    candles: list[Candle] = []
+    for k in rows:
+        try:
+            candles.append(
+                Candle(
+                    ts_ms=int(k["t"]) * 1000,
+                    open=float(k["o"]),
+                    high=float(k["h"]),
+                    low=float(k["l"]),
+                    close=float(k["c"]),
+                    volume=float(k.get("v", 0) or 0),
+                )
+            )
+        except (KeyError, ValueError, TypeError):
+            continue
+    candles.sort(key=lambda c: c.ts_ms)
+    return candles
 
 
 def fetch_price_series_sync(symbol: str, **kw) -> PriceSeries:

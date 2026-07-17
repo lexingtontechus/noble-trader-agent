@@ -58,6 +58,12 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# === Runtime junk / state (never commit) ===
+dump.rdb
+*.rdb
+*.bak
+scripts/.watchdog_state.json
+
 # === Testing ===
 .pytest_cache/
 .coverage

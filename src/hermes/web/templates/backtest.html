@@ -5,6 +5,35 @@
 
 {% block content %}
 
+{# Backtest return vs drawdown (live scatter) #}
+{% call card(title="Return vs Max Drawdown (live chart)", id="bt-scatter-card") %}
+<div id="bt-scatter" class="h-64 w-full" data-chart="backtest"></div>
+<div class="text-xs opacity-50 text-center mt-2">Each point = one backtest run · loaded from /api/backtest/runs</div>
+<script>
+  if (window.HermesChart) {
+    HermesChart.line(document.getElementById("bt-scatter"), {
+      label: "backtest runs",
+      url: "/api/backtest/runs?limit=50",
+      empty: "No backtest runs yet.",
+      rows: function (d) {
+        return (d.runs || []).map(function (r) {
+          return {
+            ts: Date.parse(r.ts_started) || 0,
+            ret: parseFloat(r.total_return_pct || 0),
+            dd: parseFloat(r.max_drawdown_pct || 0),
+          };
+        });
+      },
+      x: function (r) { return r.ts; },
+      series: [
+        { label: "Return %", color: "#4ade80", width: 2, points: true, pick: function (r) { return r.ret; } },
+        { label: "Max DD %", color: "#f87171", width: 1, points: true, pick: function (r) { return r.dd; } }
+      ]
+    }).catch(function(){});
+  }
+</script>
+{% endcall %}
+
 {% call card(title="Backtest Runs (last 20)") %}
 <p class="text-sm opacity-60 mb-4">
     Replays historical Noble Trader heartbeats through the full Hermes pipeline (L4→L5→L3).

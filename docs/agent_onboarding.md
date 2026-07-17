@@ -101,13 +101,13 @@ pip install -e . --no-deps
 # 3. Copy the env template (real values are filled in §2.3)
 cp .env.example .env
 
-# 4. Build the SPA dashboard (Vite + React + DaisyUI)
-#    The FastAPI server serves the prebuilt bundle at /, so the bundle
-#    must exist before `platform dashboard` is useful.
-cd dashboard
-npm install
-npm run build          # outputs to dashboard/dist/
-cd ..
+# 4. Web dashboard (FastAPI + Jinja2, self-hosted Tailwind+DaisyUI)
+#    Served by `platform dashboard` at http://127.0.0.1:8080 — no separate
+#    build step. Assets (tailwind.bundle.css, uPlot) are vendored under
+#    src/hermes/web/static; charts render server-side. The old Next.js/React
+#    SPA in dashboard/ was retired and archived to .archive/dashboard-2026-07-16.
+#    (Optional: rebuild the CSS bundle after editing tailwind.config.js:
+#     cd src/hermes/web && npm install && npm run build:css)
 
 # 5. Bootstrap the platform: load config, open DuckDB, apply schema,
 #    seed symbols, write the baseline audit entry to config_history

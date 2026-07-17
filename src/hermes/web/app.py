@@ -47,6 +47,62 @@ from hermes.web.status import check_all, get_ingest_stats, get_recent_heartbeats
 
 log = structlog.get_logger(__name__)
 
+
+import math
+import json as _json
+import datetime as _dt
+
+try:
+    import pandas as _pd
+except Exception:  # pragma: no cover
+    _pd = None
+
+
+def _sanitize(obj):
+    """Recursively walk a structure and neutralize non-finite numbers + numpy/
+    pandas types (which aren't isinstance(obj, float) and aren't JSON-native)."""
+    # numpy types carry a .dtype. Convert any of them to native Python via
+    # .tolist() (works for both scalars and arrays), then recurse.
+    if hasattr(obj, "dtype"):
+        try:
+            return _sanitize(obj.tolist())
+        except Exception:
+            try:
+                return _sanitize(obj.item())
+            except Exception:
+                return str(obj)
+    # pandas Timestamp (and friends) — serialize to ISO string.
+    if _pd is not None and isinstance(obj, _pd.Timestamp):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+    # plain datetime/date
+    if isinstance(obj, (_dt.datetime, _dt.date)):
+        return obj.isoformat()
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, (set, frozenset)):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
+def _json_default(obj):
+    """Fallback for anything still not natively JSON-serializable."""
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    return str(obj)
+
+
+def safe_json(payload: Any) -> Any:
+    """Round-trip a payload through JSON, making floats/objs JSON-safe."""
+    return _json.loads(_json.dumps(_sanitize(payload), default=_json_default))
+
+
 # Security headers middleware
 async def security_headers_middleware(request, call_next):
     """Add security headers to all responses."""
@@ -88,51 +144,12 @@ app = FastAPI(
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Mount React dashboard assets
-DIST_DIR = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
-if DIST_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
-    # Add /app route for React dashboard
-    @app.get("/app", response_class=HTMLResponse)
-    async def react_dashboard(request: Request) -> HTMLResponse:
-        """Serve React dashboard."""
-        index_path = DIST_DIR / "index.html"
-        if index_path.exists():
-            content = index_path.read_text()
-            # Update CSP to allow inline styles and scripts
-            content = content.replace(
-                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;',
-                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;'
-            )
-            return HTMLResponse(content=content)
-        else:
-            return HTMLResponse(content="Dashboard not built. Run 'npm run build' in dashboard directory.", status_code=503)
-
-    # Catch-all route for React app routing
-    @app.get("/app/{path:path}", response_class=HTMLResponse)
-    async def react_app_catchall(request: Request, path: str) -> HTMLResponse:
-        """Serve React app for client-side routing."""
-        index_path = DIST_DIR / "index.html"
-        if index_path.exists():
-            content = index_path.read_text()
-            # Update CSP to allow inline styles and scripts
-            content = content.replace(
-                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;',
-                'default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\' https://cdn.tailwindcss.com; style-src \'self\' \'unsafe-inline\' https://cdn.tailwindcss.com;'
-            )
-            return HTMLResponse(content=content)
-        else:
-            return HTMLResponse(content="Dashboard not built. Run 'npm run build' in dashboard directory.", status_code=503)
-
 # Templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Global config + optional monitor reference
 _config: HermesConfig | None = None
 _monitor = None  # Set by dashboard if monitor is running in same process
-
-# Flag to indicate React dashboard is available
-_react_dashboard_available = (DIST_DIR / "index.html").exists()
 
 
 def create_app(config: HermesConfig, monitor=None) -> FastAPI:
@@ -402,11 +419,6 @@ async def auth_me(request: Request, authorization: str | None = Header(None)) ->
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    # Redirect to React dashboard if available
-    if _react_dashboard_available:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/app/")
-    
     """Status overview page."""
     config = get_config()
     status = await check_all(config)
@@ -427,49 +439,277 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+def build_config_display(config: HermesConfig, redacted: dict[str, Any]) -> list[dict[str, Any]]:
+    """Curate config into labelled, described, 2-column-friendly groups.
+
+    Each group: {"title", "description", "rows": [{"label", "value", "hint"}]}.
+    Drives the redesigned /config page (neat, responsive, informative).
+    """
+    def rows_from(d: dict, hints: dict | None = None) -> list[dict[str, Any]]:
+        hints = hints or {}
+        out = []
+        for k, v in d.items():
+            if isinstance(v, dict):
+                v = ", ".join(f"{kk}={vv}" for kk, vv in v.items())
+            elif isinstance(v, list):
+                v = ", ".join(str(x) for x in v) if v else "—"
+            elif v is None:
+                v = "—"
+            out.append({"label": k, "value": v, "hint": hints.get(k, "")})
+        return out
+
+    groups: list[dict[str, Any]] = []
+
+    # ── Portfolio ───────────────────────────────────────────────
+    pf = redacted.get("portfolio", {})
+    groups.append({
+        "title": "Portfolio",
+        "description": "Capital allocation targets, rebalancing behaviour, and the small starting universe (start_smart).",
+        "rows": [
+            {"label": "Target allocation", "value": ", ".join(f"{k} {int(v*100)}%" for k, v in pf.get("target_allocation", {}).items()), "hint": "Desired weight per asset class."},
+            {"label": "Rebalance", "value": f"{pf.get('rebalance_frequency')} / {pf.get('rebalance_method')} (drift {pf.get('rebalance_threshold_drift_pct')}%)", "hint": "How + when the book is rebalanced."},
+            {"label": "start_smart", "value": str(pf.get("start_smart")), "hint": "Phase in assets gradually from a small universe."},
+            {"label": "Initial symbols", "value": "; ".join(f"{s.get('symbol')}@{s.get('venue')}" for s in pf.get("initial_symbols", [])), "hint": "Seeds the symbols table (db/symbol_registry). Keep aligned with venues' crypto_pairs."},
+        ],
+    })
+
+    # ── Venues ──────────────────────────────────────────────────
+    vn = redacted.get("venues", {})
+    venue_rows = []
+    for name, v in vn.items():
+        if not isinstance(v, dict):
+            continue
+        pairs = ", ".join(v.get("features", {}).get("crypto_pairs", []) or []) or "—"
+        venue_rows.append({
+            "label": f"{name} ({'enabled' if v.get('enabled') else 'disabled'})",
+            "value": f"classes: {', '.join(v.get('asset_classes', [])) or '—'}",
+            "hint": f"crypto_pairs: {pairs}",
+        })
+    groups.append({
+        "title": "Venues",
+        "description": "Connected brokers/data venues and the crypto pairs they expose.",
+        "rows": venue_rows,
+    })
+
+    # ── Account risk limits ─────────────────────────────────────
+    ac = redacted.get("account", {})
+    groups.append({
+        "title": "Account Limits",
+        "description": "Hard risk guardrails at the account level (drawdown, loss, leverage, exposure).",
+        "rows": rows_from(ac, {
+            "max_portfolio_drawdown_pct": "Halt/size trigger at this equity drawdown.",
+            "daily_loss_limit_pct": "Daily loss circuit.",
+            "weekly_loss_limit_pct": "Weekly loss circuit.",
+            "max_leverage_total": "Aggregate leverage cap.",
+            "max_gross_exposure_pct": "Gross exposure cap (× equity).",
+            "max_net_exposure_pct": "Net exposure cap.",
+            "margin_usage_limit_pct": "Margin utilisation cap.",
+            "min_cash_buffer_pct": "Required idle cash.",
+        }),
+    })
+
+    # ── Asset limits ────────────────────────────────────────────
+    ast = redacted.get("asset", {})
+    groups.append({
+        "title": "Asset Limits",
+        "description": "Per-asset sizing + concentration caps.",
+        "rows": rows_from(ast, {
+            "max_position_size_pct": "Max weight of one position.",
+            "max_position_notional": "Max $ notional per position.",
+            "max_asset_drawdown_pct": "Per-asset drawdown halt.",
+            "max_concentration_pct": "Single-name concentration cap.",
+            "sector_exposure_cap": "Sector exposure cap.",
+            "venue_exposure_cap": "Single-venue exposure cap.",
+        }),
+    })
+
+    # ── Signal / Entry / Execution ──────────────────────────────
+    sig = redacted.get("signal", {})
+    groups.append({
+        "title": "Signal",
+        "description": "How raw signals are filtered before they become trades.",
+        "rows": rows_from(sig, {
+            "staleness_ms": "Max age of a signal before it's discarded.",
+            "min_edge_estimate_bps": "Minimum edge to act.",
+            "reward_risk_min": "Min reward/risk ratio.",
+            "regime_filter_allowlist": "Which regimes may trade.",
+            "tail_risk_action_override": "Tail-risk posture override.",
+        }),
+    })
+
+    ent = redacted.get("entry", {})
+    groups.append({
+        "title": "Entry",
+        "description": "Per-regime entry behaviour + brick confirmation rules.",
+        "rows": [
+            {"label": "Strategies", "value": ", ".join(f"{k}={v}" for k, v in ent.get("strategies", {}).items()), "hint": "Regime → entry action."},
+            {"label": "brick_confirmation_count", "value": str(ent.get("brick_confirmation_count")), "hint": "Bricks needed to confirm."},
+            {"label": "pullback_depth_brick_fraction", "value": str(ent.get("pullback_depth_brick_fraction")), "hint": "Pullback depth as brick fraction."},
+            {"label": "signal_expiry_minutes", "value": str(ent.get("signal_expiry_minutes")), "hint": "Signal TTL."},
+        ],
+    })
+
+    exe = redacted.get("execution", {})
+    groups.append({
+        "title": "Execution",
+        "description": "Order routing, slicing, and slippage controls.",
+        "rows": rows_from(exe, {
+            "default_method": "Default order type.",
+            "large_size_threshold_usd": "Above this, slice/iceberg.",
+            "twap_n_bricks": "TWAP slices.",
+            "iceberg_child_pct": "Iceberg child size %.",
+            "limit_offset_bps": "Limit offset (bps).",
+            "post_only_preference": "Prefer post-only.",
+            "max_slippage_bps": "Max slippage tolerance.",
+        }),
+    })
+
+    pm = redacted.get("position_management", {})
+    groups.append({
+        "title": "Position Management",
+        "description": "Trailing stops, exit logic, and regime-driven exits.",
+        "rows": [
+            {"label": "Trailing", "value": f"{pm.get('trailing', {}).get('method')} (atr×{pm.get('trailing', {}).get('atr_mult')}, {pm.get('trailing', {}).get('brick_count')} brick)", "hint": "Trailing stop method."},
+            {"label": "Exit", "value": f"{pm.get('exit', {}).get('strategy')} (momentum {pm.get('exit', {}).get('brick_momentum_threshold')})", "hint": "Base exit rule."},
+            {"label": "Regime exit", "value": ", ".join(pm.get("regime_exit", {}).get("trigger_states", []) or []), "hint": "Regimes that force exit."},
+        ],
+    })
+
+    # ── Circuit breakers (summary) ──────────────────────────────
+    cb = redacted.get("circuit_breakers", {})
+    cb_rows = [
+        {"label": "Volatility guard", "value": f"mult {cb.get('volatility', {}).get('vol_mult_threshold')} (k={cb.get('volatility', {}).get('k_constant')})", "hint": "ATR multiple that trips the ladder."},
+        {"label": "Risk checks", "value": ", ".join(k for k, v in cb.get("risk", {}).get("checks", {}).items() if v) or "—", "hint": "Enabled risk validations."},
+        {"label": "VaR", "value": f"{int(cb.get('risk', {}).get('var_confidence', 0)*100)}% / {cb.get('risk', {}).get('var_window_days')}d", "hint": "VaR confidence + window."},
+        {"label": "Kill-switch auto", "value": ", ".join(k for k, v in cb.get("kill_switch", {}).get("auto_triggers", {}).items() if v) or "—", "hint": "Auto-halt conditions."},
+    ]
+    mgr = cb.get("manager", {})
+    for name, blk in mgr.items():
+        if isinstance(blk, dict) and blk.get("enabled"):
+            tiers = blk.get("tiers", [])
+            cb_rows.append({"label": f"Manager: {name}", "value": f"{len(tiers)} tier(s)", "hint": (blk.get("description") or "")[:80]})
+    groups.append({
+        "title": "Circuit Breakers",
+        "description": "Volatility/risk kill-switches + the graduated manager action ladder.",
+        "rows": cb_rows,
+    })
+
+    # ── Autonomy ────────────────────────────────────────────────
+    au = redacted.get("autonomy", {})
+    tier_rows = []
+    for t in ["tier_0", "tier_1", "tier_2", "tier_3", "tier_4"]:
+        tdata = au.get(t)
+        if not isinstance(tdata, dict):
+            continue
+        tier_rows.append({
+            "label": f"{t} — approval: {tdata.get('approval')}",
+            "value": ", ".join(tdata.get("actions", []) or []),
+            "hint": f"max ${tdata.get('max_notional_usd', 'n/a')}",
+        })
+    ah = au.get("active_hours", {})
+    tier_rows.append({
+        "label": f"Active hours ({ah.get('timezone')})",
+        "value": f"{ah.get('start')}–{ah.get('end')} · crypto_24_7={ah.get('crypto_24_7')} · degrade_outside={ah.get('degrade_outside_hours')}",
+        "hint": "Stock-session window + user locale tz for scheduling/WS.",
+    })
+    groups.append({
+        "title": "Autonomy",
+        "description": "Approval tiers (L0–L4) and the active trading-hours window bound to your locale timezone.",
+        "rows": tier_rows,
+    })
+
+    # ── Meta-regime ─────────────────────────────────────────────
+    mr = redacted.get("meta_regime", {})
+    groups.append({
+        "title": "Meta-Regime (HMM)",
+        "description": "Hidden-Markov model labelling market state (bull/bear/risk-off/...); drives regime_filter + regime_exit. Retrains periodically; only trusts states above the confidence floor.",
+        "rows": rows_from(mr, {
+            "hmm_n_components": "Latent regimes discovered.",
+            "retrain_frequency_days": "Retrain cadence.",
+            "confidence_floor": "Min posterior prob to trust a regime.",
+            "thresholds": "Correlation / funding / liquidity / entropy trip-wires.",
+        }),
+    })
+
+    # ── Renko ───────────────────────────────────────────────────
+    rk = redacted.get("renko", {})
+    groups.append({
+        "title": "Renko",
+        "description": "Brick size is simulated, not fixed — the stack tests several multipliers of a base brick and keeps the best signal/risk fit.",
+        "rows": rows_from(rk, {
+            "rolling_window_bricks": "Bricks of history used to estimate the base brick.",
+            "simulation_multipliers": "Candidate brick sizes = base × multiplier.",
+        }),
+    })
+
+    # ── Upstream (redacted) ─────────────────────────────────────
+    up = redacted.get("upstream", {})
+    up_rows = []
+    nt = up.get("noble_trader", {})
+    if isinstance(nt, dict):
+        up_rows.append({"label": "Noble Trader Redis", "value": str(nt.get("redis", {}).get("url")), "hint": f"channel {nt.get('redis', {}).get('channel')} · group {nt.get('redis', {}).get('consumer_group')}"})
+        up_rows.append({"label": "Supabase", "value": str(nt.get("supabase", {}).get("url")), "hint": f"sweep={nt.get('supabase', {}).get('sweep_result_table')}, backfill {nt.get('supabase', {}).get('backfill_lookback_days')}d"})
+    groups.append({
+        "title": "Upstream",
+        "description": "Noble Trader signal source (Redis stream) + Supabase regime/sweep store. Credentials redacted.",
+        "rows": up_rows,
+    })
+
+    # ── Data sources ────────────────────────────────────────────
+    ds = redacted.get("data_sources", {})
+    groups.append({
+        "title": "Data Sources",
+        "description": "Allowed/prohibited price sources and failure policy.",
+        "rows": [
+            {"label": "Policy", "value": str(ds.get("policy")), "hint": "Which sources may feed pricing."},
+            {"label": "Allowed", "value": ", ".join(ds.get("allowed_sources", []) or []), "hint": "Permitted origins."},
+            {"label": "Prohibited", "value": ", ".join(ds.get("prohibited_sources", []) or []), "hint": "Blocked origins."},
+            {"label": "Fallback", "value": str(ds.get("fallback_behavior")), "hint": "What happens if a source fails."},
+        ],
+    })
+
+    # ── Secrets status ──────────────────────────────────────────
+    secret_rows = []
+    for path in ["auth.admin_username", "auth.agent_token", "venues.alpaca.credentials.api_key",
+                 "venues.hyperliquid.credentials.private_key", "upstream.noble_trader.redis.url",
+                 "hermes_redis.url", "notifications.discord.webhook_url"]:
+        cur = redacted
+        ok = True
+        for part in path.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                ok = False
+                break
+        # A value that is a secret: ref or redacted => configured.
+        configured = ok and (isinstance(cur, str) and (cur.startswith("secret:") or "redacted" in cur))
+        secret_rows.append({
+            "label": path,
+            "value": "configured" if configured else ("secret: ref" if ok and isinstance(cur, str) and cur.startswith("secret:") else "not set"),
+            "hint": "",
+        })
+    groups.append({
+        "title": "Secrets Status",
+        "description": "Resolved secret references — never printed. Shows only whether each credential is wired (secret:… ref or redacted value).",
+        "rows": secret_rows,
+    })
+
+    return groups
+
+
 @app.get("/config", response_class=HTMLResponse)
 async def config_page(request: Request) -> HTMLResponse:
     """Config viewer page (secrets redacted).
 
-    Only the operator-tunable sections are surfaced in the form layout —
-    the rest (venues, upstream, duckdb, hermes_redis, notifications, logging)
-    stay in the raw JSON block at the bottom for completeness.
+    Renders curated, labelled, described sections in a responsive 2-column
+    layout. A collapsible raw JSON block is kept at the bottom for debugging.
     """
     config = get_config()
     redacted = redact_config_for_display(config)
 
-    # Sections shown as editable-style form cards (filtered list).
-    FORM_SECTIONS = [
-        "portfolio",
-        "account",
-        "asset",
-        "signal",
-        "entry",
-        "execution",
-        "position_management",
-        "circuit_breakers",
-        "autonomy",
-        "meta_regime",
-        "renko",
-    ]
-
     import json
-
     config_json = json.dumps(redacted, indent=2, default=str)
-
-    # Build (section_name, fields) pairs where fields is a list of
-    # {key, value, is_secret, is_nested} dicts. We flatten one level deep
-    # so nested dicts (e.g. portfolio.target_allocation) render as labelled
-    # sub-forms rather than opaque JSON blobs.
-    form_sections: list[dict[str, Any]] = []
-    for section_name in FORM_SECTIONS:
-        section_data = redacted.get(section_name)
-        if section_data is None:
-            continue
-        form_sections.append({
-            "name": section_name,
-            "data": section_data,
-        })
+    display_groups = build_config_display(config, redacted)
 
     return templates.TemplateResponse(
         request,
@@ -479,7 +719,7 @@ async def config_page(request: Request) -> HTMLResponse:
             "config_hash": get_config_hash(config),
             "environment": config.environment,
             "config_json": config_json,
-            "form_sections": form_sections,
+            "display_groups": display_groups,
         },
     )
 
@@ -500,6 +740,15 @@ async def heartbeats_page(
     heartbeats = _get_recent(config, limit=max(limit, 500))
     if symbol:
         heartbeats = [h for h in heartbeats if h.get("symbol") == symbol]
+
+    # Derive lag_ms (received - upstream) for display. Heartbeats carry pandas
+    # Timestamps; compute here so the template only renders plain values.
+    for h in heartbeats:
+        _tr, _tu = h.get("ts_received"), h.get("ts_upstream")
+        try:
+            h["lag_ms"] = round((_tr - _tu).total_seconds() * 1000, 1) if _tr and _tu else None
+        except Exception:
+            h["lag_ms"] = None
 
     return templates.TemplateResponse(
         request,
@@ -566,10 +815,12 @@ async def api_heartbeats(limit: int = 50, _auth: dict[str, Any] = Depends(requir
     config = get_config()
     heartbeats = get_recent_heartbeats(config, limit=limit)
     return JSONResponse(
-        {
-            "count": len(heartbeats),
-            "heartbeats": heartbeats,
-        }
+        content=safe_json(
+            {
+                "count": len(heartbeats),
+                "heartbeats": heartbeats,
+            }
+        )
     )
 
 
@@ -602,6 +853,7 @@ async def monitor_page(request: Request) -> HTMLResponse:
                 for p in _monitor.get_positions()
             ],
             "correlation_matrix": _monitor.get_correlation_matrix(),
+            "ws": _monitor.get_stats().get("ws", {}),
         }
 
     return templates.TemplateResponse(
@@ -684,9 +936,7 @@ async def api_portfolio(_auth: dict[str, Any] = Depends(require_auth)) -> JSONRe
     from hermes.web.status import get_portfolio_metrics
 
     metrics = get_portfolio_metrics(config)
-    return JSONResponse(
-        content=_json.loads(_json.dumps({"metrics": metrics}, default=str))
-    )
+    return JSONResponse(content=safe_json({"metrics": metrics}))
 
 
 @app.get("/orders", response_class=HTMLResponse)
@@ -721,6 +971,20 @@ async def pnl_page(request: Request) -> HTMLResponse:
     equity_curve = get_equity_curve(config, limit=500)
     pnl_history = get_pnl_history(config, limit=100)
 
+    # Pre-serialize the equity curve for the in-page chart. Raw rows carry
+    # pandas Timestamp/datetime values that Jinja's |tojson cannot serialize.
+    equity_curve_json = _json.dumps(
+        [
+            {
+                "ts": (r.get("ts").isoformat() if hasattr(r.get("ts"), "isoformat") else str(r.get("ts"))),
+                "equity_total": r.get("equity_total"),
+                "drawdown_pct": r.get("drawdown_pct"),
+            }
+            for r in equity_curve
+        ],
+        default=_json_default,
+    )
+
     return templates.TemplateResponse(
         request,
         "pnl.html",
@@ -730,6 +994,7 @@ async def pnl_page(request: Request) -> HTMLResponse:
             "environment": config.environment,
             "tear_sheet": tear_sheet,
             "equity_curve": equity_curve,
+            "equity_curve_json": equity_curve_json,
             "pnl_history": pnl_history,
         },
     )
@@ -807,10 +1072,9 @@ async def api_hypotheses(limit: int = 50, _auth: dict[str, Any] = Depends(requir
 
     hyps = get_hypotheses(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(hyps), "hypotheses": hyps},
-            default=str,
-        ))
+        )
     )
 
 
@@ -824,10 +1088,9 @@ async def api_simulations(limit: int = 50, _auth: dict[str, Any] = Depends(requi
 
     runs = get_simulation_runs(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(runs), "runs": runs},
-            default=str,
-        ))
+        )
     )
 
 
@@ -841,10 +1104,9 @@ async def api_backtest_runs(limit: int = 20, _auth: dict[str, Any] = Depends(req
 
     runs = get_backtest_runs(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(runs), "runs": runs},
-            default=str,
-        ))
+        )
     )
 
 
@@ -861,7 +1123,7 @@ async def api_backtest_run_detail(
     run = get_backtest_run_detail(config, run_id)
     if run is None:
         return JSONResponse({"error": f"Backtest run not found: {run_id}"}, status_code=404)
-    return JSONResponse(content=_json.loads(_json.dumps(run, default=str)))
+    return JSONResponse(content=safe_json(run))
 
 
 @app.get("/api/portfolio/var_history")
@@ -875,9 +1137,9 @@ async def api_portfolio_var_history(
     from hermes.web.status import get_portfolio_var_history
 
     rows = get_portfolio_var_history(config, limit=limit)
-    return JSONResponse(content=_json.loads(_json.dumps(
-        {"count": len(rows), "history": rows}, default=str,
-    )))
+    return JSONResponse(content=safe_json(
+        {"count": len(rows), "history": rows}
+    ))
 
 
 @app.get("/api/portfolio/exposure")
@@ -891,7 +1153,7 @@ async def api_portfolio_exposure(
     from hermes.web.status import get_portfolio_exposure_breakdown
 
     breakdown = get_portfolio_exposure_breakdown(config)
-    return JSONResponse(content=_json.loads(_json.dumps(breakdown, default=str)))
+    return JSONResponse(content=safe_json(breakdown))
 
 
 @app.get("/api/agent/decision_tree")
@@ -914,9 +1176,9 @@ async def api_agent_trade_journal(
     from hermes.web.status import get_trade_journal_entries
 
     entries = get_trade_journal_entries(config, limit=limit)
-    return JSONResponse(content=_json.loads(_json.dumps(
-        {"count": len(entries), "entries": entries}, default=str,
-    )))
+    return JSONResponse(content=safe_json(
+        {"count": len(entries), "entries": entries}
+    ))
 
 
 @app.get("/api/pnl/tear_sheet")
@@ -928,9 +1190,7 @@ async def api_pnl_tear_sheet(_auth: dict[str, Any] = Depends(require_auth)) -> J
     from hermes.web.status import get_pnl_tear_sheet
 
     ts = get_pnl_tear_sheet(config)
-    return JSONResponse(
-        content=_json.loads(_json.dumps(ts, default=str))
-    )
+    return JSONResponse(content=safe_json(ts))
 
 
 @app.get("/api/pnl/history")
@@ -943,10 +1203,9 @@ async def api_pnl_history(limit: int = 100, _auth: dict[str, Any] = Depends(requ
 
     history = get_pnl_history(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(history), "history": history},
-            default=str,
-        ))
+        )
     )
 
 
@@ -960,10 +1219,9 @@ async def api_orders(limit: int = 50, _auth: dict[str, Any] = Depends(require_au
 
     orders = get_recent_orders(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(orders), "orders": orders},
-            default=str,
-        ))
+        )
     )
 
 
@@ -977,10 +1235,9 @@ async def api_fills(limit: int = 50, _auth: dict[str, Any] = Depends(require_aut
 
     fills = get_recent_fills(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(fills), "fills": fills},
-            default=str,
-        ))
+        )
     )
 
 
@@ -994,10 +1251,9 @@ async def api_risk_decisions(limit: int = 50, _auth: dict[str, Any] = Depends(re
 
     decisions = get_recent_risk_decisions(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
-            {"count": len(decisions), "decisions": decisions},
-            default=str,
-        ))
+        content=safe_json(
+            {"count": len(decisions), "decisions": decisions}
+        )
     )
 
 
@@ -1011,10 +1267,9 @@ async def api_signals(limit: int = 50, _auth: dict[str, Any] = Depends(require_a
 
     signals = get_recent_blended_signals(config, limit=limit)
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(signals), "signals": signals},
-            default=str,
-        ))
+        )
     )
 
 
@@ -1062,10 +1317,9 @@ async def api_symbols_list(
         config, active_only=active_only, venue=venue, asset_class=asset_class,
     )
     return JSONResponse(
-        content=_json.loads(_json.dumps(
+        content=safe_json(
             {"count": len(rows), "symbols": [r.to_dict() for r in rows]},
-            default=str,
-        ))
+        )
     )
 
 
@@ -1082,7 +1336,7 @@ async def api_symbols_get(symbol: str, _auth: dict[str, Any] = Depends(require_a
         return JSONResponse(
             {"error": f"Symbol not found: {symbol}"}, status_code=404,
         )
-    return JSONResponse(content=_json.loads(_json.dumps(row.to_dict(), default=str)))
+    return JSONResponse(content=safe_json(row.to_dict()))
 
 
 @app.post("/api/symbols")

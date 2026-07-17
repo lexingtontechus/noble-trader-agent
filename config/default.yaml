@@ -9,12 +9,12 @@ portfolio:
   rebalance_threshold_drift_pct: 0.1
   rebalance_frequency: on_drift
   rebalance_method: threshold
-  start_small: true
+  start_smart: true
+  # Initial symbols — start SMALL. These seed the symbols table (db/symbol_registry).
+  # Keep this list aligned with the venues' crypto_pairs below (alpaca.crypto_pairs
+  # and hyperliquid perps). Add symbols here as you graduate them from shadow mode.
   initial_symbols:
   - symbol: BTC/USD
-    venue: alpaca
-    asset_class: crypto
-  - symbol: SOL/USD
     venue: alpaca
     asset_class: crypto
   - symbol: BTC-PERP
@@ -71,6 +71,57 @@ venues:
       post_only: true
       reduce_only: true
       max_leverage: 5.0
+  tradingview:
+    enabled: true
+    asset_classes:
+    - crypto
+    - forex
+    - equities
+    - commodities
+    credentials:
+      api_key: secret:tradingview.api_key
+    rate_limit_per_min: 300
+    data_modes:
+      live: true
+      historical: true
+    features:
+      venue_agnostic: true
+      source: tradingviewapi_com
+      api_url: https://tradingview-data1.p.rapidapi.com
+      api_host: tradingview-data1.p.rapidapi.com
+      # Real-time streaming (Ultra/Mega plans). When true the adapter opens a
+      # single persistent WebSocket (wss://ws.tradingviewapi.com/ws?token=KEY)
+      # and pushes quotes — zero REST budget burned. Falls back to REST polling
+      # if the WS is unavailable or the plan has no WS entitlement.
+      use_websocket: true
+      ws_url: wss://ws.tradingviewapi.com/ws?token={token}
+      poll_interval_sec: 5
+      max_retries: 3
+      # --- WS plan + scheduling (signal-gated by default; no user setup needed) ---
+      # ws_plan is a SILENT default — the user does not configure it. It pairs the
+      # WS entitlement/cooldown with the TradingViewAPI plan:
+      #   ultra -> 6 WS-hours/day, mega -> 24 WS-hours/day, none -> REST-only.
+      # The adapter tracks WS-seconds-used-per-local-day and self-disables WS once
+      # the plan's daily budget is spent, reverting to rest_fallback_interval_sec.
+      ws_plan: ultra
+      # ws_mode: how WS is activated.
+      #   on_demand -> WS opens only while >=1 symbol is in an ACTIVE urgency tier
+      #                (triggered by a trade=true signal) and closes after
+      #                active_ws_ttl_sec (the "cooldown"). Respects the daily budget.
+      #                This is the silent default and keeps Ultra sufficient.
+      #   always    -> WS stays open 24/7 (only sane on mega; ultra hits its 6h cap).
+      #   scheduled -> WS open only during ws_schedule window (timezone-aware).
+      ws_mode: on_demand
+      # ws_schedule: when ws_mode=scheduled. Defaults to reusing the existing
+      # active_hours block (same timezone as the user's locale) so no extra config
+      # is required. Override with an explicit "HH:MM-HH:MM" in that timezone.
+      ws_schedule: use_active_hours
+      # Cost floor when WS is off (no entitlement / budget spent / outside window):
+      # the IDLE poll interval. 60s keeps indicators warm at minimal REST cost.
+      rest_fallback_interval_sec: 60
+      # How long WS stays open per ACTIVE signal before the "cooldown" reverts to
+      # REST. This is the lever that pairs urgency with the plan's daily WS budget.
+      active_ws_ttl_sec: 300
 upstream:
   noble_trader:
     redis:
@@ -92,6 +143,8 @@ data_sources:
   - alpha_vantage
   - iex
   - any_third_party_price_feed
+  allowed_sources:
+  - tradingviewapi_com
   fallback_behavior: fail_hard
 account:
   max_portfolio_drawdown_pct: 0.15
@@ -403,23 +456,29 @@ autonomy:
     - venues.alpaca.enabled
     - venues.hyperliquid.enabled
   active_hours:
+    # User locale / timezone for scheduling (stock sessions) + WS windows.
+    # All schedule math (autonomy, TradingView WS) binds to THIS tz.
     timezone: America/Los_Angeles
     start: 09:30
     end: '16:00'
     crypto_24_7: true
     degrade_outside_hours: true
 meta_regime:
-  hmm_n_components: 7
-  retrain_frequency_days: 30
-  confidence_floor: 0.55
+  # Hidden-Markov regime model that labels market state (bull/bear/risk-off/...)
+  # from multi-source features. Drives the regime_filter + regime_exit logic.
+  hmm_n_components: 7          # number of latent market regimes the HMM discovers
+  retrain_frequency_days: 30   # how often the HMM is retrained on fresh features
+  confidence_floor: 0.55       # min posterior prob before a regime is "trusted"
   thresholds:
-    risk_off_corr_threshold: 0.75
-    funding_stress_annualized_pct: 50.0
-    liquidity_depth_percentile: 10
-    transition_entropy_bits: 1.5
+    risk_off_corr_threshold: 0.75        # cross-asset correlation above this => risk_off
+    funding_stress_annualized_pct: 50.0  # annualized funding > this => funding_stress
+    liquidity_depth_percentile: 10       # order-book depth below 10th pct => stress
+    transition_entropy_bits: 1.5         # regime-transition uncertainty cap (bits)
 renko:
-  rolling_window_bricks: 500
-  simulation_multipliers:
+  # Renko brick size is simulated, not fixed. The stack tests several multipliers
+  # of a base brick and picks the one with best signal/risk on recent data.
+  rolling_window_bricks: 500    # bricks of history used to (re)estimate the base brick
+  simulation_multipliers:       # brick-size candidates = base * multiplier
   - 0.5
   - 0.75
   - 1.0

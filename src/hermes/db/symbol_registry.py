@@ -45,6 +45,7 @@ class Symbol:
         "deactivated_at", "deactivated_by", "rationale",
         "last_validated_at", "last_price",
         "validation_status", "validation_error",
+        "exchange", "symbol_bare",
     )
 
     def __init__(self, **kwargs: Any) -> None:
@@ -94,6 +95,8 @@ def _row_to_symbol(row: tuple) -> Symbol:
         last_price=row[15],
         validation_status=row[16],
         validation_error=row[17],
+        exchange=row[18] if len(row) > 18 else None,
+        symbol_bare=row[19] if len(row) > 19 else None,
     )
 
 
@@ -103,7 +106,8 @@ _SELECT_COLS = """
     is_active, added_at, added_by,
     deactivated_at, deactivated_by, rationale,
     last_validated_at, last_price,
-    validation_status, validation_error
+    validation_status, validation_error,
+    exchange, symbol_bare
 """
 
 
@@ -194,16 +198,35 @@ def add_symbol(
     """
     _validate_venue_and_class(config, venue, asset_class)
 
-    # Derive base_ccy from symbol if not provided (BTC/USD → BTC, AAPL → AAPL)
+    # Parse the exchange dimension (COINBASE:BTCUSD -> exchange=COINBASE, bare=BTCUSD).
+    from hermes.db.symbol_key import parse_symbol_key, classify_asset_class
+
+    key = parse_symbol_key(symbol)
+    exchange = key.exchange
+    symbol_bare = key.bare
+    symbol_cell = key.qualified  # store qualified form when exchange known
+
+    # Derive base_ccy from bare symbol if not provided (BTC/USD -> BTC, AAPL -> AAPL)
     if base_ccy is None:
-        base_ccy = symbol.split("/")[0] if "/" in symbol else symbol
+        base_ccy = symbol_bare.split("/")[0] if "/" in symbol_bare else symbol_bare
+
+    # Re-classify asset_class from the (bare) symbol unless the caller forced one.
+    # The caller's asset_class still must be allowed by the venue; if our
+    # classifier disagrees we prefer the classifier for PnL correctness but
+    # fall back to the caller value when the venue rejects it.
+    classified = classify_asset_class(symbol_bare)
+    try:
+        _validate_venue_and_class(config, venue, classified)
+        asset_class = classified
+    except ValueError:
+        pass  # keep caller-supplied asset_class; let outer validation raise if bad
 
     now = datetime.now(timezone.utc)
 
     with _connect(config) as conn:
         # Try INSERT, on conflict UPDATE the mutable fields.
         existing = conn.execute(
-            "SELECT 1 FROM symbols WHERE symbol = ?", [symbol]
+            "SELECT 1 FROM symbols WHERE symbol = ?", [symbol_cell]
         ).fetchone()
 
         if existing:
@@ -218,7 +241,9 @@ def add_symbol(
                     rationale = COALESCE(?, rationale),
                     is_active = ?,
                     deactivated_at = CASE WHEN ? THEN NULL ELSE deactivated_at END,
-                    deactivated_by = CASE WHEN ? THEN NULL ELSE deactivated_by END
+                    deactivated_by = CASE WHEN ? THEN NULL ELSE deactivated_by END,
+                    exchange = COALESCE(?, exchange),
+                    symbol_bare = COALESCE(?, symbol_bare)
                 WHERE symbol = ?
                 """,
                 [
@@ -227,10 +252,11 @@ def add_symbol(
                     rationale,
                     activate,
                     activate, activate,
-                    symbol,
+                    exchange, symbol_bare,
+                    symbol_cell,
                 ],
             )
-            log.info("symbol_updated", symbol=symbol, venue=venue, active=activate)
+            log.info("symbol_updated", symbol=symbol_cell, venue=venue, active=activate)
         else:
             conn.execute(
                 """
@@ -238,24 +264,40 @@ def add_symbol(
                     symbol, venue, asset_class,
                     base_ccy, quote_ccy, tick_size, min_notional, max_leverage,
                     is_active, added_at, added_by, rationale,
-                    validation_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    validation_status, exchange, symbol_bare
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 [
-                    symbol, venue, asset_class,
+                    symbol_cell, venue, asset_class,
                     base_ccy, quote_ccy, tick_size, min_notional, max_leverage,
                     activate, now, added_by, rationale,
+                    exchange, symbol_bare,
                 ],
             )
             log.info(
                 "symbol_added",
-                symbol=symbol, venue=venue, asset_class=asset_class,
-                active=activate, added_by=added_by,
+                symbol=symbol_cell, venue=venue, asset_class=asset_class,
+                exchange=exchange, active=activate, added_by=added_by,
             )
 
-    result = get_symbol(config, symbol)
+    result = get_symbol(config, symbol_cell)
     assert result is not None, "symbol disappeared after upsert"
     return result
+
+
+def touch_symbol_seen(config: HermesConfig, symbol: str) -> None:
+    """Stamp `last_validated_at` without changing other fields.
+
+    Used by the L0 subscriber to mark a symbol as "seen on the stream" so the
+    auto-delist sweep (_delist_stale) can retire symbols that stop arriving —
+    keeps the active universe dynamic without manual config.
+    """
+    now = datetime.now(timezone.utc)
+    with _connect(config) as conn:
+        conn.execute(
+            "UPDATE symbols SET last_validated_at = ? WHERE symbol = ?",
+            [now, symbol],
+        )
 
 
 def deactivate_symbol(
@@ -344,6 +386,9 @@ def validate_symbol(
         elif venue_name == "hyperliquid":
             from hermes.transport.adapters.hyperliquid_adapter import HyperliquidAdapter
             adapter = HyperliquidAdapter(config)
+        elif venue_name == "tradingview":
+            from hermes.transport.adapters.tradingview_adapter import TradingViewApiAdapter
+            adapter = TradingViewApiAdapter(config)
         else:
             _record_validation(config, symbol, None, "failed",
                                f"no adapter for venue '{venue_name}'")

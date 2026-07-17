@@ -119,9 +119,14 @@ restart/verify via its job id — do not recreate unless the config is wrong.
   `detect-secrets` scan diffed against `.secrets.baseline` (normalized to
   `results`-only via `scripts/_normalize_baseline.py`). Exits non-zero on either
   failure. Wire to CI/PR review as a required check.
-- **Do NOT** touch `src/hermes/web/*` or `dashboard/*` — the user owns those and
-  will resolve exposed-secret/defect issues there. If you find a secret there,
-  flag it; do not edit those dirs.
+- **Web UI is now first-class and editable.** `src/hermes/web/*` is the live,
+  self-hosted FastAPI+Jinja2 dashboard (CSP-clean, no CDN — Tailwind+DaisyUI
+  vendored under `static/`, charts via uPlot). The old Next.js/React SPA in
+  `dashboard/` was **retired and archived** to `.archive/dashboard-2026-07-16`
+  (kept for history, not served). The agent MAY maintain `src/hermes/web/*`
+  (templates, static assets, `app.py` routes). The `security_gate.sh` scan
+  still excludes `src/hermes/web/*` from detect-secrets — keep that exclusion
+  (the UI is part of the shipped code, not user-owned WIP).
 - Secrets are redacted in logs/tests/payloads. Never print raw credentials.
 
 ### Known source fixes applied (so you don't "rediscover" them)
@@ -188,6 +193,7 @@ restart/verify via its job id — do not recreate unless the config is wrong.
    static numbers.
 3. **Only `signal.raw.noble_trader` via XREAD** — never `trading:config:{symbol}`.
 4. **Single watchdog owner** — no manual loop launches.
-5. **Redact secrets everywhere**; never edit `src/hermes/web/*` or `dashboard/*`.
+5. **Redact secrets everywhere**; `src/hermes/web/*` is editable (live UI) — only
+   `dashboard/` (archived SPA) is off-limits.
 6. **Escalate real anomalies only**; routine pings are expected noise.
 7. **Verify with real tool output** — never fabricate results.

@@ -307,8 +307,30 @@ class RenkoSimulationEngine:
 
                 # Objective: maximize Deflated Sharpe (or entry alpha if no Sharpe)
                 if result.deflated_sharpe is not None:
-                    return result.deflated_sharpe
-                return result.entry_alpha_bps
+                    obj = result.deflated_sharpe
+                else:
+                    obj = result.entry_alpha_bps
+                # Learn->sim bias: gently favor configs whose symbols' dominant
+                # entry patterns have high learned confidence (pattern_performance).
+                # This closes the loop so the sim reinforces what has actually
+                # worked, without overriding the primary Sharpe/alpha objective.
+                try:
+                    from hermes.agent.pattern_learning import get_pattern_confidence
+
+                    conf_bonus = 0.0
+                    for sym in symbols:
+                        # dominant pattern for this symbol from blended signals
+                        dom = _dominant_pattern(self._db_path, sym, start, end)
+                        if dom:
+                            c = get_pattern_confidence(dom, config=self._config)
+                            if c is not None:
+                                conf_bonus += c
+                    if symbols:
+                        conf_bonus /= len(symbols)
+                    obj = obj + conf_bonus * 0.5  # small, bounded bias
+                except Exception:
+                    pass
+                return obj
 
             study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
@@ -333,6 +355,16 @@ class RenkoSimulationEngine:
         # Write all results to DuckDB
         for result in results:
             self._write_simulation_run(result)
+
+        # Pattern-learning hook: aggregate executed + sim outcomes by brick_pattern
+        # and persist to pattern_performance so the next sweep can read back
+        # per-pattern confidence (learn -> sim loop).
+        try:
+            from hermes.agent.pattern_learning import update_pattern_performance
+
+            update_pattern_performance(self._config)
+        except Exception as e:
+            log.warning("pattern_performance_update_failed", error=str(e)[:120])
 
         log.info(
             "entry_timing_sweep_complete",
@@ -628,21 +660,121 @@ class RenkoSimulationEngine:
             result.ts_finished = datetime.now(timezone.utc)
             log.error("parametrized_backtest_failed", error=str(e))
 
+        # Persist per-trade sim results to the MAIN db (the replay runs in a temp
+        # db, so its trades never reach pattern learning). Attaches brick_pattern
+        # from the dominant blended-signal pattern for that symbol in the window.
+        try:
+            bt_for_persist = bt_result if "bt_result" in dir() else None
+            self._persist_sim_trades(result, bt_for_persist, start, end)
+        except Exception as e:
+            log.warning("persist_sim_trades_failed", error=str(e)[:120])
+
         return result
 
-    @staticmethod
-    def _sample_params(trial, search_space: dict) -> dict:
-        """Sample parameters from search space using Optuna trial."""
-        params = {}
-        for key, space in search_space.items():
-            if isinstance(space, list):
-                params[key] = trial.suggest_categorical(key, space)
-            elif isinstance(space, tuple) and len(space) == 2:
-                if isinstance(space[0], int) and isinstance(space[1], int):
-                    params[key] = trial.suggest_int(key, space[0], space[1])
-                else:
-                    params[key] = trial.suggest_float(key, space[0], space[1])
-        return params
+    def _persist_sim_trades(
+        self, run: "SimulationRun", bt_result: Any, start: datetime, end: datetime
+    ) -> None:
+        """Write per-trade sim results to simulation_trades (main db) w/ brick_pattern.
+
+        The backtest engine returns result.trades (symbol, net_pnl, r_multiple,
+        hold_duration_sec) from its temp db. We copy them to the main db so
+        pattern_learning can aggregate sim outcomes by brick_pattern. The pattern
+        label comes from trade_signals_blended (the L4 signal already classifies
+        renko patterns); we take the dominant pattern per symbol in the window.
+        """
+        import duckdb
+
+        trades = getattr(bt_result, "trades", None) or []
+        if not trades:
+            return
+
+        # Map symbol -> dominant brick_pattern in [start, end].
+        pattern_by_symbol: dict[str, str] = {}
+        try:
+            with duckdb.connect(str(self._db_path), read_only=True) as conn:
+                for sym in {t.get("symbol") for t in trades}:
+                    row = conn.execute(
+                        """
+                        SELECT brick_pattern, COUNT(*) AS c
+                        FROM trade_signals_blended
+                        WHERE symbol = ? AND ts_emitted >= ? AND ts_emitted <= ?
+                          AND brick_pattern IS NOT NULL AND brick_pattern <> ''
+                        GROUP BY brick_pattern
+                        ORDER BY c DESC
+                        LIMIT 1
+                        """,
+                        [sym, start, end],
+                    ).fetchone()
+                    if row:
+                        pattern_by_symbol[sym] = row[0]
+        except Exception:
+            pass
+
+        try:
+            with duckdb.connect(str(self._db_path)) as conn:
+                for i, t in enumerate(trades):
+                    sym = t.get("symbol", "unknown")
+                    pat = pattern_by_symbol.get(sym, "")
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO simulation_trades
+                            (sim_trade_id, run_id, trade_num, ts_opened, ts_closed,
+                             symbol, venue, direction, brick_pattern,
+                             entry_price, exit_price, net_pnl, r_multiple,
+                             hold_duration_sec)
+                        VALUES (?, ?, ?, now(), now(), ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                        """,
+                        [
+                            f"{run.run_id}_{i}",
+                            run.run_id,
+                            i,
+                            sym,
+                            t.get("venue", "") or "",
+                            t.get("direction", "") or "",
+                            pat,
+                            float(t.get("net_pnl", 0.0) or 0.0),
+                            float(t.get("r_multiple", 0.0) or 0.0),
+                            int(t.get("hold_duration_sec", 0) or 0),
+                        ],
+                    )
+        except Exception as e:
+            log.warning("sim_trades_write_failed", error=str(e)[:120])
+
+def _dominant_pattern(db_path, symbol: str, start: datetime, end: datetime) -> str | None:
+    """Return the most frequent brick_pattern for a symbol in [start, end]."""
+    import duckdb
+
+    try:
+        with duckdb.connect(str(db_path), read_only=True) as conn:
+            row = conn.execute(
+                """
+                SELECT brick_pattern, COUNT(*) AS c
+                FROM trade_signals_blended
+                WHERE symbol = ? AND ts_emitted >= ? AND ts_emitted <= ?
+                  AND brick_pattern IS NOT NULL AND brick_pattern <> ''
+                GROUP BY brick_pattern
+                ORDER BY c DESC
+                LIMIT 1
+                """,
+                [symbol, start, end],
+            ).fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _sample_params(trial, search_space: dict) -> dict:
+    """Sample parameters from search space using Optuna trial."""
+    params = {}
+    for key, space in search_space.items():
+        if isinstance(space, list):
+            params[key] = trial.suggest_categorical(key, space)
+        elif isinstance(space, tuple) and len(space) == 2:
+            if isinstance(space[0], int) and isinstance(space[1], int):
+                params[key] = trial.suggest_int(key, space[0], space[1])
+            else:
+                params[key] = trial.suggest_float(key, space[0], space[1])
+    return params
 
     @staticmethod
     def _sample_random_params(search_space: dict, seed: int = 0) -> dict:

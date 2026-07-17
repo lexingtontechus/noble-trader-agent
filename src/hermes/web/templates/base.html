@@ -6,17 +6,10 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     {% block meta %}{% endblock %}
     <title>{% block title %}Hermes Dashboard{% endblock %}</title>
-    <!-- Tailwind CSS + DaisyUI via CDN (no build system needed) -->
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            daisyui: {
-                themes: ["dark", "retro", "cyberpunk", "nord", "dracula", "synthwave", "light"]
-            }
-        }
-    </script>
-    <link rel="stylesheet" href="/static/app.css">
+    <!-- Self-hosted Tailwind + DaisyUI bundle (built via `npm run build:css`).
+         No CDN — survives the strict CSP (style-src 'self'). -->
+    <link rel="stylesheet" href="/static/tailwind.bundle.css">
+    <link rel="stylesheet" href="/static/uplot.min.css">
 </head>
 <body class="min-h-screen bg-base-100 text-base-content">
 
@@ -67,6 +60,8 @@
         </aside>
     </footer>
 
+    <script src="/static/uplot.iife.min.js"></script>
+    <script src="/static/charts.js"></script>
     <script src="/static/app.js"></script>
     <script>
         // Theme switcher

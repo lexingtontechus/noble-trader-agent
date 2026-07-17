@@ -70,6 +70,34 @@
 {% endif %}
 {% endcall %}
 
+{# Risk-adjusted history (live chart) #}
+{% call card(title="VaR / CVaR / Drawdown History (live chart)", id="var-hist-card") %}
+<div id="var-hist" class="h-64 w-full" data-chart="var"></div>
+<div class="text-xs opacity-50 text-center mt-2">Loaded from /api/portfolio/var_history</div>
+<script>
+  if (window.HermesChart) {
+    HermesChart.varHistory(
+      document.getElementById("var-hist"),
+      "/api/portfolio/var_history?limit=500"
+    ).catch(function(){});
+  }
+</script>
+{% endcall %}
+
+{# Exposure breakdown (live chart) #}
+{% call card(title="Exposure Breakdown by Venue (live chart)", id="exposure-card") %}
+<div id="exposure" class="h-48 w-full py-2" data-chart="exposure"></div>
+<div class="text-xs opacity-50 text-center mt-2">Loaded from /api/portfolio/exposure</div>
+<script>
+  if (window.HermesChart) {
+    HermesChart.exposure(
+      document.getElementById("exposure"),
+      "/api/portfolio/exposure"
+    ).catch(function(){});
+  }
+</script>
+{% endcall %}
+
 {# Risk decisions #}
 {% call card(title="Risk Decisions (last 50)") %}
 {% if decisions %}

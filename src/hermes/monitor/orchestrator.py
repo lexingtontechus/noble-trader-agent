@@ -84,6 +84,9 @@ class PriceMonitor:
 
         self._running = False
         self._writer_task: asyncio.Task | None = None
+        # Venue adapters (registered by the monitor command) — used to surface
+        # per-venue status (e.g. TradingView WS plan/budget) in get_stats().
+        self._venue_adapters: list = []
 
         self._stats = {
             "ticks_processed": 0,
@@ -241,7 +244,22 @@ class PriceMonitor:
         stats["stop_watcher"] = self._stop_watcher.get_stats()
         stats["cross_price"] = self._cross_price.get_stats()
         stats["funding_watcher"] = self._funding_watcher.get_stats()
+        # Surface per-venue status (WS plan/budget for TradingView, etc.).
+        ws_status: dict = {}
+        for ad in self._venue_adapters:
+            fn = getattr(ad, "get_ws_status", None)
+            if callable(fn):
+                try:
+                    ws_status[getattr(ad, "venue", "unknown")] = fn()
+                except Exception:
+                    pass
+        if ws_status:
+            stats["ws"] = ws_status
         return stats
+
+    def set_venue_adapters(self, adapters: list) -> None:
+        """Register venue adapters so their status (e.g. WS budget) is surfaced."""
+        self._venue_adapters = list(adapters)
 
     async def _event_writer_loop(self) -> None:
         """Background loop: batch-write events to DuckDB + publish to Redis."""

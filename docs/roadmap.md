@@ -403,7 +403,7 @@ portfolio:
   rebalance_method: "threshold"          # threshold | target_weight | risk_parity
 
   # Starting mode
-  start_small: true                       # phase in assets gradually
+  start_smart: true                       # phase in assets gradually from a small universe
   initial_symbols:                        # start with these, expand later
     - { symbol: "BTC/USD",     venue: "alpaca",      asset_class: "crypto" }
     - { symbol: "BTC-PERP",    venue: "hyperliquid",  asset_class: "crypto" }
@@ -1849,7 +1849,9 @@ CREATE TABLE config_history (
 
 **Read path** (multi-reader):
 - Hermes queries directly via `duckdb.connect('hermes.duckdb', read_only=True)`
-- Dashboards connect read-only via Streamlit/Next.js
+- Dashboards connect read-only via the FastAPI web dashboard (server-side
+  rendered, self-hosted Tailwind+DaisyUI, CSP-clean — no CDN). The earlier
+  Next.js/Streamlit SPAs were retired; the single live UI is `src/hermes/web`.
 - Backtester reads historical Parquet via DuckDB's `read_parquet()` — no import needed
 
 **Key analytical queries** Hermes runs:
@@ -1930,7 +1932,7 @@ This loop is the heart of "teaching Hermes to be a quant PM." Every hypothesis, 
 | Config | `pydantic-settings` + Redis hot-reload |
 | Math | `numpy`, `scipy`, `numba` for hot paths |
 | ML | `scikit-learn`, `xgboost`, optional `torch` |
-| Dashboard | Streamlit (internal) or Next.js (operator) |
+| Dashboard | FastAPI web dashboard (`src/hermes/web`) — server-rendered, self-hosted Tailwind+DaisyUI |
 | Scheduler | `APScheduler` or `Prefect` for pipelines |
 
 ---
@@ -2601,8 +2603,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 ### 14.4 Browser Flow
 
-1. SPA loads → calls `GET /auth/me` (cookie sent automatically).
-2. If 401, SPA shows the login page (`dashboard/src/pages/Login.tsx`).
+1. Browser loads the dashboard → calls `GET /auth/me` (cookie sent automatically).
+2. If 401, the dashboard shows the login form.
 3. User submits username + password → SPA POSTs to `/auth/login`.
 4. Server validates against `HERMES_ADMIN_USERNAME` / `HERMES_ADMIN_PASSWORD`
    using `hmac.compare_digest()` (constant-time comparison to prevent timing

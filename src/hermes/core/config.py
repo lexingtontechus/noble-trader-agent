@@ -45,7 +45,7 @@ class PortfolioConfig(BaseModel):
     rebalance_threshold_drift_pct: float = 0.10
     rebalance_frequency: str = "on_drift"
     rebalance_method: str = "threshold"
-    start_small: bool = True
+    start_smart: bool = True
     initial_symbols: list[dict[str, str]] = Field(default_factory=list)
 
 
@@ -175,21 +175,52 @@ def get_config_hash(config: HermesConfig) -> str:
 
 
 def redact_config_for_display(config: HermesConfig) -> dict[str, Any]:
-    """Return a copy of config with all secret values redacted — safe to print."""
-    raw = config.model_dump(mode="json")
+    """Return a copy of config with all secret values redacted — safe to print.
 
-    def _redact(d: Any) -> Any:
+    Redaction rules:
+    - Any value that is (or resolves to) a `secret:...` reference is shown as the
+      placeholder only (no resolution attempted here; the loader keeps the ref).
+    - Resolved secret VALUES (API keys, tokens, passwords, private keys, wallet
+      addresses, Redis/DB/Webhook URLs) are fully redacted, regardless of length
+      or whether they contain a keyword — a short token or a `redis://...` URL must
+      never reach the browser.
+    - Non-secret scalars (allocations, thresholds, booleans, symbols) pass through.
+    """
+    # Keys whose values are always sensitive, by substring match (case-insensitive).
+    SECRET_KEY_HINTS = (
+        "key", "secret", "token", "password", "private_key", "wallet",
+        "url", "webhook", "anon_key", "api_key", "api_secret", "base_url",
+        "data_url", "api_url", "vault", "credential",
+    )
+    # Value patterns that are secret even if the key doesn't hint it.
+    import re
+    URL_RE = re.compile(r"^(https?://|redis://|wss?://|postgres://|supabase://)", re.I)
+    HEX_OR_ADDR_RE = re.compile(r"^(0x[a-f0-9]{8,}|[13][a-km-zA-HJ-NP-Z1-9]{25,})$")
+
+    def _secret_key(k: str) -> bool:
+        return any(h in k.lower() for h in SECRET_KEY_HINTS)
+
+    def _redact(d: Any, key: str = "") -> Any:
         if isinstance(d, dict):
-            return {k: _redact(v) for k, v in d.items()}
+            return {k: _redact(v, k) for k, v in d.items()}
         if isinstance(d, list):
-            return [_redact(item) for item in d]
-        if isinstance(d, str) and len(d) > 8 and not d.startswith("secret:"):
-            # Likely a resolved secret — redact
-            if any(
-                keyword in d.lower()
-                for keyword in ["key", "secret", "token", "password", "0x"]
-            ):
+            return [_redact(item, key) for item in d]
+        if isinstance(d, str):
+            # Unresolved secret reference — show the ref only.
+            if d.startswith("secret:"):
+                return d
+            # Resolved secret value if the key hints sensitivity...
+            if _secret_key(key):
+                return f"<redacted:{len(d)}chars>"
+            # ...or if the value itself is a URL / address / hex secret.
+            if URL_RE.match(d) or HEX_OR_ADDR_RE.match(d):
+                return f"<redacted:{len(d)}chars>"
+            # Short high-entropy-looking tokens (e.g. bot tokens) without a
+            # keyword: redact anything that looks like a credential by length
+            # heuristic only when the key is auth/notification related.
+            if _secret_key(key) and len(d) > 0:
                 return f"<redacted:{len(d)}chars>"
         return d
 
+    raw = config.model_dump(mode="json")
     return _redact(raw)

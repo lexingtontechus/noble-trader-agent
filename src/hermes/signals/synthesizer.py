@@ -68,6 +68,7 @@ class BlendedSignal(BaseModel):
 
     # Analysis
     brick_pattern: str
+    pattern_confidence: float = 0.0  # learned Wilson confidence for brick_pattern (0-1)
     expected_entry_alpha_bps: float
     sizing_limits_hit: list[str] = Field(default_factory=list)
     sizing_reason: str = ""
@@ -279,6 +280,26 @@ class SignalSynthesizer:
         bricks = renko.get_bricks(n=20)
         brick_pattern = self._pattern_analyzer.classify(bricks)
 
+        # 4b. Learn->live loop: read the *learned* confidence for this pattern
+        # (aggregated from executed + sim outcomes by pattern_learning). High
+        # confidence reinforces the live decision; low/unknown leaves it neutral.
+        pattern_conf = 0.0
+        try:
+            from hermes.agent.pattern_learning import get_pattern_confidence
+
+            pc = get_pattern_confidence(brick_pattern.value, config=self._config)
+            if pc is not None:
+                pattern_conf = float(pc)
+        except Exception:
+            pass
+        # Bounded conviction boost: scale meta_regime_confidence toward the
+        # learned pattern confidence (max +0.15), so a battle-tested pattern
+        # nudges the live entry without overriding the primary signals.
+        regime_conf = meta_result.confidence
+        if pattern_conf >= 0.6 and meta_result.state not in ("unknown",):
+            regime_conf = min(1.0, regime_conf + (pattern_conf - 0.5) * 0.3)
+            regime_conf = min(regime_conf, meta_result.confidence + 0.15)
+
         # 5. Entry timing decision
         current_price = renko.get_last_price() or heartbeat.entry_price
         entry_decision = self._entry_optimizer.decide(
@@ -304,7 +325,7 @@ class SignalSynthesizer:
                 nt_effective_kelly=heartbeat.effective_kelly,
                 nt_brick_size=heartbeat.brick_size,
                 meta_regime=meta_result.state,
-                meta_regime_confidence=meta_result.confidence,
+                meta_regime_confidence=regime_conf,
                 sizing_multiplier=meta_result.sizing_multiplier,
                 entry_strategy=entry_decision.strategy,
                 execution_method=entry_decision.execution_method,
@@ -312,6 +333,7 @@ class SignalSynthesizer:
                 final_size_pct=0.0,
                 risk_amount_usd=0.0,
                 brick_pattern=brick_pattern.value,
+                pattern_confidence=pattern_conf,
                 expected_entry_alpha_bps=0.0,
                 sizing_reason=entry_decision.reason,
                 config_hash=get_config_hash(self._config),
@@ -351,7 +373,7 @@ class SignalSynthesizer:
             nt_effective_kelly=heartbeat.effective_kelly,
             nt_brick_size=heartbeat.brick_size,
             meta_regime=meta_result.state,
-            meta_regime_confidence=meta_result.confidence,
+            meta_regime_confidence=regime_conf,
             sizing_multiplier=meta_result.sizing_multiplier,
             entry_strategy=entry_decision.strategy,
             execution_method=execution_method,
@@ -361,6 +383,7 @@ class SignalSynthesizer:
             final_size_pct=sizing_result.final_size_pct_of_equity,
             risk_amount_usd=sizing_result.risk_amount_usd,
             brick_pattern=brick_pattern.value,
+            pattern_confidence=pattern_conf,
             expected_entry_alpha_bps=entry_decision.expected_entry_alpha_bps,
             sizing_limits_hit=sizing_result.limits_hit,
             sizing_reason=sizing_result.reason,
@@ -369,6 +392,15 @@ class SignalSynthesizer:
 
         self._stats["signals_produced"] += 1
         await self._write_and_publish(signal)
+
+        # Signal-driven urgency + simulation hook (Fix B). When an actionable
+        # heartbeat arrives we:
+        #   - publish monitor.control.{symbol} so the live monitor can escalate
+        #     its tick cadence for that symbol (ACTIVE=5s burst, WATCH=15s);
+        #   - publish sim.request.{symbol} so the optimization watcher can run an
+        #     on-demand simulation for that symbol immediately (instead of waiting
+        #     for the 30-min watcher cadence).
+        await self._publish_signal_control(heartbeat)
 
         log.info(
             "blended_signal_produced",
@@ -383,6 +415,51 @@ class SignalSynthesizer:
         )
 
         return signal
+
+    def _get_trade_flag(self, heartbeat: NobleTraderHeartbeat) -> bool | None:
+        """Resolve the `trade` intent from the heartbeat.
+
+        The schema has no explicit `trade` field, but `extra=\"allow\"` lets the
+        EA/NT embed `trade: true|false`. If absent, infer from signal direction
+        (buy/sell => actionable, neutral => analysis-only).
+        """
+        extra = getattr(heartbeat, "__pydantic_extra__", None) or {}
+        tf = extra.get("trade")
+        if isinstance(tf, bool):
+            return tf
+        if isinstance(tf, str):
+            return tf.strip().lower() in ("1", "true", "yes")
+        return None  # unknown -> infer below
+
+    async def _publish_signal_control(self, heartbeat: NobleTraderHeartbeat) -> None:
+        """Publish urgency + on-demand-sim control messages for this symbol."""
+        if not self._redis:
+            return
+        sym = heartbeat.symbol
+        trade_flag = self._get_trade_flag(heartbeat)
+        actionable = trade_flag is True or (trade_flag is None and heartbeat.signal in ("buy", "sell"))
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        try:
+            if actionable:
+                # Escalate monitor cadence (ACTIVE = 5s burst) + request a sim.
+                await self._redis.publish(
+                    f"monitor.control.{sym}",
+                    json.dumps({"tier": "ACTIVE", "ttl": 300, "ts": now_ms, "source": "synthesize"}),
+                )
+                await self._redis.publish(
+                    f"sim.request.{sym}",
+                    json.dumps({"urgent": True, "ts": now_ms, "source": "synthesize"}),
+                )
+                log.info("signal_control_active", symbol=sym)
+            else:
+                # Analysis-only: WATCH tier (15s), no sim request.
+                await self._redis.publish(
+                    f"monitor.control.{sym}",
+                    json.dumps({"tier": "WATCH", "ttl": 300, "ts": now_ms, "source": "synthesize"}),
+                )
+                log.info("signal_control_watch", symbol=sym)
+        except Exception as e:
+            log.warning("signal_control_publish_failed", symbol=sym, error=str(e))
 
     async def _write_and_publish(self, signal: BlendedSignal) -> None:
         """Write to DuckDB + publish to Redis."""
@@ -416,10 +493,10 @@ class SignalSynthesizer:
                         entry_strategy, execution_method,
                         entry_price_target, limit_price,
                         final_size_usd, final_size_pct, risk_amount_usd,
-                        brick_pattern, expected_entry_alpha_bps,
+                        brick_pattern, pattern_confidence, expected_entry_alpha_bps,
                         sizing_limits_hit, sizing_reason,
                         autonomy_tier, config_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         signal.signal_id,
@@ -443,6 +520,7 @@ class SignalSynthesizer:
                         signal.final_size_pct,
                         signal.risk_amount_usd,
                         signal.brick_pattern,
+                        signal.pattern_confidence,
                         signal.expected_entry_alpha_bps,
                         signal.sizing_limits_hit,
                         signal.sizing_reason,

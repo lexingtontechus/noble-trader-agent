@@ -1808,8 +1808,8 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
 | Secrets | `.env` (from `.env.example`) | All credentials (never in git) — includes 4 `HERMES_*` auth vars |
 | DuckDB | `data/hermes.duckdb` | 24 tables, 9 migrations |
 | Parquet | `data/parquet/` | Partitioned market data |
-| Dashboard | `http://127.0.0.1:8080` | 12 pages, 7 DaisyUI themes — login required |
-| SPA dashboard | `dashboard/` | Vite + React + DaisyUI companion app (single-host deploy) |
+| Dashboard | `http://127.0.0.1:8080` | FastAPI web UI, 13 pages, 7 DaisyUI themes (self-hosted, CSP-clean) — login required for `/api/*` |
+| Web assets | `src/hermes/web/static/` | Vendored uPlot + self-built Tailwind+DaisyUI bundle (no CDN) |
 
 ### B.1 Agent API Access
 

@@ -29,6 +29,33 @@ from hermes.transport.l0_processing import (
     compute_dedup_hash,
 )
 
+# Symbol auto-registry: new symbols discovered on the stream are registered
+# (active) automatically so tenants never hand-edit the symbol list; delisted
+# symbols are auto-deactivated after a staleness window (see _delist_stale).
+try:
+    from hermes.db.symbol_registry import (
+        add_symbol,
+        deactivate_symbol,
+        get_symbol,
+        list_active_symbols,
+    )
+    _REGISTRY_OK = True
+except Exception:  # pragma: no cover - registry unavailable (pre-init)
+    _REGISTRY_OK = False
+
+# ---------------------------------------------------------------------------
+# Source -> exchange mapping for inbound heartbeats (mirrors the bridge relay).
+# Keyed by SOURCE_ID (the feed), NOT per symbol: switching a feed's exchange is
+# a one-line change here; the per-symbol `exchange` column is recorded once at
+# registration and then handled by staleness + dynamic-symbol delisting — no
+# growing per-symbol list to maintain. The CURRENT live feed is Coinbase-priced.
+SOURCE_EXCHANGE = {
+    "noble_trader": "COINBASE",        # current upstream (NT) feed = Coinbase-priced
+    "mt4_plexytrade": "COINBASE",      # relayed MT4/5 feed (Coinbase-priced)
+    # "mt4_binance": "BINANCE",        # alt feed = Binance-priced
+}
+DEFAULT_EXCHANGE = ""                 # e.g. set via HERMES env if needed
+
 log = structlog.get_logger(__name__)
 
 
@@ -215,6 +242,9 @@ class HeartbeatSubscriber:
                                 await upstream.xack(self._channel, self._consumer_group, entry_id)
                             except Exception:
                                 pass
+                    # Periodic delist sweep (cheap; runs each read cycle).
+                    if _REGISTRY_OK:
+                        await self._delist_stale()
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -254,9 +284,13 @@ class HeartbeatSubscriber:
         else:
             raw_str = raw_payload
 
-        # 1. Parse + validate
+        # 1. Parse + validate. strategy_id defaults to the publisher's source_id
+        # (set by the bridge gateway) so multi-source streams stay attributable;
+        # legacy NT pushes with no source_id fall back to "noble_trader".
         try:
-            hb = parse_heartbeat(raw_str, strategy_id="noble_trader")
+            parsed = parse_heartbeat(raw_str)  # type: ignore[assignment]
+            hb = parsed
+            hb.strategy_id = parsed.source_id or "noble_trader"
         except HeartbeatValidationError as e:
             self._stats["rejected_invalid"] += 1
             log.warning("heartbeat_invalid", error=str(e), payload_preview=raw_str[:200])
@@ -267,6 +301,22 @@ class HeartbeatSubscriber:
                 schema_violations=[err.get("loc", []) for err in e.errors] if e.errors else None,
             )
             return
+
+        # 1b. Auto-register newly discovered symbols (SaaS: no manual config).
+        # A symbol arriving on the stream is implicitly authorized by its
+        # source_id; register it active so downstream loops pick it up.
+        if _REGISTRY_OK:
+            # Qualify the symbol with its exchange (EXCHANGE:SYMBOL) using the
+            # shared resolver so COINBASE:BTCUSD and BINANCE:BTCUSD register as
+            # distinct rows with correct asset_class (drives PnL). The current
+            # live feed is Coinbase-priced; flip SOURCE_EXCHANGE to repoint.
+            from hermes.db.symbol_key import qualify_symbol
+            qualified = qualify_symbol(
+                hb.symbol, source_id=hb.source_id,
+                source_exchange=SOURCE_EXCHANGE,
+                default_exchange=DEFAULT_EXCHANGE or None,
+            )
+            await self._ensure_symbol_active(qualified, hb.source_id)
 
         # 2. Dedup
         dedup_hash = compute_dedup_hash(hb)
@@ -370,6 +420,78 @@ class HeartbeatSubscriber:
             await self._internal_redis.publish(channel, json.dumps(payload, default=str))
         except Exception as e:
             log.warning("republish_failed", channel=channel, error=str(e))
+
+    # ------------------------------------------------------------------ #
+    # Symbol auto-registry (SaaS: dynamic symbols, auto-delist)
+    # ------------------------------------------------------------------ #
+    async def _ensure_symbol_active(self, symbol: str, source_id: str | None) -> None:
+        """Register a stream-discovered symbol as active (idempotent).
+
+        Asset class is inferred from the symbol so it lands in the right
+        registry bucket; FX (e.g. EURUSD) -> forex, else crypto. Tenants do
+        not pre-configure symbols — discovery drives the universe. We also
+        stamp last_validated_at on every sighting so _delist_stale can retire
+        symbols that stop appearing (no hardcoded universe to maintain).
+        """
+        try:
+            existing = get_symbol(self._config, symbol)
+            if existing is not None and existing.is_active:
+                # Refresh the "last seen" marker without rewriting mutable fields.
+                from hermes.db.symbol_registry import touch_symbol_seen
+                touch_symbol_seen(self._config, symbol)
+                return
+            # asset_class is derived by add_symbol's classifier (not a naive
+            # "6-alpha == forex" rule) so BTCUSD/XAUUSD land as crypto/
+            # commodity and EURUSD as forex — correct for PnL. The
+            # symbol may already be exchange-qualified (COINBASE:BTCUSD);
+            # add_symbol parses + stores that form.
+            add_symbol(
+                self._config,
+                symbol,
+                venue="tradingview",
+                asset_class="crypto",  # placeholder; reclassified by add_symbol
+                added_by=f"auto:{source_id or 'stream'}",
+                rationale="auto-registered from heartbeat stream",
+                activate=True,
+            )
+            log.info("symbol_auto_registered", symbol=symbol, source=source_id)
+        except Exception as e:
+            log.debug("symbol_auto_register_skip", symbol=symbol, err=str(e)[:120])
+
+    async def _delist_stale(self) -> None:
+        """Deactivate symbols with no heartbeat within the delist window.
+
+        A symbol that stops appearing on the stream (delisted upstream, halted,
+        or a dead source) is soft-deleted so it drops out of the active universe
+        and downstream loops stop watching it — no hardcoded list to maintain.
+        Window = staleness_ms * 20 (default 30s -> 10 min). Uses last_validated_at
+        as the "last seen" marker (stamped on every _ensure_symbol_active call).
+        """
+        try:
+            active = list_active_symbols(self._config)
+        except Exception:
+            return
+        window = (self._staleness_ms or 30000) * 20
+        now = datetime.now(timezone.utc)
+        for sym in active:
+            try:
+                row = get_symbol(self._config, sym)
+            except Exception:
+                continue
+            if row is None or not row.is_active:
+                continue
+            last = row.last_validated_at
+            if last is None:
+                continue
+            # DuckDB returns naive timestamps; treat them as UTC to compare.
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if (now - last).total_seconds() * 1000 > window:
+                try:
+                    deactivate_symbol(self._config, sym, deactivated_by="auto:delist", rationale="no heartbeat within window")
+                    log.info("symbol_auto_delisted", symbol=sym, window_ms=window)
+                except Exception as e:
+                    log.debug("symbol_delist_skip", symbol=sym, err=str(e)[:120])
 
     @staticmethod
     def _safe_url(url: str) -> str:

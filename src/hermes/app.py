@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -556,6 +557,18 @@ def symbols_list(
     as_json: bool,
 ) -> None:
     """List symbols in the registry."""
+    from hermes.db.migrate import apply_migrations
+
+    # Ensure the schema (incl. exchange dimension, migration 010) is current
+    # before reading — `platform init` normally applies it, but the symbols
+    # commands must be self-sufficient so a fresh DB works without a race.
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        apply_migrations(config)
+    except Exception as e:
+        click.echo(f"✗ schema migrate failed: {e}", err=True)
+        sys.exit(1)
+
     from hermes.db.symbol_registry import list_symbols
 
     # In --json mode, silence structlog before load_config() so the output
@@ -577,19 +590,21 @@ def symbols_list(
         return
 
     click.echo(
-        f"{'Symbol':<14} {'Venue':<14} {'Class':<12} "
-        f"{'Active':<7} {'Validated':<10} {'Last Price':>12}  Rationale"
+        f"{'Symbol':<20} {'Venue':<14} {'Class':<12} "
+        f"{'Exch':<10} {'Bare':<12} {'Active':<7} {'Validated':<10} {'Last Price':>12}  Rationale"
     )
-    click.echo("-" * 100)
+    click.echo("-" * 110)
     for r in rows:
         active = "✓ yes" if r.is_active else "✗ no"
         validated = (r.validation_status or "pending")[:10]
         price = f"{r.last_price:.4f}" if r.last_price else "-"
         rationale = (r.rationale or "")[:40]
+        exch = (r.exchange or "-")[:9]
+        bare = (r.symbol_bare or r.symbol or "")[:11]
         click.echo(
-            f"{(r.symbol or ''):<14} {(r.venue or ''):<14} "
-            f"{(r.asset_class or ''):<12} {active:<7} {validated:<10} "
-            f"{price:>12}  {rationale}"
+            f"{(r.symbol or ''):<20} {(r.venue or ''):<14} "
+            f"{(r.asset_class or ''):<12} {exch:<10} {bare:<12} "
+            f"{active:<7} {validated:<10} {price:>12}  {rationale}"
         )
     click.echo(f"\nTotal: {len(rows)} symbol(s)")
 
@@ -601,6 +616,7 @@ def symbols_list(
     "--asset-class", "asset_class", required=True,
     help="Asset class (crypto, equities, commodities, forex).",
 )
+@click.option("--exchange", default=None, help="Exchange qualifier (COINBASE, BINANCE, ...). When set, symbol is stored as EXCHANGE:SYMBOL (distinct row per exchange).")
 @click.option("--base-ccy", default=None, help="Base currency (default: derived from symbol).")
 @click.option("--quote-ccy", default="USD", help="Quote currency (default: USD).")
 @click.option("--tick-size", type=float, default=None, help="Minimum price increment.")
@@ -617,6 +633,7 @@ def symbols_add(
     symbol: str,
     venue: str,
     asset_class: str,
+    exchange: str | None,
     base_ccy: str | None,
     quote_ccy: str,
     tick_size: float | None,
@@ -629,6 +646,20 @@ def symbols_add(
     from hermes.db.symbol_registry import add_symbol
 
     config = load_config(ctx.obj.get("config_path"))
+    # Ensure schema (exchange dimension, migration 010) is current before write.
+    from hermes.db.migrate import apply_migrations
+
+    try:
+        apply_migrations(config)
+    except Exception as e:
+        click.echo(f"✗ schema migrate failed: {e}", err=True)
+        sys.exit(1)
+    config = load_config(ctx.obj.get("config_path"))
+    # Qualify the symbol with its exchange (TradingView EXCHANGE:SYMBOL form).
+    # If the symbol is already qualified (contains ':'), honor it as-is and
+    # ignore --exchange (idempotent — no BINANCE:BINANCE:BTCUSD).
+    if exchange and ":" not in symbol:
+        symbol = f"{exchange.upper()}:{symbol.upper()}"
     try:
         row = add_symbol(
             config, symbol, venue, asset_class,
@@ -643,7 +674,7 @@ def symbols_add(
         sys.exit(1)
 
     click.echo(f"✓ Added symbol: {row.symbol}")
-    click.echo(f"    venue={row.venue}  asset_class={row.asset_class}")
+    click.echo(f"    venue={row.venue}  asset_class={row.asset_class}  exchange={row.exchange}")
     click.echo(f"    active={row.is_active}  base_ccy={row.base_ccy}")
     if rationale:
         click.echo(f"    rationale: {rationale}")
@@ -704,7 +735,10 @@ def symbols_validate(ctx: click.Context, symbol: str) -> None:
         sys.exit(1)
 
     if row.validation_status == "ok":
-        click.echo(f"✓ {row.symbol}: valid (last_price={row.last_price})")
+        click.echo(
+            f"✓ {row.symbol}: valid (last_price={row.last_price})  "
+            f"[venue={row.venue} exchange={row.exchange} class={row.asset_class}]"
+        )
     else:
         click.echo(
             f"✗ {row.symbol}: {row.validation_status} — {row.validation_error}",
@@ -713,6 +747,83 @@ def symbols_validate(ctx: click.Context, symbol: str) -> None:
         sys.exit(1)
 
 
+@symbols.command(name="validate-all")
+@click.option("--venue", default=None, help="Only validate symbols of this venue.")
+@click.option("--active-only", is_flag=True, default=True, help="Only validate active symbols (default).")
+@click.option("--include-inactive", is_flag=True, default=False, help="Also validate inactive symbols.")
+@click.option(
+    "--fail-on-error", is_flag=True, default=False,
+    help="Exit non-zero if any symbol fails validation (useful for CI/cron gates).",
+)
+@click.option(
+    "--delay", type=float, default=0.25,
+    help="Seconds to sleep between symbols (respect TradingViewAPI rate limits).",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@click.pass_context
+def symbols_validate_all(
+    ctx: click.Context, venue: str | None, active_only: bool, include_inactive: bool,
+    fail_on_error: bool, delay: float, as_json: bool,
+) -> None:
+    """Validate every symbol in the registry against its live venue.
+
+    Surfaces the resolved exchange per symbol so you can confirm the price
+    source matches the recorded exchange (Coinbase vs Binance, etc.).
+    Iterates active (or all) symbols, calling the same live probe as
+    `symbols validate`, with a small delay to stay under the API rate limit.
+    """
+    from hermes.db.symbol_registry import list_symbols, validate_symbol
+
+    config = load_config(ctx.obj.get("config_path"))
+    try:
+        from hermes.db.migrate import apply_migrations
+        apply_migrations(config)
+    except Exception as e:
+        click.echo(f"✗ schema migrate failed: {e}", err=True)
+        sys.exit(1)
+
+    rows = list_symbols(config, active_only=active_only and not include_inactive, venue=venue)
+    if not rows:
+        click.echo("No symbols to validate.")
+        return
+
+    results = []
+    ok = warn = fail = 0
+    for r in rows:
+        try:
+            row = validate_symbol(config, r.symbol)
+        except ValueError as e:
+            results.append({"symbol": r.symbol, "status": "error", "error": str(e)})
+            fail += 1
+            click.echo(f"✗ {r.symbol}: {e}")
+            continue
+        st = row.validation_status
+        if st == "ok":
+            ok += 1
+            line = (
+                f"✓ {row.symbol:<20} {row.venue:<12} "
+                f"exchange={str(row.exchange):<10} class={row.asset_class:<10} "
+                f"price={row.last_price}"
+            )
+            click.echo(line)
+        else:
+            fail += 1
+            line = f"✗ {row.symbol:<20} {st} — {row.validation_error}"
+            click.echo(line)
+        results.append({
+            "symbol": row.symbol, "status": st,
+            "venue": row.venue, "exchange": row.exchange,
+            "asset_class": row.asset_class, "last_price": row.last_price,
+            "error": row.validation_error,
+        })
+        if delay:
+            time.sleep(delay)
+
+    summary = {"total": len(results), "ok": ok, "fail": fail, "results": results}
+    if as_json:
+        click.echo(json.dumps(summary, indent=2, default=str))
+    else:
+        click.echo(f"\nValidated {len(results)} symbol(s): {ok} ok, {fail} failed.")
 @symbols.command(name="sync")
 @click.option(
     "--overwrite-active", is_flag=True, default=False,
@@ -1151,6 +1262,7 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
     from hermes.monitor.orchestrator import PriceMonitor
     from hermes.transport.adapters.alpaca_adapter import AlpacaAdapter
     from hermes.transport.adapters.hyperliquid_adapter import HyperliquidAdapter
+    from hermes.transport.adapters.tradingview_adapter import TradingViewApiAdapter
 
     async def run():
         # Initialize monitor
@@ -1167,11 +1279,19 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
             adapter = HyperliquidAdapter(config)
             await adapter.connect()
             adapters.append(("hyperliquid", adapter))
+        if "tradingview" in venue_list:
+            adapter = TradingViewApiAdapter(config)
+            await adapter.connect()
+            adapters.append(("tradingview", adapter))
 
         if not adapters:
             click.echo("No adapters connected. Check .env credentials.")
             await price_monitor.stop()
             return
+
+        # Register adapters so their status (TradingView WS plan/budget) is
+        # surfaced in monitor.get_stats() (CLI + web /monitor page).
+        price_monitor.set_venue_adapters([a for _, a in adapters])
 
         # Stream ticks through monitor
         tasks = []
@@ -1180,6 +1300,16 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
             tasks.append(_monitor_ticks_for_venue(adapter, venue_symbols, price_monitor, venue_name))
             # Also stream order books
             tasks.append(_monitor_books_for_venue(adapter, venue_symbols, price_monitor, venue_name))
+
+        # Signal-driven urgency consumer: applies monitor.control.{symbol} tiers
+        # (ACTIVE=5s, WATCH=15s, IDLE=60s) to adapters that support per-symbol
+        # interval overrides (TradingView REST-fallback path).
+        tv_adapter = next((a for n, a in adapters if n == "tradingview"), None)
+        control_task = None
+        if tv_adapter is not None and price_monitor._redis is not None:
+            control_task = asyncio.create_task(
+                _monitor_control_consumer(tv_adapter, price_monitor._redis)
+            )
 
         # Stats printer
         stats_task = asyncio.create_task(_stats_loop(price_monitor))
@@ -1202,6 +1332,8 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
         await stop_event.wait()
 
         stats_task.cancel()
+        if control_task is not None:
+            control_task.cancel()
         for task in tasks:
             task.cancel()
         try:
@@ -1239,6 +1371,57 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
         except Exception as e:
             log.error("monitor_book_stream_error", venue=venue_name, error=str(e))
 
+    # Signal-driven urgency tiers (Fix B). Consumed from monitor.control.{symbol}.
+    _TIER_INTERVALS = {"ACTIVE": 5.0, "WATCH": 15.0, "IDLE": 60.0}
+
+    async def _monitor_control_consumer(adapter, redis_client):
+        """Apply monitor.control.{symbol} urgency tiers to the adapter.
+
+        Only the TradingView adapter honors per-symbol interval overrides (its
+        REST-fallback path); under WS the override is set but inert. The tiers
+        decay back to IDLE after their TTL so urgency is transient, matching the
+        "set interval 60s after acting" terminal state.
+        """
+        set_interval = getattr(adapter, "set_symbol_interval", None)
+        if set_interval is None:
+            return
+        pubsub = redis_client.pubsub()
+        try:
+            await pubsub.psubscribe("monitor.control.*")
+        except Exception as e:
+            log.warning("monitor_control_subscribe_failed", error=str(e))
+            return
+        # Track TTL expiry timers per symbol.
+        expiry: dict[str, float] = {}
+        import time as _time
+        while True:
+            try:
+                msg = await asyncio.wait_for(
+                    pubsub.get_message(timeout=1.0, ignore_subscribe_messages=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                msg = None
+            now = _time.time()
+            # Decay expired tiers back to IDLE.
+            for sym, exp in list(expiry.items()):
+                if now >= exp:
+                    set_interval(sym, _TIER_INTERVALS["IDLE"])
+                    log.info("monitor_control_decay", symbol=sym, tier="IDLE")
+                    expiry.pop(sym, None)
+            if msg and msg.get("type") == "pmessage":
+                try:
+                    payload = json.loads(msg["data"])
+                    sym = msg["channel"].rsplit(".", 1)[-1]
+                    tier = payload.get("tier", "IDLE")
+                    ttl = float(payload.get("ttl", 300))
+                    interval = _TIER_INTERVALS.get(tier, _TIER_INTERVALS["IDLE"])
+                    set_interval(sym, interval)
+                    expiry[sym] = now + ttl
+                    log.info("monitor_control_applied", symbol=sym, tier=tier, interval=interval)
+                except Exception as e:
+                    log.warning("monitor_control_parse_failed", error=str(e))
+
     async def _stats_loop(price_monitor):
         """Print stats every 30 seconds."""
         while True:
@@ -1250,6 +1433,20 @@ def monitor(ctx: click.Context, symbols: str, venues: str | None) -> None:
                 f"bars={stats['bars_closed']} "
                 f"events={stats['events_emitted']}"
             )
+            # Surface TradingView WS plan/budget/connection state (Fix: session 5).
+            ws = stats.get("ws", {})
+            for venue, st in ws.items():
+                if not st.get("use_ws"):
+                    continue
+                conn = "ON" if st.get("connected") else "OFF"
+                exh = "EXHAUSTED" if st.get("budget_exhausted") else f"{st.get('remaining_hours')}h left"
+                click.echo(
+                    f"  [ws:{venue}] plan={st.get('plan')} mode={st.get('mode')} "
+                    f"conn={conn} budget={exh} "
+                    f"(used {st.get('used_sec_today')}s / {st.get('budget_sec')}s, "
+                    f"fallback={st.get('fallback_interval_sec')}s)"
+                    + (f" active={st.get('active_symbols')}" if st.get("active_symbols") else "")
+                )
 
     try:
         asyncio.run(run())

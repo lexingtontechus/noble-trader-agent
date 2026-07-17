@@ -112,6 +112,38 @@
 {% endcall %}
 {% endif %}
 
+{# Monitor events timeline (live chart) #}
+{% call card(title="Monitor Events Timeline (live chart)", id="mon-events-card") %}
+<div id="mon-events" class="h-64 w-full" data-chart="monitor"></div>
+<div class="text-xs opacity-50 text-center mt-2">Events per 6h bucket · loaded from /api/monitor/events</div>
+<script>
+  if (window.HermesChart) {
+    HermesChart.line(document.getElementById("mon-events"), {
+      label: "monitor events",
+      url: "/api/monitor/events?limit=500",
+      empty: "No monitor events yet.",
+      rows: function (d) {
+        var evs = d.events || [];
+        var buckets = {};
+        evs.forEach(function (e) {
+          var t = Date.parse(e.ts || e.timestamp);
+          if (!t) return;
+          var b = Math.floor(t / (6 * 3600 * 1000)) * (6 * 3600 * 1000);
+          buckets[b] = (buckets[b] || 0) + 1;
+        });
+        return Object.keys(buckets).sort().map(function (k) {
+          return { ts: parseInt(k), n: buckets[k] };
+        });
+      },
+      x: function (r) { return r.ts; },
+      series: [
+        { label: "Events / 6h", color: "#a78bfa", width: 2, fill: "rgba(167,139,250,0.12)", pick: function (r) { return r.n; } }
+      ]
+    }).catch(function(){});
+  }
+</script>
+{% endcall %}
+
 {# Recent monitor events #}
 {% call card(title="Recent Monitor Events (last 50)") %}
 {% if events %}

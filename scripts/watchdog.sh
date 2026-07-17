@@ -76,7 +76,7 @@ launch_python_detached() {
   # pointing at the SAME file (throws InvalidOperationException -> no spawn). So
   # stderr goes to a separate .err file (tracebacks land there, JSON stream stays
   # in the main .log). Without -PassThru (which blocks on the stream handle).
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '$VENVPY' -ArgumentList @($arr) -WindowStyle Hidden -RedirectStandardOutput '$LOGDIR/$logfile' -RedirectStandardError '$LOGDIR/${name}.err'" >/dev/null 2>/dev/null
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '$VENVPY' -ArgumentList @($arr) -WorkingDirectory '$REPO' -WindowStyle Hidden -RedirectStandardOutput '$LOGDIR/$logfile' -RedirectStandardError '$LOGDIR/${name}.err'" >/dev/null 2>/dev/null
   # Capture the PID of the just-launched process (newest python matching our loop name).
   sleep 1
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { \$p=Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { \$_.CommandLine -like \"*$name*\" -and \$_.CommandLine -notlike '*-c *' } | Sort-Object -Property ProcessId | Select-Object -Last 1; if (\$p) { \$p.ProcessId | Out-File -FilePath '$pidfile' -Encoding ascii } } catch {}" >/dev/null 2>/dev/null
@@ -94,7 +94,7 @@ launch_python_detached() {
 REDISPID="$PIDDIR/_pid_redis.txt"
 if ! "$REPO/tools/redis/redis-cli.exe" -h 127.0.0.1 -p 6379 ping >/dev/null 2>/dev/null; then
   echo "[$(ts)] WATCHDOG: redis down — starting (detached)"
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\$p=Start-Process -FilePath '$REDIS' -ArgumentList '$REDISCONF' -WindowStyle Hidden -PassThru; \$p.Id | Out-File -FilePath '$REDISPID' -Encoding ascii" >/dev/null 2>/dev/null
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\$p=Start-Process -FilePath '$REDIS' -ArgumentList '$REDISCONF' -WorkingDirectory '$REPO/tools/redis' -WindowStyle Hidden -PassThru; \$p.Id | Out-File -FilePath '$REDISPID' -Encoding ascii" >/dev/null 2>/dev/null
   sleep 3
 else
   echo "[$(ts)] WATCHDOG: redis already up"

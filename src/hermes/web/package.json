@@ -1,0 +1,13 @@
+{
+  "name": "hermes-web-styles",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build-time Tailwind + DaisyUI bundle for the Hermes dashboard (self-hosted, no CDN).",
+  "scripts": {
+    "build:css": "tailwindcss -i ./static/tailwind.input.css -o ./static/tailwind.bundle.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17",
+    "daisyui": "^4.12.10"
+  }
+}

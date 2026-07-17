@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, timestamp %}
 
 {% block title %}Hermes Dashboard · Heartbeats{% endblock %}
 
@@ -49,20 +49,10 @@
                 <th>Stop</th>
                 <th>TP</th>
                 <th>Brick</th>
-                <th>SL/TP Bricks</th>
                 <th>Kelly F</th>
                 <th>Eff Kelly</th>
-                <th>EV</th>
                 <th>EV/$</th>
                 <th>P_win</th>
-                <th>P_regime</th>
-                <th>P_imbal</th>
-                <th>P_markov</th>
-                <th>P_timesfm</th>
-                <th>Tail Risk</th>
-                <th>Tail Action</th>
-                <th>Aggression</th>
-                <th>Markov State</th>
                 <th>Status</th>
             </tr>
         </thead>
@@ -71,7 +61,7 @@
             <tr>
                 <td>{{ timestamp(hb.ts_received) }}</td>
                 <td>{{ timestamp(hb.ts_upstream) }}</td>
-                <td>{{ hb.lag_ms }}</td>
+                <td>{{ "%.1f" | format(hb.lag_ms) if hb.lag_ms is not none else "-" }}</td>
                 <td class="font-semibold">{{ hb.symbol }}</td>
                 <td>{{ signal_badge(hb.signal) }}</td>
                 <td>{{ regime_badge(hb.regime) }}</td>
@@ -81,20 +71,10 @@
                 <td>{{ hb.stop_loss }}</td>
                 <td>{{ hb.take_profit }}</td>
                 <td>{{ hb.brick_size }}</td>
-                <td>{{ hb.sl_bricks }} / {{ hb.tp_bricks }}</td>
                 <td>{{ "%.4f" | format(hb.kelly_f) if hb.kelly_f is not none else "-" }}</td>
                 <td>{{ "%.4f" | format(hb.effective_kelly) if hb.effective_kelly is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.ev) if hb.ev is not none else "-" }}</td>
                 <td>{{ "%.4f" | format(hb.ev_per_dollar) if hb.ev_per_dollar is not none else "-" }}</td>
                 <td>{{ "%.4f" | format(hb.p_win) if hb.p_win is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.p_regime) if hb.p_regime is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.p_imbalance) if hb.p_imbalance is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.p_markov) if hb.p_markov is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.p_timesfm) if hb.p_timesfm is not none else "-" }}</td>
-                <td>{{ "%.2f" | format(hb.tail_risk_score) if hb.tail_risk_score is not none else "-" }}</td>
-                <td>{{ hb.tail_risk_action or "-" }}</td>
-                <td>{{ hb.aggression }}</td>
-                <td>{{ hb.markov_current_state }}</td>
                 <td>
                     {% if hb.accepted %}
                     {{ status_badge("ok") }}

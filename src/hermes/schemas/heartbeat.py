@@ -90,6 +90,12 @@ class NobleTraderHeartbeat(BaseModel):
     # === Hermes-assigned (added on ingest, not from upstream) ===
     heartbeat_id: str | None = Field(None, description="UUID assigned by Hermes L0")
     strategy_id: str | None = Field(None, description="Inferred from Redis channel name")
+    # Multi-tenant / multi-source attribution. Set by the bridge gateway (see
+    # bridges/mt4_mt5/bridge_relay.py) so sources sharing one stream stay
+    # distinguishable in signal_heartbeats. Optional; null for legacy NT pushes.
+    source_id: str | None = Field(
+        None, description="Publisher identity (tenant/agent/source). Stamped by bridge gateway."
+    )
 
     @field_validator("ts", "shift_at", mode="before")
     @classmethod

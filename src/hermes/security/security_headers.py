@@ -91,14 +91,18 @@ class SecurityHeadersMiddleware:
             self.headers['Content-Security-Policy'] = "default-src 'self'"
             return
         
-        # Base policy - more permissive for TailwindCSS v4 and DaisyUI v5
+        # Base policy — self-hosted assets only (no CDN). The dashboard vendors
+        # Tailwind+DaisyUI (tailwind.bundle.css) and uPlot locally, so no
+        # external script/style origins are permitted. This is what keeps the
+        # platform CSP-clean (the original daisyui/tailwind CDN links violated
+        # style-src 'self' and broke styling — fixed by self-hosting).
         policy_parts = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' cdn.jsdelivr.net",
-            "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net *.tailwindcss.com",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: https:",
             "connect-src 'self' https:",
-            "font-src 'self' cdn.jsdelivr.net",
+            "font-src 'self'",
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",

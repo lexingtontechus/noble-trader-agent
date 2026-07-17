@@ -82,6 +82,7 @@
 {% endcall %}
 
 {% call card(title="Trading") %}
+{% if tear_sheet.trading and tear_sheet.trading.get("n_trades", 0) > 0 %}
 <div class="overflow-x-auto">
     <table class="table table-zebra table-sm">
         <tbody>
@@ -95,11 +96,14 @@
         </tbody>
     </table>
 </div>
+{% else %}
+{{ empty_state(message="No closed trades yet.", hint="Trade stats populate after positions close.") }}
+{% endif %}
 {% endcall %}
 </div>
 
 {# By Regime #}
-{% if tear_sheet.trading.by_regime %}
+{% if tear_sheet.trading and tear_sheet.trading.get("by_regime") %}
 {% call card(title="PnL by Meta-Regime") %}
 <div class="overflow-x-auto">
     <table class="table table-zebra table-sm">
@@ -128,7 +132,45 @@
 {% endcall %}
 {% endif %}
 
-{# Equity Curve #}
+{# Equity Curve (live chart) #}
+{% if equity_curve %}
+{% call card(title="Equity Curve (live chart, {} pts)".format(equity_curve | length), id="equity-curve-card") %}
+<div id="equity-curve" class="h-72 w-full" data-chart="equity"
+     data-api="/api/pnl/tear_sheet"></div>
+<div class="text-xs opacity-50 text-center mt-2">Interactive · hover for values</div>
+<script id="equity-curve-data" type="application/json">{{ equity_curve_json }}</script>
+<script>
+  if (window.HermesChart) {
+    var _ec = document.getElementById("equity-curve");
+    var _raw = document.getElementById("equity-curve-data");
+    try {
+      var _data = JSON.parse(_raw.textContent);
+      HermesChart.equityCurveFromData(_ec, _data).catch(function(){});
+    } catch (e) {
+      HermesChart.equityCurve(_ec, "/api/pnl/tear_sheet").catch(function(){});
+    }
+  }
+</script>
+{% endcall %}
+
+{# Cumulative Realized PnL (live chart) #}
+{% if pnl_history %}
+{% call card(title="Cumulative Realized PnL (live chart)", id="pnl-cum-card") %}
+<div id="pnl-cum" class="h-64 w-full" data-chart="pnl"></div>
+<div class="text-xs opacity-50 text-center mt-2">Loaded from /api/pnl/history</div>
+<script>
+  if (window.HermesChart) {
+    HermesChart.pnlHistory(
+      document.getElementById("pnl-cum"),
+      "/api/pnl/history?limit=200"
+    ).catch(function(){});
+  }
+</script>
+{% endcall %}
+{% endif %}
+{% endif %}
+
+{# Equity Curve (table fallback) #}
 {% if equity_curve %}
 {% call card(title="Equity Curve ({} points)".format(equity_curve | length)) %}
 <div class="overflow-x-auto">
