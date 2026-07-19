@@ -47,6 +47,8 @@ class PortfolioConfig(BaseModel):
     rebalance_method: str = "threshold"
     start_smart: bool = True
     initial_symbols: list[dict[str, str]] = Field(default_factory=list)
+    # L4.5 selection layer config (user-tunable ranking/budget)
+    selection: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpstreamConfig(BaseModel):

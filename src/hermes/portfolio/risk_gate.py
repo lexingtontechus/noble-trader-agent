@@ -45,6 +45,9 @@ class RiskDecision(BaseModel):
     var_post: float | None = None
     autonomy_tier: int = 0
     config_hash: str = ""
+    # GE — human-approval queue
+    requires_human_approval: bool = False
+    status: str = "decided"  # decided | pending | approved | expired | rejected
 
 
 class RiskGate:

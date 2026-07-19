@@ -135,7 +135,14 @@ class AlertManager:
         if self._telegram_token and "<" in self._telegram_token:
             self._telegram_token = None
 
-        self._telegram_chat_id = ""  # would come from config
+        # chat_id is required for Telegram delivery — the user pastes it into the
+        # wizard alongside the bot token (same pattern as the Discord webhook URL).
+        # It is stored as secret:telegram.chat_id and resolved here; it is NOT a
+        # value the agent can discover on its own.
+        self._telegram_chat_id = get_secret_or_none("telegram.chat_id", "")
+        if self._telegram_chat_id and "<" in self._telegram_chat_id:
+            self._telegram_chat_id = None
+
         self._discord_enabled = bool(self._discord_webhook)
         self._telegram_enabled = bool(self._telegram_token and self._telegram_chat_id)
 

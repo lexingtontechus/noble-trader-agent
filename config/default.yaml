@@ -25,7 +25,7 @@ portfolio:
     asset_class: crypto
 venues:
   alpaca:
-    enabled: true
+    enabled: false   # DEPRECATED — brokerage is now the MT4/MT5 bridge (see mt4_mt5). Kept for reference/compat.
     asset_classes:
     - crypto
     - equities
@@ -52,7 +52,7 @@ venues:
       - LTC/USD
       - BCH/USD
   hyperliquid:
-    enabled: true
+    enabled: false   # DEPRECATED — brokerage is now the MT4/MT5 bridge (see mt4_mt5). Kept for reference/compat.
     asset_classes:
     - crypto
     credentials:
@@ -71,6 +71,30 @@ venues:
       post_only: true
       reduce_only: true
       max_leverage: 5.0
+  mt4_mt5:
+    enabled: true    # PRIMARY brokerage venue — EA/MT5 -> bridge_relay.py -> Hermes.
+    asset_classes:
+    - crypto
+    - forex
+    - equities
+    - commodities
+    credentials:
+      bridge_token: secret:mt4_mt5_bridge_token
+      source_id: secret:mt4_mt5_source_id
+      relay_url: secret:mt4_mt5_relay_url
+    rate_limit_per_min: 600
+    data_modes:
+      live: true
+      historical: true
+    features:
+      ea_signals: true
+      venue_agnostic: true
+      symbol_qualifier: true   # EA symbols are auto-qualified (e.g. COINBASE:BTCUSD)
+      supported_exchanges:
+      - COINBASE
+      - BINANCE
+      - MT4
+      - MT5
   tradingview:
     enabled: true
     asset_classes:
@@ -385,8 +409,8 @@ autonomy:
     - run_optimization
   tier_1:
     approval: none
-    max_notional_usd: 5000
-    max_position_pct_of_equity: 0.02
+    max_notional_usd: 2000
+    max_position_pct_of_equity: 0.015
     requires_shadow_days: 7
     requires_rigor_pass: 8
     actions:
@@ -421,7 +445,7 @@ autonomy:
     approval: required
     max_notional_usd: 25000
     or_novel_strategy: true
-    approval_timeout_hours: 4
+    approval_decision_ttl_sec: 300   # decision deadline: user must approve within 5 min
     on_timeout: skip
     actions:
     - enter_large_trade
@@ -463,6 +487,32 @@ autonomy:
     end: '16:00'
     crypto_24_7: true
     degrade_outside_hours: true
+  # Cold-start guard: tighter caps for users with no proven track record.
+  # Auto-exits when both exit conditions are met (count + positive expectancy).
+  cold_start:
+    enabled: true
+    tier1_max_notional: 100          # vs tier_1.max_notional_usd = 5000
+    tier1_max_position_pct: 0.002     # vs tier_1.max_position_pct_of_equity = 0.02
+    max_new_positions: 3              # hard cap on concurrent NEW positions
+    max_new_exposure_pct: 0.05        # total new exposure <= 5% of equity
+    exit_after_n_trades: 20           # leave cold-start after N closed trades
+    exit_min_expectancy_bps: 0        # AND realized expectancy > 0 (positive)
+portfolio:
+  # L4.5 selection layer: ranks candidate signals per cycle, admits top-N.
+  # Excess candidates are DROPPED (not re-queued) — over-trading is a risk.
+  selection:
+    enabled: true
+    max_new_positions_per_cycle: 3
+    cycle_window_sec: 300             # candidates arriving within this window compete
+    policy: top_n                     # top_n | score_threshold
+    score_threshold: 0.0              # used when policy=score_threshold
+    score_weights:
+      pattern_confidence: 0.30
+      expected_entry_alpha_bps: 0.25
+      reward_risk: 0.20
+      regime_alignment: 0.15
+      diversification: 0.10
+    max_correlated_exposure: 0.20     # cap on same-sector/exchange exposure
 meta_regime:
   # Hidden-Markov regime model that labels market state (bull/bear/risk-off/...)
   # from multi-source features. Drives the regime_filter + regime_exit logic.
@@ -508,6 +558,7 @@ notifications:
     enabled: false
   telegram:
     bot_token: secret:telegram.bot_token
+    chat_id: secret:telegram.chat_id
     enabled: false
 logging:
   level: INFO

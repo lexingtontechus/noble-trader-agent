@@ -153,6 +153,21 @@ def init(ctx: click.Context) -> None:
     click.echo("  2. Run `platform config show` to inspect loaded config")
     click.echo("  3. Review roadmap.md for Phase 1 (Upstream Ingestion) plan")
 
+    # First-run onboarding: if required credentials are missing, point the
+    # user to the wizard (the external subscription site → paste flow).
+    try:
+        from hermes.web.app import is_setup_complete
+
+        if not is_setup_complete():
+            click.echo("")
+            click.echo("⚠ Setup incomplete — run the onboarding wizard to paste your")
+            click.echo("  subscription credentials (Noble Trader Redis URL + TradingView API key")
+            click.echo("  + MT4/MT5 bridge token). It writes .env, auto-migrates, and enters cold-start:")
+            click.echo("    platform setup          # serves the daisyUI wizard at http://127.0.0.1:8080/setup")
+            click.echo("    platform setup --print-url   # just print the URL + checklist (headless)")
+    except Exception:
+        pass  # setup check must never block init
+
 
 @cli.command()
 @click.pass_context
@@ -1105,6 +1120,90 @@ def dashboard(ctx: click.Context, host: str, port: int, reload: bool) -> None:
         host=host,
         port=port,
         reload=reload,
+        log_level="info",
+    )
+
+
+@cli.command(name="setup")
+@click.option("--host", default="127.0.0.1", help="Bind host for the setup web server.")
+@click.option("--port", default=8080, type=int, help="Bind port for the setup web server.")
+@click.option(
+    "--print-url", is_flag=True, default=False,
+    help="Do not serve — just print the wizard URL + a readiness checklist.",
+)
+@click.pass_context
+def setup(ctx: click.Context, host: str, port: int, print_url: bool) -> None:
+    """First-run onboarding wizard (daisyUI).
+
+    Launches the local web dashboard and opens the onboarding wizard at
+    `/setup`. Paste the credentials you copied from the subscription website
+    (Noble Trader Redis URL + TradingView API key + MT4/MT5 bridge token);
+    the wizard writes them to `.env`, auto-generates the auth secrets,
+    auto-migrates the local DuckDB, and drops you into cold-start.
+
+    The wizard is daisyUI-styled (extends base.html). This command is the
+    CLI entry point into that workflow — run it after `platform init` if
+    setup is incomplete, or any time you want to (re)configure credentials.
+
+    Use `--print-url` on a headless box: it prints the URL + a checklist
+    without serving, so you can open it from another machine.
+    """
+    from hermes.web.app import is_setup_complete
+
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+
+    if is_setup_complete():
+        click.echo("✓ Setup already complete (required credentials present in .env).")
+        click.echo("  Re-running the wizard will overwrite only the fields you change.")
+        if print_url:
+            click.echo(f"  Wizard URL: http://{host}:{port}/setup")
+            return
+    else:
+        click.echo("⚠ Setup incomplete — the wizard will collect the required credentials.")
+        if print_url:
+            click.echo(f"  Wizard URL: http://{host}:{port}/setup")
+            click.echo("")
+            click.echo("  Required (paste what you copied from your subscription):")
+            click.echo("    • NOBLE_TRADER_REDIS_URL   — real-time signal stream")
+            click.echo("    • TRADINGVIEW_API_KEY      — price data (RapidAPI)")
+            click.echo("    • MT4_MT5_BRIDGE_TOKEN     — your brokerage bridge secret")
+            click.echo("  Optional: MT4_MT5_SOURCE_ID, MT4_MT5_RELAY_URL, Discord/Telegram webhook.")
+            return
+
+    if print_url:
+        click.echo(f"  Wizard URL: http://{host}:{port}/setup")
+        return
+
+    import uvicorn
+
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "json"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+
+    from hermes.web.app import create_app
+
+    app = create_app(config)
+
+    click.echo("")
+    click.echo("=" * 50)
+    click.echo("  Hermes Setup Wizard starting...")
+    click.echo(f"  URL: http://{host}:{port}/setup")
+    click.echo(f"  Environment: {config.environment}")
+    click.echo("=" * 50)
+    click.echo("")
+    click.echo("  Open the URL above and paste the credentials from your subscription.")
+    click.echo("  Press Ctrl+C to stop (the wizard stays available until setup completes).")
+    click.echo("")
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=False,
         log_level="info",
     )
 
@@ -2116,6 +2215,152 @@ def execute(ctx: click.Context, equity: float, paper: bool) -> None:
         asyncio.run(run())
     except KeyboardInterrupt:
         click.echo("\nStopped.")
+
+
+@cli.command()
+@click.argument("decision_id")
+@click.pass_context
+def approve(ctx: click.Context, decision_id: str) -> None:
+    """Approve a pending human-approval decision (GE queue).
+
+    Re-publishes the approved RiskDecision to risk.decision.* so L3 executes it.
+    The decision_id is shown in the approval-required alert (Discord/Telegram)
+    and listed by `platform pending`.
+
+    Example:
+      platform approve 3f2a...e91b
+    """
+    from hermes.portfolio.orchestrator import PortfolioRiskEngine
+
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "text"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+
+    # Apply migrations so pending_decisions exists
+    from hermes.db.migrate import apply_migrations
+    apply_migrations(config)
+
+    engine = PortfolioRiskEngine(config, initial_equity=config.account.get("initial_equity", 10000))
+    payload = asyncio.run(engine.approve_decision(decision_id))
+    if payload is None:
+        click.echo(f"  No PENDING decision found for id={decision_id}")
+        return
+    click.echo(f"  Approved decision {decision_id}")
+    click.echo(f"  Symbol:    {payload.get('signal_id', '?')}")
+    click.echo(f"  Size USD:  {payload.get('approved_size_usd', 0):,.2f}")
+    click.echo(f"  Re-published to risk.decision.* (L3 will execute).")
+
+
+@cli.command()
+@click.pass_context
+def pending(ctx: click.Context) -> None:
+    """List decisions awaiting human approval (GE queue)."""
+    from hermes.portfolio.orchestrator import PortfolioRiskEngine
+
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "text"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+
+    from hermes.db.migrate import apply_migrations
+    apply_migrations(config)
+
+    engine = PortfolioRiskEngine(config, initial_equity=config.account.get("initial_equity", 10000))
+    rows = engine.get_pending_approvals().list_pending()
+    if not rows:
+        click.echo("  No pending approvals.")
+        return
+    click.echo(f"  {len(rows)} pending approval(s):")
+    for r in rows:
+        click.echo(
+            f"  - {r['decision_id'][:12]}.. {r['direction'].upper():<4} {r['symbol']:<12} "
+            f"${float(r['requested_size_usd']):,.0f}  expires {r['expires_at']}"
+        )
+
+
+@cli.command()
+@click.option("--symbol", required=True, help="Symbol to trade, e.g. COINBASE:BTCUSD")
+@click.option("--side", required=True, type=click.Choice(["BUY", "SELL"]), help="Direction")
+@click.option("--venue", default="hyperliquid", help="Execution venue (default hyperliquid)")
+@click.option("--equity", default=10000.0, type=float, help="Current account equity")
+@click.option("--entry-price", default=0.0, type=float, help="Reference entry price (optional)")
+@click.pass_context
+def trade(
+    ctx: click.Context,
+    symbol: str,
+    side: str,
+    venue: str,
+    equity: float,
+    entry_price: float,
+) -> None:
+    """GC — user-initiated trade (no Redis signal): sim -> L5 gate -> execute.
+
+    Runs a MANDATORY simulation (non-configurable), builds a signal from the sim
+    outcome, routes it through the same L5 risk/autonomy gate as signal-driven
+    trades, and (if approved) publishes to risk.decision.* for L3 to execute.
+
+    Example:
+      platform trade --symbol COINBASE:BTCUSD --side BUY --equity 10000
+    """
+    import asyncio
+
+    from hermes.portfolio.orchestrator import PortfolioRiskEngine
+    from hermes.portfolio.user_intent import evaluate_user_intent
+
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "text"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+
+    from hermes.db.migrate import apply_migrations
+    apply_migrations(config)
+
+    engine = PortfolioRiskEngine(config, initial_equity=equity)
+
+    async def run():
+        click.echo(f"  Simulating {side} {symbol} (mandatory, <=60s)...")
+        decision = await evaluate_user_intent(
+            engine=engine,
+            symbol=symbol,
+            side=side,
+            venue=venue,
+            equity=equity,
+            entry_price=entry_price,
+        )
+        if not decision.approved:
+            click.echo(f"  REJECTED: {decision.reason}  [{','.join(decision.limits_hit)}]")
+            if decision.requires_human_approval:
+                click.echo(f"  Awaiting human approval (id={decision.decision_id}). "
+                           f"Run: platform approve {decision.decision_id}")
+            return decision
+        click.echo(f"  APPROVED: {decision.approved_size_usd:,.2f} USD on {symbol}")
+        import json
+        import redis.asyncio as aioredis
+
+        url = config.hermes_redis.get("url", "redis://localhost:6379/1")
+        if "<" in url or url.startswith("secret:"):
+            click.echo("  ERROR: HERMES_REDIS_URL not configured; cannot dispatch to L3.", err=True)
+            return decision
+        r = aioredis.from_url(url, decode_responses=True)
+        await r.publish(f"risk.decision.{decision.signal_id}", json.dumps(decision.model_dump(mode="json"), default=str))
+        await r.close()
+        click.echo("  Dispatched to L3 (risk.decision.*).")
+        return decision
+
+    asyncio.run(run())
 
 
 @cli.command()

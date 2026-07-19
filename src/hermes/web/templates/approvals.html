@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, empty_state, status_badge %}
+
+{% block title %}Hermes Dashboard · Approvals{% endblock %}
+
+{% block content %}
+
+{% call card(title="Pending Approvals") %}
+<p class="text-sm opacity-60 mb-3">
+  Tier-3 (large / new-strategy) trades are queued here for your approval. This is the
+  credential-free default — no Discord/Telegram required. Approve and the decision
+  re-publishes to the execution stream.
+</p>
+{% if pending %}
+<div class="overflow-x-auto">
+  <table class="table table-zebra table-sm">
+    <thead>
+      <tr>
+        <th>Decision</th>
+        <th>Symbol</th>
+        <th>Side</th>
+        <th>Requested</th>
+        <th>Tier</th>
+        <th>Queued</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in pending %}
+      <tr>
+        <td class="font-mono text-xs">{{ p.decision_id }}</td>
+        <td class="font-semibold">{{ p.symbol }}</td>
+        <td>{{ p.direction }}</td>
+        <td>${{ "%.0f" | format(p.requested_size_usd or 0) }}</td>
+        <td>{{ p.autonomy_tier }}</td>
+        <td class="text-xs opacity-70">{{ p.created_at }}</td>
+        <td>
+          <button class="btn btn-primary btn-xs approve-btn"
+                  data-decision-id="{{ p.decision_id }}">Approve</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{{ empty_state(message="No pending approvals.", hint="Tier-3 trades will appear here when the risk engine queues them.") }}
+{% endif %}
+{% endcall %}
+
+<script>
+document.querySelectorAll('.approve-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.decisionId;
+    btn.disabled = true;
+    btn.textContent = '…';
+    const res = await fetch('/api/approvals/' + id + '/approve', {method: 'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      btn.textContent = '✓ Approved';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-success');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      btn.textContent = 'Failed';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-error');
+      btn.disabled = false;
+    }
+  });
+});
+</script>
+
+{% endblock %}

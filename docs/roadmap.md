@@ -38,6 +38,7 @@
 12. [Open Decisions](#12-open-decisions)
 13. [Credentials & Secrets Management](#13-credentials--secrets-management)
 14. [Dashboard & API Auth](#14-dashboard--api-auth)
+15. [User-Driven Discovery & Trading (Future)](#15-user-driven-discovery--trading-future)
 
 ---
 
@@ -2706,4 +2707,188 @@ Verifies: 401 without auth, login with wrong password → 401, login with
 correct creds → 200 + cookie, `/api/*` with cookie → 200, logout clears
 session, bearer token works for agent path, wrong bearer → 401, `/health`
 is open.
+
+---
+
+## 15. User-Driven Discovery & Trading (Future)
+
+**Problem statement.** Today the platform is a *signal-driven* pipeline: every
+trade originates from a `NobleTraderHeartbeat` on `signal.raw.noble_trader` →
+`synthesize` → `trade_signals_blended` → `risk.decision.*` → `execute`. A
+**user** who discovers an asset outside that stream (e.g. via TradingView's
+trending leaderboard) and wants to BUY it — with no Redis signal and no
+`trade_signals_blended` row — has **no entry point** into the pipeline. This
+section specifies the future capability to close that gap.
+
+### 15.1 Discovery source — TradingView leaderboard
+
+The trending-asset feed is TradingView's **leaderboard** endpoints (NOT a
+generic `/api/leaderboard` route — that returns the marketing homepage). The
+real API lives on the RapidAPI host our `TradingViewApiAdapter` already uses:
+
+```
+GET https://tradingview-data1.p.rapidapi.com/api/leaderboard/{segment}
+```
+where `{segment}` ∈ `stocks | indices | crypto | futures | forex`.
+
+Auth: `X-RapidAPI-Key` + `X-RapidAPI-Host` (identical to the existing adapter's
+quote/screener calls). **No new auth needed** — reuse `TradingViewApiAdapter`.
+
+> Note: the bare `tradingviewapi.com/api/leaderboard/{seg}` URL returns the HTML
+> marketing page (HTTP 200, not JSON). The JSON API is RapidAPI-hosted only.
+> The TV "Quantitative Skills" Market Review skill also surfaces
+> gainers/losers + opportunity discovery, but it is delivered via their MCP
+> server, not a REST route — the leaderboard REST endpoints above are the
+> machine-readable source for our own discovery surface.
+
+### 15.2 Current gaps (verified against code)
+
+| # | Gap | Evidence |
+|---|------|----------|
+| 1 | No trending/discovery layer | Zero `leaderboard`/`trending`/`screener`/`movers` code in repo. Symbol discovery is stream-driven only (auto-register on `signal.raw.noble_trader`). |
+| 2 | No user-initiated trade entry | `web/app.py` `/orders` is GET-only. No `buy`/`sell`/`trade` CLI command. `execute` (L3) is autonomous-only. |
+| 3 | Execution coupled to `trade_signals_blended` | `app.py` `SELECT * FROM trade_signals_blended WHERE signal_id = ?` — a user BUY with no signal → row missing → execution silently skips (`continue`). |
+| 4 | Live execution not yet implemented | `app.py` execute: "Live mode is not yet implemented. Using paper mode." User BUY would be **paper-only** until L3 live venues are wired. |
+
+### 15.3 Design — decouple intent from signal
+
+Introduce a **`UserTradeIntent`** (or generalize `BlendedSignal` with
+`source="user"`) as a first-class trade-origin object, distinct from the
+Noble Trader heartbeat path. The `execute` loop accepts a `RiskDecision` whose
+signal is either:
+- (a) reconstructed from `trade_signals_blended` (today's path), **or**
+- (b) built inline from a `UserTradeIntent` (symbol, side, size, venue).
+
+This keeps the autonomous path untouched and adds a parallel user path that
+still flows through the **same risk gate + `SmartOrderRouter`** — so user trades
+are sized, risk-checked, and attributable, never a blank check.
+
+### 15.4 Phased plan
+
+**Phase A — Discovery surface (read-only, additive, low risk).**
+- `TradingViewApiAdapter.get_leaderboard(segment)` → calls
+  `GET /api/leaderboard/{segment}`, normalizes to
+  `{symbol, name, change_pct, price, volume, rank}`.
+- `GET /api/discover/trending?segment=crypto` (web) and `platform discover
+  --segment crypto` (CLI). Reuses existing adapter + `symbol_key.qualify_symbol`
+  to map the TV symbol → our `Venue`+`exchange`; reject symbols with no
+  supported venue (a TV trending small-cap on SSE is not tradeable here).
+- Symbols surfaced this way are auto-registered for monitoring (reuses the
+  existing stream-discovery registration logic, decoupled from the stream).
+
+**Phase B — User trade intent + execution decoupling (core change).**
+- `UserTradeIntent` model + `POST /api/trade` (web) / `platform trade` (CLI).
+- `RiskDecision` gains optional `user_intent` field; `execute` mints a minimal
+  signal from it when `signal_id` is absent.
+- `source_id` / `autonomy_tier` set to a manual tier (reuses MT4/5 bridge
+  provenance pattern) so user trades are separable in `pnl_realized`.
+
+**Phase C — Discovery → intent UX.**
+- Each trending row gets a "Trade" button → `POST /api/trade` with the symbol.
+- Sizing still runs through `PortfolioStateService` + risk gate (bounded by
+  allocation/drawdown config). Not-in-portfolio assets are allowed but subject
+  to the same circuit breakers as autonomous trades.
+
+**Phase D — Live execution (gated on execution live venues).**
+- Until L3 live venues (Alpaca/HL) are implemented, user BUY is paper-only
+  (consistent with the current autonomous path). Flip to live when the
+  execution layer supports it.
+
+### 15.5 Reuse inventory (nothing new to build from scratch)
+
+- `TradingViewApiAdapter` — auth + REST call + RapidAPI headers (already live-verified).
+- `symbol_key.qualify_symbol()` — TV symbol → `Venue`+`exchange` mapping + venue-support check.
+- Stream symbol auto-registration — reuse for monitoring unknown discovered symbols.
+- `RiskDecision` / `SmartOrderRouter` / `PortfolioStateService` — user intent flows through the existing risk + execution core.
+- `source_id` provenance — same attribution model as the MT4/5 bridge.
+
+### 15.6 Open questions
+
+- Should discovery poll the leaderboard on a schedule (cache + TTL) or only on
+  user request? (Recommend: on-demand + 60s cache to spare the API quota.)
+- Manual trade autonomy tier — fixed `tier=0` (manual) or user-selectable?
+- Do user trades participate in the self-learning loop (§7)? Recommend: yes,
+  they land in `pnl_realized` and feed `pattern_learning` like any other trade.
+
+### 15.7 Hardening gaps (derived from scenario testing)
+
+Scenario testing (see `docs/hardening_test_plan.md`) exposed process gaps the
+current code does **not** handle. These are the priority hardening items:
+
+- **GA — Cold-start autonomous cap too loose.** `tier1` = $5k / 2% equity with
+  **no position-count or total-exposure limit**. A new user with 0 trades can
+  auto-deploy up to ~100% of equity across 25–50 buy signals on day one.
+  Fix: `autonomy.cold_start` block (tighter per-trade cap + `max_new_positions`
+  + `max_new_exposure_pct`, exits after N closed trades / proven expectancy).
+- **GB — No portfolio-level signal selection/ranking.** Every `BlendedSignal`
+  that passes risk + tier-1 is executed; 25–50 buys are all admitted → poor PM,
+  over-concentration. Fix: a **selection layer (L4.5)** ranks candidates by a
+  configurable score (pattern confidence, expected alpha, R:R, regime,
+  diversification) and admits top-N per cycle / those above threshold. Excess
+  deferred or rejected (`selection_budget_exhausted`).
+- **GC — User-initiated trade (no signal) needs an analysis/sim branch.** A
+  user BUY/SELL with no `signal_id` cannot reach L5 today. Fix: spawn a sim
+  sub-process (reuse `RenkoSimulationEngine`/`optimizer`) → `UserIntentAssessment`
+  (reject with rationale, or approve → synthesized signal) → `RiskGate` +
+  `AutonomyGate` → L3.
+- **GD — Unsupported venue: reject at L4.** Confirmed correct (M4). Tighten:
+  explicit reject *before* L5/L3 via `symbol_key.qualify_symbol` in `synthesize`,
+  reason `unsupported_venue`. Applies to both Redis signals and user discovery.
+- **GE — Human-approval queue + approve action missing.** `human_approval_required`
+  currently drops the decision (L3 `continue`), it does not hold it. Fix: persist
+  `pending_decisions`, expose `POST /api/approve/{id}` + `platform approve`, with
+  `approve_timeout_hours` auto-expiry.
+- **GF — Duplicate decision execution at L3.** Dedupe by `decision_id` (persisted
+  `executed_decisions`) to survive republish/restart.
+- **GG — close_trade / scale / reduce autonomy undefined.** Fix: `close_trade`
+  tier-1 (auto); `scale_in`/`add_to_winner` tier-3 (human approval).
+
+See `docs/hardening_test_plan.md` for the full 20-case matrix (TC-01…TC-20),
+priority ranking (P0/P1/P2), and proposed config knobs.
+
+### 15.8 Approval delivery bridge (platform → Hermes) — design & suggestions
+
+**Problem (verified):** for a multi-tenant SaaS, Discord/Telegram are wrong defaults
+for trade-approval alerts. Discord webhooks require the user to own/admin a server with
+Manage-Webhooks; Telegram requires a bot + a chat where the user sent `/start`
+(`AlertManager` never captured `chat_id`, so Telegram was effectively dead code). The
+agent should not need third-party creds the tenant may not have.
+
+**What's now in place (agent-side, credential-free):**
+- Tier-3 decisions are persisted to DuckDB `pending_decisions` (GE path in
+  `portfolio/orchestrator.py`) — the **in-app approval queue**.
+- Surfaces: dashboard **`/approvals`** (daisyUI, nav-linked, Approve button →
+  `POST /api/approvals/{id}/approve`, idempotent) and `noble pending` / `noble approve`
+  CLI. Approve re-publishes to `risk.decision.*` for L3 execution.
+- On GE-queue the engine also publishes a tenant-scoped event `risk.approval.{tenant_id}`
+  (tenant from `HERMES_TENANT_ID`, default `default`) carrying the decision summary +
+  `approve_action`. Best-effort (only if Redis connected), same pattern as
+  `risk.decision.*`.
+
+**Suggestions for the correct bridge (Hermes owns delivery):**
+
+- **Hermes is the operational home, not the platform.** The user operates in the Hermes
+  agent first (`noble` commands, natural-language queries) and uses the dashboard
+  (portfolio, sims) second. The external website is only the subscription + credential-copy
+  frontend (the wizard flow). Message channels (Discord/Telegram) are configured **in
+  Hermes** (wizard `.env` / `config.default.yaml → notifications.*`), so approval delivery
+  by Hermes through those channels is correct — that is where the user set them up.
+- **Delivery stays in Hermes (already wired).** The GE path (`portfolio/orchestrator.py`)
+  calls `AlertManager.send_alert` on queue, which pushes to Discord/Telegram if configured.
+  The in-app queue (`/approvals` + `noble pending`/`approve`) is the Hermes dashboard/CLI
+  surface (the "dashboard second" path). Both are Hermes-owned; no platform relay needed.
+- **Fix the one real gap — Telegram chat_id.** `AlertManager._send_telegram` hardcodes
+  `_telegram_chat_id = ""`, so Telegram approvals never send even with a bot token. Add a
+  `TELEGRAM_CHAT_ID` field (user pastes it beside the bot token, same pattern as the
+  Discord webhook URL — no bot-poller required) and wire `AlertManager` to use it. Discord
+  works as-is if the user has a server with Manage-Webhooks (a user-side constraint).
+- **Keep `risk.approval.{tenant_id}`** as a durable notification/audit event, but it is
+  secondary to the direct channel delivery — not the delivery mechanism itself.
+
+**Why this is correct:** each tenant = own Hermes agent (own DB, own Redis, own approval
+queue) where they already configured their msg channels. The agent decides AND notifies.
+The external site is only for signup + credential copy. Approvals work the moment the
+user has pasted a Discord webhook or Telegram token+bot into Hermes — no third-party
+account the user doesn't already have.
+
 

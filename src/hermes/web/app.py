@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import datetime
 import hmac
+import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +213,18 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
     # )
 
     log.info("auth_middleware_added", enabled=auth_enabled, max_age_sec=max_age)
+
+    # Entitlement check: the Git/pkg token (secret:github.token) is the license.
+    # Token present = licensed; warns (does not block) if missing so a tenant stack
+    # is never bricked. (Full live verification is an upstream/subscription concern.)
+    from hermes.core.secrets import get_secret_or_none
+
+    if get_secret_or_none("github.token", ""):
+        log.info("entitlement_ok", git_token_present=True, version=__version__)
+    else:
+        log.warning("entitlement_missing",
+                    note="set GITHUB_TOKEN (issued by subscription) in the wizard")
+
     return app
 
 
@@ -417,26 +431,183 @@ async def auth_me(request: Request, authorization: str | None = Header(None)) ->
 # === Routes ===
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def index(request: Request) -> HTMLResponse:
-    """Status overview page."""
-    config = get_config()
-    status = await check_all(config)
-    stats = get_ingest_stats(config)
-    recent = get_recent_heartbeats(config, limit=20)
+    """Root — routes to the right first view.
 
+    - First use (setup incomplete): onboarding wizard (/setup).
+    - Otherwise: Portfolio is the default homepage.
+    The Status overview remains reachable via Account → Status (/).
+    """
+    from fastapi.responses import RedirectResponse
+
+    if not is_setup_complete():
+        return RedirectResponse(url="/setup", status_code=302)
+    return RedirectResponse(url="/portfolio", status_code=302)
+
+
+# ── Onboarding wizard ────────────────────────────────────────────────────────
+# First use of the web app routes here. After setup is complete the wizard is
+# hidden (root redirects to /portfolio and /setup redirects there too).
+_SETUP_REQUIRED_KEYS = (
+    "NOBLE_TRADER_REDIS_URL",
+    "TRADINGVIEW_API_KEY",
+    "MT4_MT5_BRIDGE_TOKEN",
+)
+_PLACEHOLDER_VALUES = {"", "<nt-redis-host>", "redis://<nt-redis-host>:<port>",
+                       "<publishable-anon-key>", "<paper-api-key>", "<0x-your-dedicated-trading-wallet>"}
+
+
+def _env_path() -> Path:
+    """Resolve the .env file the secrets backend reads."""
+    p = os.environ.get("SECRETS_ENV_FILE_PATH")
+    if p:
+        return Path(p).resolve()
+    # Fall back to ./data/.. no — use CWD/.env (secrets backend default).
+    return Path(".env").resolve()
+
+
+def is_setup_complete() -> bool:
+    """True once the required pasted credentials are present and non-placeholder."""
+    env = _read_env()
+    for key in _SETUP_REQUIRED_KEYS:
+        val = (env.get(key) or "").strip()
+        if not val or val in _PLACEHOLDER_VALUES:
+            return False
+    return True
+
+
+def _read_env() -> dict[str, str]:
+    """Parse the .env file into a dict (best-effort, ignores comments/blank)."""
+    env: dict[str, str] = {}
+    p = _env_path()
+    if not p.exists():
+        return env
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return env
+
+
+def _write_env(updates: dict[str, str]) -> None:
+    """Merge updates into .env, preserving other keys. Never overwrites with empty."""
+    env = _read_env()
+    for k, v in updates.items():
+        if v is not None and str(v).strip():
+            env[k] = str(v).strip()
+    lines = [f"{k}={v}" for k, v in env.items()]
+    _env_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request) -> HTMLResponse:
+    """Onboarding wizard — shown on first use; hidden once setup is complete."""
+    if is_setup_complete():
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(url="/portfolio", status_code=302)
+
+    config = get_config()
+    existing = _read_env()
+    # Auto-generate the three auth secrets if missing so the user doesn't have to.
+    generated = {
+        "HERMES_SESSION_SECRET": existing.get("HERMES_SESSION_SECRET")
+        or secrets.token_urlsafe(48),
+        "HERMES_ADMIN_PASSWORD": existing.get("HERMES_ADMIN_PASSWORD")
+        or secrets.token_urlsafe(32),
+        "HERMES_AGENT_TOKEN": existing.get("HERMES_AGENT_TOKEN")
+        or secrets.token_urlsafe(64),
+    }
+    cold_start = (getattr(config, "autonomy", {}) or {}).get("cold_start", {}) or {}
     return templates.TemplateResponse(
         request,
-        "index.html",
+        "setup.html",
         {
             "version": __version__,
-            "config_hash": get_config_hash(config),
             "environment": config.environment,
-            "status": status,
-            "stats": stats,
-            "recent_heartbeats": recent,
+            "existing": existing,
+            "generated": generated,
+            "required_keys": _SETUP_REQUIRED_KEYS,
+            "cold_start": cold_start,
         },
     )
+
+
+@app.post("/setup")
+async def setup_submit(request: Request) -> HTMLResponse:
+    """Accept the wizard form, write .env, auto-migrate, then enter the platform."""
+    form = await request.form()
+    updates: dict[str, str] = {}
+
+    # Required pasted fields
+    for key in _SETUP_REQUIRED_KEYS:
+        val = (form.get(key) or "").strip()
+        if not val:
+            return templates.TemplateResponse(
+                request, "setup.html",
+                {"version": __version__, "environment": get_config().environment,
+                 "existing": _read_env(), "generated": {},
+                 "error": f"Missing required field: {key}",
+                 "required_keys": _SETUP_REQUIRED_KEYS,
+                 "cold_start": (getattr(get_config(), "autonomy", {}) or {}).get("cold_start", {}) or {}},
+                status_code=400,
+            )
+        updates[key] = val
+
+    # Optional fields (kept only if provided)
+    for key in ("MT4_MT5_SOURCE_ID", "MT4_MT5_RELAY_URL",
+                "DISCORD_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+                "GITHUB_TOKEN",
+                "HERMES_ADMIN_USERNAME"):
+        val = (form.get(key) or "").strip()
+        if val:
+            updates[key] = val
+
+    # Auth secrets: keep existing or use generated
+    existing = _read_env()
+    updates["HERMES_SESSION_SECRET"] = existing.get("HERMES_SESSION_SECRET") or secrets.token_urlsafe(48)
+    updates["HERMES_ADMIN_PASSWORD"] = existing.get("HERMES_ADMIN_PASSWORD") or secrets.token_urlsafe(32)
+    updates["HERMES_AGENT_TOKEN"] = existing.get("HERMES_AGENT_TOKEN") or secrets.token_urlsafe(64)
+    updates["HERMES_ADMIN_USERNAME"] = existing.get("HERMES_ADMIN_USERNAME") or "admin"
+    updates["SECRETS_BACKEND"] = existing.get("SECRETS_BACKEND") or "env_file"
+    updates["SECRETS_ENV_FILE_PATH"] = existing.get("SECRETS_ENV_FILE_PATH") or "./.env"
+    updates["HERMES_DUCKDB_PATH"] = existing.get("HERMES_DUCKDB_PATH") or "./data/hermes.duckdb"
+    updates["HERMES_REDIS_URL"] = existing.get("HERMES_REDIS_URL") or "redis://localhost:6379/1"
+    updates["HERMES_LOG_LEVEL"] = existing.get("HERMES_LOG_LEVEL") or "INFO"
+    updates["HERMES_ENVIRONMENT"] = existing.get("HERMES_ENVIRONMENT") or "development"
+    updates["TRADINGVIEW_API_HOST"] = existing.get("TRADINGVIEW_API_HOST") or "tradingview-data1.p.rapidapi.com"
+    updates["TRADINGVIEW_BASE_URL"] = existing.get("TRADINGVIEW_BASE_URL") or "https://tradingview-data1.p.rapidapi.com"
+
+    try:
+        _write_env(updates)
+        # Auto-migrate the local DuckDB so the account is ready immediately.
+        from hermes.core.config import load_config
+        from hermes.db.migrate import apply_migrations
+
+        apply_migrations(load_config())
+    except Exception as e:  # surface, don't silently fail
+        return templates.TemplateResponse(
+            request, "setup.html",
+            {"version": __version__, "environment": get_config().environment,
+             "existing": _read_env(), "generated": {},
+             "error": f"Setup failed: {e}",
+             "required_keys": _SETUP_REQUIRED_KEYS,
+             "cold_start": (getattr(get_config(), "autonomy", {}) or {}).get("cold_start", {}) or {}},
+            status_code=500,
+        )
+
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/portfolio", status_code=302)
+
+
+
 
 
 def build_config_display(config: HermesConfig, redacted: dict[str, Any]) -> list[dict[str, Any]]:
@@ -670,9 +841,10 @@ def build_config_display(config: HermesConfig, redacted: dict[str, Any]) -> list
 
     # ── Secrets status ──────────────────────────────────────────
     secret_rows = []
-    for path in ["auth.admin_username", "auth.agent_token", "venues.alpaca.credentials.api_key",
-                 "venues.hyperliquid.credentials.private_key", "upstream.noble_trader.redis.url",
-                 "hermes_redis.url", "notifications.discord.webhook_url"]:
+    for path in ["auth.admin_username", "auth.agent_token", "venues.mt4_mt5.credentials.bridge_token",
+                 "venues.mt4_mt5.credentials.source_id", "upstream.noble_trader.redis.url",
+                 "hermes_redis.url", "notifications.discord.webhook_url",
+                 "notifications.telegram.bot_token", "notifications.telegram.chat_id"]:
         cur = redacted
         ok = True
         for part in path.split("."):
@@ -695,6 +867,44 @@ def build_config_display(config: HermesConfig, redacted: dict[str, Any]) -> list
     })
 
     return groups
+
+
+@app.get("/approvals", response_class=HTMLResponse)
+async def approvals_page(request: Request, _auth: dict[str, Any] = Depends(require_auth)) -> HTMLResponse:
+    """Human-approval queue — the credential-free default surface for tier-3 trades.
+
+    Lists pending decisions from DuckDB `pending_decisions`. Each has an Approve
+    button (POST /api/approvals/{id}/approve). No Discord/Telegram required.
+    """
+    config = get_config()
+    from hermes.portfolio.pending_approvals import PendingApprovals
+
+    pa = PendingApprovals(config)
+    rows = pa.list_pending()
+    return templates.TemplateResponse(
+        request,
+        "approvals.html",
+        {
+            "version": __version__,
+            "environment": config.environment,
+            "pending": rows,
+        },
+    )
+
+
+@app.post("/api/approvals/{decision_id}/approve")
+async def api_approve_decision(
+    decision_id: str, _auth: dict[str, Any] = Depends(require_auth)
+) -> JSONResponse:
+    """Approve a pending decision via the dashboard; re-publishes for L3 execution."""
+    config = get_config()
+    from hermes.portfolio.pending_approvals import PendingApprovals
+
+    pa = PendingApprovals(config)
+    payload = pa.approve(decision_id)
+    if payload is None:
+        return JSONResponse({"ok": False, "error": "not pending"}, status_code=404)
+    return JSONResponse({"ok": True, "decision_id": decision_id, "status": "approved"})
 
 
 @app.get("/config", response_class=HTMLResponse)

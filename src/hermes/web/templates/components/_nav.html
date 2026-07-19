@@ -1,12 +1,14 @@
 {# Navigation links — included by base.html for both desktop and mobile menus.
    Active tab is detected from request.url.path so routes don't need to pass
    an `active_page` context variable. The `index` route (/) uses an exact
-   match to avoid always-on highlighting. #}
+   match to avoid always-on highlighting.
+
+   Homepage is /portfolio (root / redirects there once onboarding is complete).
+   `Account` is a dropdown grouping Config + Status (system overview). #}
 {% set path = request.url.path %}
-<li><a href="/" class="{% if path == '/' %}active{% endif %}">Status</a></li>
-<li><a href="/heartbeats" class="{% if path == '/heartbeats' %}active{% endif %}">Heartbeats</a></li>
-<li><a href="/signals" class="{% if path == '/signals' %}active{% endif %}">Signals</a></li>
 <li><a href="/portfolio" class="{% if path == '/portfolio' %}active{% endif %}">Portfolio</a></li>
+<li><a href="/signals" class="{% if path == '/signals' %}active{% endif %}">Signals</a></li>
+<li><a href="/heartbeats" class="{% if path == '/heartbeats' %}active{% endif %}">Heartbeats</a></li>
 <li><a href="/orders" class="{% if path == '/orders' %}active{% endif %}">Orders</a></li>
 <li><a href="/pnl" class="{% if path == '/pnl' %}active{% endif %}">PnL</a></li>
 <li><a href="/backtest" class="{% if path == '/backtest' %}active{% endif %}">Backtest</a></li>
@@ -14,4 +16,18 @@
 <li><a href="/agent" class="{% if path == '/agent' %}active{% endif %}">Agent</a></li>
 <li><a href="/monitor" class="{% if path == '/monitor' %}active{% endif %}">Monitor</a></li>
 <li><a href="/symbols" class="{% if path == '/symbols' %}active{% endif %}">Symbols</a></li>
-<li><a href="/config" class="{% if path == '/config' %}active{% endif %}">Config</a></li>
+<li><a href="/approvals" class="{% if path == '/approvals' %}active{% endif %}">Approvals</a></li>
+
+{# Account dropdown: Config (Venues now show MT4/MT5, not Alpaca/HL) + Status #}
+<li class="dropdown dropdown-end">
+  <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+    Account
+    <svg class="w-3 h-3 ml-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+    </svg>
+  </div>
+  <ul tabindex="0" class="dropdown-content menu menu-sm z-[1] p-2 shadow bg-base-200 rounded-box w-52">
+    <li><a href="/config" class="{% if path == '/config' %}active{% endif %}">Config</a></li>
+    <li><a href="/" class="{% if path == '/' %}active{% endif %}">Status</a></li>
+  </ul>
+</li>

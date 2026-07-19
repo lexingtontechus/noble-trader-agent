@@ -18,6 +18,7 @@ class Venue(str, Enum):
     ALPACA = "alpaca"
     HYPERLIQUID = "hyperliquid"
     TRADINGVIEW = "tradingview"  # TradingViewAPI (RapidAPI) — venue-agnostic price source
+    MT4_MT5 = "mt4_mt5"  # MT4/MT5 bridge (EA -> Redis relay) signal source / execution venue
 
 
 class AssetClass(str, Enum):

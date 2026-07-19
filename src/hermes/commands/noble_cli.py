@@ -525,5 +525,158 @@ def noble_listen():
     listener_main()
 
 
+@noble.command(name="userguide", help="Open the Noble Trader user onboarding guide.")
+@click.option("--full", is_flag=True, default=False, help="Print the full guide markdown.")
+def noble_userguide(full: bool) -> None:
+    """Print the path to (or the full text of) docs/user_onboarding_guide.md."""
+    import os as _os
+
+    # noble_cli.py lives at <repo>/src/hermes/commands/ → repo root is 4 levels up.
+    here = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+    guide_path = _os.path.join(here, "docs", "user_onboarding_guide.md")
+
+    if full:
+        try:
+            with open(guide_path, "r", encoding="utf-8") as fh:
+                click.echo(fh.read())
+        except FileNotFoundError:
+            click.echo(f"ERROR: guide not found at {guide_path}")
+        return
+
+    click.echo("=" * 60)
+    click.echo("  NOBLE TRADER — USER ONBOARDING GUIDE")
+    click.echo("=" * 60)
+    click.echo("  New accounts start in COLD-START (tightest caps):")
+    click.echo("    • max $100 / trade, 0.2% of equity, ≤3 new positions")
+    click.echo("    • auto-exits after ≥20 closed trades AND positive expectancy")
+    click.echo("  Setup: copy .env.example → .env, fill secrets, run:")
+    click.echo("    noble balance   (live equity, source of truth)")
+    click.echo("    noble assets    (held assets + regime + renko)")
+    click.echo("  Approvals: noble pending / noble approve <id>")
+    click.echo("  User trade: noble trade --symbol X --side BUY --equity N")
+    click.echo("-" * 60)
+    click.echo(f"  Full guide: {guide_path}")
+    click.echo("  Print it:   noble userguide --full")
+    click.echo("=" * 60)
+
+
+@noble.command(name="pending", help="List pending tier-3 (human-approval) decisions.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON.")
+def noble_pending(as_json: bool) -> None:
+    """List decisions currently awaiting human approval (the in-app queue).
+
+    This is the credential-free default approval surface — no Discord/Telegram
+    needed. Each row shows the decision_id to pass to `noble approve`.
+    """
+    import json as _json
+
+    from hermes.core.config import load_config
+    from hermes.portfolio.pending_approvals import PendingApprovals
+
+    config = load_config()
+    pa = PendingApprovals(config)
+    rows = pa.list_pending()
+    if not rows:
+        click.echo("No pending approvals.")
+        return
+    if as_json:
+        click.echo(_json.dumps(rows, indent=2, default=str))
+        return
+    click.echo(f"{'decision_id':<40} {'symbol':<16} {'side':<6} {'requested':>12}  tier")
+    click.echo("-" * 90)
+    for r in rows:
+        click.echo(
+            f"{str(r.get('decision_id')):<40} {str(r.get('symbol')):<16} "
+            f"{str(r.get('direction')):<6} ${float(r.get('requested_size_usd') or 0):>10,.0f}  "
+            f"{r.get('autonomy_tier')}"
+        )
+    click.echo("")
+    click.echo("  Approve: noble approve <decision_id>")
+
+
+@noble.command(name="approve", help="Approve a pending decision by id.")
+@click.argument("decision_id")
+def noble_approve(decision_id: str) -> None:
+    """Approve a pending tier-3 decision; re-publishes it for L3 execution.
+
+    The decision must be in the pending queue (see `noble pending`). Approval
+    re-publishes the payload to the risk.decision.* stream that L3 consumes.
+    """
+    from hermes.core.config import load_config
+    from hermes.portfolio.pending_approvals import PendingApprovals
+
+    config = load_config()
+    pa = PendingApprovals(config)
+    payload = pa.approve(decision_id)
+    if payload is None:
+        click.echo(f"✗ No pending decision with id {decision_id}", err=True)
+        sys.exit(1)
+    click.echo(f"✓ Approved {decision_id}")
+    click.echo(f"  symbol:     {payload.get('symbol')}")
+    click.echo(f"  direction: {payload.get('direction')}")
+    click.echo(f"  status:    {payload.get('status')}")
+    click.echo("  Re-published to risk.decision.* for execution.")
+
+
+@noble.command(name="bug", help="Capture redacted diagnostics and file a GitHub Issue.")
+@click.option("--title", default=None, help="Short issue title (else derived from description).")
+@click.option("--description", required=True, help="What went wrong / how to reproduce.")
+@click.option("--repo", default=None, help="target 'owner/name' (else $NOBLE_BUG_REPO).")
+@click.option("--labels", default="bug,tenant-report", help="Comma-separated labels.")
+@click.option("--traceback-file", default=None, help="Path to a file containing a traceback to attach.")
+@click.option("--dry-run", is_flag=True, default=False, help="Print the issue body; do NOT post to GitHub.")
+def noble_bug(title, description, repo, labels, traceback_file, dry_run):
+    """Collect redacted environment + config + log tail and open a GitHub Issue.
+
+    Secrets are redacted before anything leaves the machine. Requires a Git/pkg
+    token (secret:github.token / env GITHUB_TOKEN) — issued by the subscription
+    process. Tenants file issues, not forks; the maintainer reproduces from the
+    version + repro and ships a patch release.
+    """
+    import os as _os
+
+    tb_text = None
+    if traceback_file:
+        try:
+            with open(traceback_file, "r", encoding="utf-8") as fh:
+                tb_text = fh.read()
+        except Exception as e:
+            click.echo(f"(could not read {traceback_file}: {e})", err=True)
+
+    from hermes.ops.bug_report import (
+        build_issue_body,
+        collect_diagnostics,
+        file_github_issue,
+    )
+
+    diag = collect_diagnostics(include_log_tail=True)
+    issue_title = title or _derive_bug_title(description)
+    body = build_issue_body(diag, description, tb_text)
+
+    if dry_run:
+        click.echo(f"[dry-run] title: {issue_title}")
+        click.echo(body)
+        return
+
+    target_repo = repo or _os.environ.get("NOBLE_BUG_REPO")
+    if not target_repo:
+        click.echo("ERROR: no --repo and NOBLE_BUG_REPO unset. Use --repo owner/name.", err=True)
+        sys.exit(1)
+    try:
+        resp = file_github_issue(
+            target_repo, issue_title, body, labels=[l.strip() for l in labels.split(",") if l.strip()]
+        )
+    except Exception as e:
+        click.echo(f"ERROR filing issue: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"✓ Issue created: {resp.get('html_url')}")
+    click.echo(f"  number: {resp.get('number')}")
+
+
+def _derive_bug_title(description: str) -> str:
+    first = description.strip().splitlines()[0] if description.strip() else "Bug report"
+    return (first[:80].rstrip() or "Bug report") + " (tenant)"
+
+
 def register_noble(parent) -> None:
     parent.add_command(noble)

@@ -115,6 +115,7 @@ class ExecutionEngine:
 
         self._stats = {
             "decisions_received": 0,
+            "decisions_duplicated": 0,
             "orders_created": 0,
             "orders_filled": 0,
             "orders_rejected": 0,
@@ -167,6 +168,18 @@ class ExecutionEngine:
         - Evaluates existing positions via HermesDecisionTree
         """
         self._stats["decisions_received"] += 1
+
+        # GF — idempotency: skip if this decision_id was already executed.
+        # Protects against duplicate Redis delivery (at-least-once) and an
+        # `approve` re-publish re-sending the same decision_id.
+        if self._decision_already_executed(decision.decision_id):
+            self._stats["decisions_duplicated"] = self._stats.get("decisions_duplicated", 0) + 1
+            log.info(
+                "decision_already_executed_skipping",
+                decision_id=decision.decision_id,
+                signal_id=signal.signal_id,
+            )
+            return []
 
         # Store signal for later attribution
         self._signal_map[signal.signal_id] = signal
@@ -485,6 +498,29 @@ class ExecutionEngine:
         """Get next sequence number for an order's events."""
         self._seq_counters[order_id] = self._seq_counters.get(order_id, 0) + 1
         return self._seq_counters[order_id]
+
+    def _decision_already_executed(self, decision_id: str) -> bool:
+        """GF — idempotency check: has this decision_id already produced an order?
+
+        Reads the `orders` table via the shared DuckDB path (read-only). A decision
+        that was already executed must not be re-executed on duplicate delivery.
+        """
+        if not decision_id:
+            return False
+        try:
+            from hermes.db.migrate import safe_duckdb_connect as _safe
+
+            with _safe(str(self._db_path), read_only=True) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM orders WHERE risk_decision_id = ? LIMIT 1",
+                    [decision_id],
+                ).fetchone()
+                return row is not None
+        except Exception as e:
+            # If the table/DB is unavailable, err toward executing (don't silently
+            # drop a live decision) — but log so it's visible.
+            log.warning("idempotency_check_failed", decision_id=decision_id, error=str(e)[:120])
+            return False
 
     def get_branch_tracker(self) -> DecisionBranchTracker:
         return self._branch_tracker

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Onboarding · Hermes{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <div class="text-center mb-6">
+    <h1 class="text-3xl font-bold">Welcome to Hermes</h1>
+    <p class="opacity-60 mt-2">A few details and your account is live — constrained to <span class="badge badge-info badge-sm">cold-start</span> until it earns its way out.</p>
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error mb-4 shadow-lg">
+    <span>{{ error }}</span>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/setup" class="space-y-5">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="card bg-base-200 shadow-lg">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Required — paste what you copied from your plan</h2>
+
+        <label class="form-control w-full">
+          <span class="label-text">Noble Trader Redis URL</span>
+          <input type="text" name="NOBLE_TRADER_REDIS_URL" placeholder="redis://&lt;nt-redis-host&gt;:&lt;port&gt;"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_REDIS_URL', '') }}" required>
+          <span class="label-text-alt opacity-50">From your subscription — the real-time signal stream.</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">TradingView API Key (RapidAPI)</span>
+          <input type="password" name="TRADINGVIEW_API_KEY" placeholder="your RapidAPI key"
+                 class="input input-bordered w-full" value="{{ existing.get('TRADINGVIEW_API_KEY', '') }}" required>
+          <span class="label-text-alt opacity-50">Price data for crypto / forex / stocks / commodities.</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">MT4/MT5 Bridge Token</span>
+          <input type="password" name="MT4_MT5_BRIDGE_TOKEN" placeholder="shared secret from bridge_relay"
+                 class="input input-bordered w-full" value="{{ existing.get('MT4_MT5_BRIDGE_TOKEN', '') }}" required>
+          <span class="label-text-alt opacity-50">Your brokerage is the MT4/MT5 bridge (Alpaca/HL deprecated).</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card bg-base-200 shadow-lg">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Optional</h2>
+
+        <label class="form-control w-full">
+          <span class="label-text">MT4/MT5 Source ID</span>
+          <input type="text" name="MT4_MT5_SOURCE_ID" placeholder="e.g. mt4_plexytrade"
+                 class="input input-bordered w-full" value="{{ existing.get('MT4_MT5_SOURCE_ID', '') }}">
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">MT4/MT5 Relay URL</span>
+          <input type="text" name="MT4_MT5_RELAY_URL" placeholder="http://localhost:9100"
+                 class="input input-bordered w-full" value="{{ existing.get('MT4_MT5_RELAY_URL', '') }}">
+        </label>
+
+        <div class="divider">Approval notifications (optional)</div>
+        <p class="opacity-60 text-sm mb-2">
+          Tier-3 (large / new-strategy) trades are queued for your approval. The
+          <b>primary</b> path needs no third-party account: the decision lands in the
+          in-app approval queue (dashboard <code>/approvals</code> or
+          <code>noble pending</code> / <code>noble approve</code>). Add a channel below
+          only if you want a push alert too.
+        </p>
+
+        <label class="form-control w-full">
+          <span class="label-text">Discord Webhook URL</span>
+          <input type="text" name="DISCORD_WEBHOOK_URL" placeholder="https://discord.com/api/webhooks/..."
+                 class="input input-bordered w-full" value="{{ existing.get('DISCORD_WEBHOOK_URL', '') }}">
+          <span class="label-text-alt opacity-50">Needs a Discord server where you have <b>Manage Webhooks</b>. Skip if you don't own/admin one — the in-app queue still works.</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">Telegram Bot Token</span>
+          <input type="text" name="TELEGRAM_BOT_TOKEN" placeholder="bot token (from @BotFather)"
+                 class="input input-bordered w-full" value="{{ existing.get('TELEGRAM_BOT_TOKEN', '') }}">
+          <span class="label-text-alt opacity-50">Create a bot via @BotFather, copy its token. Hermes delivers approval alerts through it.</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">Telegram Chat ID</span>
+          <input type="text" name="TELEGRAM_CHAT_ID" placeholder="chat id (e.g. 123456789)"
+                 class="input input-bordered w-full" value="{{ existing.get('TELEGRAM_CHAT_ID', '') }}">
+          <span class="label-text-alt opacity-50">The chat where Hermes sends alerts. Get it by messaging the bot, then opening <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> — the <code>chat.id</code> value. Both token + chat id are required for Telegram delivery.</span>
+        </label>
+
+        <div class="divider">Platform / distribution (optional)</div>
+        <p class="opacity-60 text-sm mb-2">
+          The subscription process issues a single <b>Git/Package token</b> alongside
+          your Redis token. Paste it here — it authenticates package install/pull,
+          <code>noble bug</code> (redacted GitHub Issues), and serves as your agent's
+          entitlement. Verify it any time with <code>noble entitlement</code>.
+        </p>
+
+        <label class="form-control w-full">
+          <span class="label-text">GitHub / Package Token</span>
+          <input type="text" name="GITHUB_TOKEN" placeholder="ghp_… or pkg token"
+                 class="input input-bordered w-full" value="{{ existing.get('GITHUB_TOKEN', '') }}">
+          <span class="label-text-alt opacity-50">Issued by the subscription process. Saved as <code>GITHUB_TOKEN</code> (secret:github.token). This is the only platform token the agent needs.</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card bg-base-200 shadow-lg">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Auto-generated (no need to edit)</h2>
+        <p class="opacity-60 text-sm">These session/auth secrets are generated for you and saved to <code>.env</code>.</p>
+        <ul class="text-sm opacity-80 space-y-1 mt-2">
+          <li>• HERMES_SESSION_SECRET: <code>{{ generated.get('HERMES_SESSION_SECRET', '')[:12] }}…</code></li>
+          <li>• HERMES_ADMIN_PASSWORD: <code>{{ generated.get('HERMES_ADMIN_PASSWORD', '')[:12] }}…</code></li>
+          <li>• HERMES_AGENT_TOKEN: <code>{{ generated.get('HERMES_AGENT_TOKEN', '')[:12] }}…</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card bg-base-200 shadow-lg">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Cold-start guardrails (automatic)</h2>
+        <p class="opacity-60 text-sm">Your new account is constrained until it earns its way out
+          (≥{{ cold_start.get('exit_after_n_trades', 20) }} closed trades <b>and</b> positive expectancy).</p>
+        <ul class="text-sm opacity-80 space-y-1 mt-2">
+          <li>• Max <b>${{ "{:,}".format(cold_start.get('tier1_max_notional', 100)) }}</b> notional per trade</li>
+          <li>• Max <b>{{ "{:.1f}".format(cold_start.get('tier1_max_position_pct', 0.002) * 100) }}%</b> of equity per position</li>
+          <li>• ≤ <b>{{ cold_start.get('max_new_positions', 3) }}</b> concurrent new positions</li>
+          <li>• ≤ <b>{{ "{:.0f}".format(cold_start.get('max_new_exposure_pct', 0.05) * 100) }}%</b> total new exposure</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card-actions justify-end">
+      <button type="submit" class="btn btn-primary">Finish setup →</button>
+    </div>
+  </form>
+
+  <p class="text-center text-xs opacity-40 mt-6">
+    After setup this wizard is hidden — your homepage becomes Portfolio. Re-run anytime via <code>noble userguide</code>.
+  </p>
+</div>
+{% endblock %}

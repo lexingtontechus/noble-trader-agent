@@ -1,0 +1,8 @@
+# Paste UNDER the existing `mcp_servers:` key in ~/.hermes/config.yaml
+# (sibling of the `hyperliquid:` entry). Keep 2-space indent.
+  mt5:
+    command: bash
+    args:
+      - C:/Users/aloys/AppData/Local/hermes/profiles/noble-agent/noble-trader-agent/repo/bridges/mt4_mt5/mt5_mcp_wrapper.sh
+    timeout: 120
+    connect_timeout: 60

@@ -34,6 +34,8 @@ from hermes.db.migrate import get_duckdb_path, safe_duckdb_connect
 from hermes.ops.alerting import Alert, AlertManager, AlertSeverity
 from hermes.ops.dead_mans_switch import DeadMansSwitch
 from hermes.portfolio.autonomy_gate import AutonomyDecision, AutonomyGate
+from hermes.portfolio.selection import SelectionLayer
+from hermes.portfolio.pending_approvals import PendingApprovals
 from hermes.portfolio.cb_manager import CircuitBreakerManager
 from hermes.portfolio.circuit_breakers import (
     CircuitBreakerEvent,
@@ -105,6 +107,7 @@ class PortfolioRiskEngine:
             config_hash=self._config_hash,
         )
         autonomy_cfg = config.autonomy
+        cold_cfg = autonomy_cfg.get("cold_start", {}) or {}
         self._autonomy_gate = AutonomyGate(
             tier1_max_notional=autonomy_cfg.get("tier_1", {}).get("max_notional_usd", 5000),
             tier1_max_position_pct=autonomy_cfg.get("tier_1", {}).get(
@@ -120,7 +123,30 @@ class PortfolioRiskEngine:
             timezone_name=autonomy_cfg.get("active_hours", {}).get(
                 "timezone", "America/Los_Angeles"
             ),
+            cold_start_enabled=cold_cfg.get("enabled", False),
+            cold_start_tier1_notional=cold_cfg.get("tier1_max_notional", 100),
+            cold_start_tier1_pct=cold_cfg.get("tier1_max_position_pct", 0.002),
+            cold_start_max_new_positions=cold_cfg.get("max_new_positions", 3),
+            cold_start_max_new_exposure_pct=cold_cfg.get("max_new_exposure_pct", 0.05),
         )
+        # L4.5 Selection layer (GB)
+        sel_cfg = getattr(config.portfolio, "selection", {}) or {}
+        self._selection = SelectionLayer(
+            enabled=sel_cfg.get("enabled", True),
+            max_new_positions_per_cycle=sel_cfg.get("max_new_positions_per_cycle", 3),
+            cycle_window_sec=sel_cfg.get("cycle_window_sec", 300),
+            policy=sel_cfg.get("policy", "top_n"),
+            score_threshold=sel_cfg.get("score_threshold", 0.0),
+            score_weights=sel_cfg.get("score_weights"),
+            max_correlated_exposure=sel_cfg.get("max_correlated_exposure", 0.20),
+        )
+        # Cold-start exit tracking
+        self._cold_exit_n = cold_cfg.get("exit_after_n_trades", 20)
+        self._cold_exit_exp_bps = cold_cfg.get("exit_min_expectancy_bps", 0)
+        # GE — pending human-approval queue (DuckDB-backed).
+        # Decision deadline = autonomy.tier_3.approval_decision_ttl_sec (default 300s / 5 min).
+        approve_ttl_sec = autonomy_cfg.get("tier_3", {}).get("approval_decision_ttl_sec", 300)
+        self._pending = PendingApprovals(config, approval_timeout_seconds=approve_ttl_sec)
         self._snapshot_writer = SnapshotWriter(config, self._state)
 
         # Ops components
@@ -191,6 +217,48 @@ class PortfolioRiskEngine:
         """Re-anchor equity/drawdown baseline to live brokerage equity."""
         self._state.set_external_equity(total)
 
+    def _is_supported_venue(self, signal: BlendedSignal) -> bool:
+        """GD: a signal is tradeable only if its venue is an enabled, supported one.
+
+        Uses the same Venue enum that the execution adapters implement. A symbol
+        that resolves to no Venue (e.g. an exchange we don't support) cannot be
+        priced or executed, so it is rejected here — before autonomy/risk.
+        """
+        from hermes.schemas.market import Venue
+
+        venue = getattr(signal, "venue", None)
+        if not venue:
+            return False
+        venue_str = str(venue).lower()
+        # tradingview is a data source, not an executable venue
+        if venue_str == "tradingview":
+            return False
+        # Supported execution venues per our adapters
+        supported = {str(v.value).lower() for v in Venue.__members__.values()}
+        if venue_str not in supported:
+            return False
+        # Respect explicitly enabled venues from config (dict[str, VenueConfig])
+        venues_cfg = getattr(self._config, "venues", {}) or {}
+        if venues_cfg:
+            enabled_names = {str(k).lower() for k, v in venues_cfg.items() if getattr(v, "enabled", False)}
+            return venue_str in enabled_names
+        return True
+
+    def _check_cold_start_exit(self) -> None:
+        """GA exit: leave cold-start when count + positive expectancy both met."""
+        if not self._autonomy_gate.is_cold_start():
+            return
+        closed = self._state._stats.get("positions_closed", 0)
+        expectancy = self._state._realized_pnl  # cumulative realized PnL
+        if closed >= self._cold_exit_n and expectancy > (self._cold_exit_exp_bps / 10000.0):
+            self._autonomy_gate.set_cold_start_state(False)
+            log.info(
+                "cold_start_exited",
+                closed_trades=closed,
+                realized_pnl=round(expectancy, 2),
+                exit_min_expectancy_bps=self._cold_exit_exp_bps,
+            )
+
     async def evaluate_signal(
         self,
         signal: BlendedSignal,
@@ -208,14 +276,52 @@ class PortfolioRiskEngine:
         self._stats["signals_evaluated"] += 1
         self.heartbeat("evaluate_signal")
 
-        # 1. Autonomy gate classification
+        # Cheap state snapshot (needed by GD + GB + autonomy + cold-start)
         metrics = self._state.get_metrics()
+        # GA exit check (count + positive expectancy) — flips cold-start off when met
+        self._check_cold_start_exit()
+
+        # GD — Unsupported venue: reject at L5 before autonomy/risk (single chokepoint).
+        # A signal whose symbol has no supported Venue cannot be priced/executed.
+        if not self._is_supported_venue(signal):
+            self._stats["signals_rejected"] += 1
+            return RiskDecision(
+                signal_id=signal.signal_id,
+                approved=False,
+                requested_size_usd=signal.final_size_usd,
+                approved_size_usd=0.0,
+                limits_hit=["unsupported_venue"],
+                reason="rejected:unsupported_venue",
+                autonomy_tier=0,
+                config_hash=self._config_hash,
+            )
+
+        # GB — L4.5 selection layer: rank candidate, admit top-N per cycle.
+        # Excess candidates are DROPPED (not re-queued).
+        if signal.entry_strategy not in ("block", "skip_entry"):
+            admit, sel_reason = self._selection.evaluate(signal, equity=metrics.equity_total)
+            if not admit:
+                self._stats["signals_rejected"] += 1
+                return RiskDecision(
+                    signal_id=signal.signal_id,
+                    approved=False,
+                    requested_size_usd=signal.final_size_usd,
+                    approved_size_usd=0.0,
+                    limits_hit=[sel_reason],
+                    reason=f"rejected:{sel_reason}",
+                    autonomy_tier=0,
+                    config_hash=self._config_hash,
+                )
+
+        # 1. Autonomy gate classification (cold-start budget supplied)
         is_crypto = signal.venue == "hyperliquid"
         autonomy_decision = self._autonomy_gate.classify(
             action_type="enter_trade",
             notional_usd=signal.final_size_usd,
             equity=metrics.equity_total,
             is_crypto=is_crypto,
+            cs_new_positions=self._state._stats.get("positions_opened", 0),
+            cs_new_exposure=metrics.gross_exposure_usd,
         )
 
         # 2. Risk gate evaluation (legacy: 8 checks)
@@ -313,12 +419,67 @@ class PortfolioRiskEngine:
                         },
                     )
 
-        # 4. Override if autonomy requires human approval
+        # 4. Override if autonomy requires human approval (GE — queue, don't drop)
         if autonomy_decision.requires_human_approval and decision.approved:
             decision.approved = False
+            decision.requires_human_approval = True
+            decision.status = "pending"
             decision.limits_hit.append(f"autonomy_tier_{autonomy_decision.tier}_requires_human")
             decision.reason = f"autonomy_tier_{autonomy_decision.tier}:human_approval_required"
             decision.approved_size_usd = 0.0
+            # Persist to the pending-approval queue + alert the human via msg channel
+            try:
+                self._pending.store(
+                    decision,
+                    symbol=signal.symbol,
+                    venue=str(getattr(signal, "venue", "")),
+                    direction=signal.direction,
+                )
+                # Publish a tenant-scoped approval event so the platform (or any
+                # subscriber) can deliver it to the user without the agent needing
+                # third-party creds (Discord server ownership / Telegram bot+chat_id).
+                # The agent's in-app queue (DuckDB pending_decisions) is the default
+                # path; this event lets the *platform* relay it via the user's
+                # already-known contact (email/push from subscription).
+                if self._redis:
+                    import os
+
+                    tenant_id = os.environ.get("HERMES_TENANT_ID", "default")
+                    approval_event = {
+                        "decision_id": decision.decision_id,
+                        "signal_id": signal.signal_id,
+                        "symbol": signal.symbol,
+                        "venue": str(getattr(signal, "venue", "")),
+                        "direction": signal.direction,
+                        "requested_size_usd": decision.requested_size_usd,
+                        "autonomy_tier": autonomy_decision.tier,
+                        "status": "pending",
+                        "approve_action": f"noble approve {decision.decision_id}",
+                    }
+                    await self._redis.publish(
+                        f"risk.approval.{tenant_id}",
+                        json.dumps(approval_event, default=str),
+                    )
+                await self._send_alert(
+                    title=f"Approval required: {signal.direction.upper()} {signal.symbol}",
+                    message=(
+                        f"Decision {decision.decision_id} needs human approval "
+                        f"(tier {autonomy_decision.tier}).\n"
+                        f"Requested ${decision.requested_size_usd:,.0f} on {signal.symbol}.\n"
+                        f"Approve: `platform approve {decision.decision_id}`"
+                    ),
+                    severity=AlertSeverity.WARNING,
+                    data={
+                        "decision_id": decision.decision_id,
+                        "symbol": signal.symbol,
+                        "direction": signal.direction,
+                        "requested_size_usd": decision.requested_size_usd,
+                        "autonomy_tier": autonomy_decision.tier,
+                        "action": "approve",
+                    },
+                )
+            except Exception as e:
+                log.warning("pending_queue_write_failed", error=str(e))
 
         # 5. Update stats
         if decision.approved:
@@ -523,6 +684,23 @@ class PortfolioRiskEngine:
 
     def get_alert_manager(self) -> AlertManager:
         return self._alert_manager
+
+    def get_pending_approvals(self) -> "PendingApprovals":
+        return self._pending
+
+    async def approve_decision(self, decision_id: str) -> dict | None:
+        """GE — human approves a pending decision; re-publish to risk.decision.*.
+
+        Returns the approved payload (for L3 to pick up) or None if not pending.
+        """
+        payload = self._pending.approve(decision_id)
+        if payload is None:
+            return None
+        if self._redis:
+            channel = f"risk.decision.{payload['signal_id']}"
+            await self._redis.publish(channel, json.dumps(payload, default=str))
+            log.info("pending_decision_republished", decision_id=decision_id, channel=channel)
+        return payload
 
     def get_portfolio_state(self) -> PortfolioStateService:
         return self._state

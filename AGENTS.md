@@ -10,17 +10,28 @@ task.** It reflects the actual, verified state of the repo as of 2026-07-11.
 
 A quant hedge-fund-style trading stack that consumes **Noble Trader (NT)** entry
 signals from a Redis Stream, runs them through a market monitor + optimizer, and
-places trades on **Alpaca** (equities/fx/cmdty, paper) and **Hyperliquid**
-(perps, testnet). It is driven by the Hermes-agent `noble-trader-quant-hf-manager`
-skill and kept alive by a watchdog cron.
+places trades via the **MT4/MT5 bridge** (primary: an EA or `mt5_mcp` posts heartbeats
+to `bridge_relay.py` → `signal.raw.noble_trader`; Alpaca + Hyperliquid are **deprecated
+/ disabled** in `config/default.yaml`). Price data comes from the **TradingView API
+adapter** (WebSocket via JWT from `/api/token/generate`, REST fallback). It is driven by
+the Hermes-agent `noble-trader-quant-hf-manager` skill and kept alive by a watchdog cron.
 
 **Operating stance (from the user):**
 - The agent must **autonomously operate and self-manage** the stack: run the
   loops, keep the watchdog/cron alive, monitor brokerage-sync health, and **only
   escalate real anomalies** — not routine equity ticks or "still alive" pings.
 - **Live brokerage account snapshot is the source of truth** for equity/drawdown
-  — never outdated skill/docs. Drawdown is anchored to **real Alpaca+HL equity**
+  — never outdated skill/docs. Drawdown is anchored to **real MT4/MT5 (bridge) equity**
   (the `risk --sync-brokerage` path, default ON), not a static $100k.
+- **Hermes is the orchestrator.** The user operates in Hermes first (the `noble` CLI,
+  natural-language queries like "what's the market trend today"); the external platform
+  **web dashboard is a visual tool only, not an orchestration platform**. All
+  msg-delivery config (Telegram/Discord approval alerts) lives in Hermes
+  (wizard + `config/default.yaml → notifications.*`), delivered by Hermes. The external
+  website is only for subscription + credential copy. There are **two onboarding
+  processes**: (1) Platform (external site) — user subscribes, gets the Noble Trader
+  Redis URL + TradingView API key + MT4/MT5 bridge token; (2) Hermes (`/setup` wizard) —
+  user pastes those creds → `.env` + auto-migrate + cold-start.
 - User style: concise/casual, expects **verified live data**, wants real
   tool-execution evidence (not fabricated output).
 
@@ -33,7 +44,7 @@ The stack has **two decoupled ingestion paths**. Do not conflate them.
 | Process (loop) | Job | Data source |
 |---|---|---|
 | `ingest` | NT heartbeat bridge (L0) | Subscribes to `signal.raw.noble_trader` Redis **Stream** via `XREAD`/consumer group. Validates, dedupes, persists to DuckDB `signal_heartbeats`, re-publishes internally on `signal.raw.hermes.{symbol}`. **No venue WebSocket — it never sees a live price tick.** |
-| `monitor` | **Active market watcher (L2.8)** | Connects **directly to Alpaca + Hyperliquid WebSockets** via venue adapters. Feeds ticks/order books through `PriceMonitor` (`monitor/orchestrator.py`): TickAggregator → IndicatorEngine (ATR/EMA/RSI) → AnomalyDetector → StopWatcher → CrossPriceMonitor → FundingWatcher. Emits `PriceMonitorEvent`s to DuckDB + internal Redis. **Runs 24/7 regardless of NT.** |
+| `monitor` | **Active market watcher (L2.8)** | Connects to the **TradingView API adapter** (`tradingview_adapter.py`): WebSocket (JWT-minted from `/api/token/generate`) when a symbol is in an active window, REST batch/quote fallback otherwise. Feeds ticks/order books through `PriceMonitor` (`monitor/orchestrator.py`): TickAggregator → IndicatorEngine (ATR/EMA/RSI) → AnomalyDetector → StopWatcher → CrossPriceMonitor → FundingWatcher. Emits `PriceMonitorEvent`s to DuckDB + internal Redis. **Runs 24/7 regardless of NT.** (Alpaca/Hyperliquid venue adapters exist but are `enabled: false` — they are NOT the live data source.) |
 
 **Between incoming NT signals, the `monitor` loop is what watches the market.**
 NT provides *timing*; `monitor` provides *market state*. `ingest` is just the NT
@@ -54,12 +65,25 @@ the child is the actual worker):
 | Loop | Launch command (from watchdog `LOOPS` map) |
 |---|---|
 | `dashboard` | `-m hermes.app dashboard --host 127.0.0.1 --port 8080` |
-| `monitor` | `-m hermes.app monitor` |
-| `synthesize` | `-m hermes.app synthesize` |
-| `risk` | `-m hermes.app risk --equity 108000 --sync-brokerage` |
-| `execute` | `-m hermes.app execute --equity 108000 --paper` |
-| `ingest` | `-m hermes.app ingest` |
-| `_watch_optimize` | `scripts/_watch_optimize.py` (optimizer watcher) |
+| `monitor` | `-m hermes.app monitor` | **Data source is the TradingView API adapter** (WS+REST), NOT Alpaca/HL (those venues are disabled). |
+| `synthesize` | `-m hermes.app synthesize` | |
+| `risk` | `-m hermes.app risk --equity 108000 --sync-brokerage` | `--sync-brokerage` anchors equity to **real MT4/MT5 bridge** equity. |
+| `execute` | `-m hermes.app execute --equity 108000 --paper` | Paper by default; live execution gated. |
+| `ingest` | `-m hermes.app ingest` | |
+| `_watch_optimize` | `scripts/_watch_optimize.py` (optimizer watcher) | |
+
+**First-run / operation entry points (Hermes-owned):**
+- **Onboarding wizard:** `hermes.app platform setup` serves the daisyUI `/setup`
+  wizard (or `--print-url` headless). The wizard writes `.env`, auto-generates the
+  three auth secrets, auto-migrates DuckDB, and enters **cold-start**. `platform init`
+  detects an incomplete setup and prints the wizard command. `noble userguide` opens
+  the onboarding guide.
+- **Approval queue (tier-3 human approval):** queued decisions land in DuckDB
+  `pending_decisions`. Surfaces: dashboard **`/approvals`** (Approve button →
+  `POST /api/approvals/{id}/approve`) and `noble pending` / `noble approve`. On queue,
+  `AlertManager` also pushes to the user's configured **Telegram/Discord** channels
+  (configured in the wizard / `config.default.yaml → notifications.*`). Hermes owns
+  delivery — the external dashboard is visual only.
 
 Plus **Redis** (local bus, required by 5/6 loops) launched detached + PID-guarded.
 
@@ -128,6 +152,19 @@ restart/verify via its job id — do not recreate unless the config is wrong.
   still excludes `src/hermes/web/*` from detect-secrets — keep that exclusion
   (the UI is part of the shipped code, not user-owned WIP).
 - Secrets are redacted in logs/tests/payloads. Never print raw credentials.
+
+### Distribution & multi-tenant (current model)
+- The agent ships as a **Hermes profile** (`noble-agent/.../noble-trader-agent/`) plus
+  this repo. Each tenant = own Hermes agent (own DB, own Redis, own approval queue) +
+  own MT4/MT5 server + own TradingView API key. Tenant config lives in `.env` / local
+  DuckDB — **never in the repo**.
+- **Packaging (intended):** the subscription process issues a single **Git/pkg token**
+  (saved as `GITHUB_TOKEN` / `secret:github.token`). It authenticates package
+  install/pull, `noble bug` Issue filing, and serves as the entitlement. Install is a
+  token-scoped `pip install --index-url ... --token <GIT_TOKEN> noble-trader-agent==VER`
+  (or a signed bootstrap) — **not a raw repo clone**. The Git token *is* the license.
+  `src/hermes/core/entitlement.py` checks it (offline at startup; live via `noble
+  entitlement`). No tiers, no separate license key. See `docs/deployment_design.md`.
 
 ### Known source fixes applied (so you don't "rediscover" them)
 - `security_monitor.py:1090` was `error=str(e"` (unterminated string) — made the
