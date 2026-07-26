@@ -149,10 +149,42 @@ venues:
 upstream:
   noble_trader:
     redis:
-      url: secret:noble_trader.redis_url
+      # Signal ingestion reads from the PROXY's Redis (the same Railway Redis the
+      # backend + proxy use), NOT Upstash. The proxy re-publishes qualified
+      # signals to `signal.proxy.noble_trader`; the agent consumes that stream.
+      # The proxy Redis URL is the Railway public endpoint (sakura.proxy.rlwy.net:36624,
+      # non-TLS). Credentials = the Railway Redis `default` user (see Railway
+      # REDIS_URL / REDIS_PASSWORD). Pasted into .env as NOBLE_TRADER_PROXY_REDIS_URL.
+      url: secret:noble_trader.proxy_redis_url
       channel: signal.raw.noble_trader
-      consumer_group: hermes-l0
+      # Signal ingestion source. The proxy is the SOLE gateway — the agent
+      # reads ONLY the proxy re-published stream (proxy_channel). There is NO
+      # fallback to `channel` (signal.raw.noble_trader); that stream is the
+      # backend->proxy transport, not an agent endpoint. If the proxy stream is
+      # absent, ingestion fails loudly and proxy_liveness escalates CRITICAL.
+      signal_source: proxy
+      # Stream the proxy re-publishes qualified signals to (requires the proxy
+      # deployed with REDIS_FANOUT_URL set). The agent's only signal source.
+      proxy_channel: signal.proxy.noble_trader
+      consumer_group: noble-1
       staleness_ms: 30000
+      # ── Agent liveness monitors (see AGENTS.md §2) ──────────────────────
+      # WARNING if the agent receives NO qualified signal for this many seconds
+      # (default 4h). Far above the backend's 60-min per-(symbol,direction)
+      # cooldown, so quiet markets don't false-fire.
+      signal_drought_alert_sec: 14400
+      # CRITICAL if no proxy delivery heartbeat (proxy_delivery_log) in this
+      # many seconds (default 480s = 300s heartbeat + 180s buffer).
+      proxy_heartbeat_timeout_sec: 480
+      # CRITICAL if no frame from the proxy /sse/alerts stream in this many
+      # seconds (default 90s ~ 3x the 30s SSE heartbeat). Pricing pipeline.
+      sse_liveness_timeout_sec: 90
+      # Supabase table the proxy writes delivery heartbeats + signal receipts to.
+      proxy_delivery_table: proxy_delivery_log
+      # Backend signal cooldown (mirror of orchestrator SIGNAL_COOLDOWN_MINUTES=60).
+      # Used for documentation/consistency; the authoritative value lives in the
+      # backend. Per-(symbol,direction) min spacing between published signals.
+      signal_cooldown_minutes: 60
     supabase:
       url: secret:supabase.url
       anon_key: secret:supabase.anon_key
@@ -160,6 +192,42 @@ upstream:
       regime_log_table: nt_regime_log
       backfill_on_startup: true
       backfill_lookback_days: 365
+      # nt_symbol table is the canonical symbol universe (managed by the
+      # LightningAI sweep orchestrator). The agent consults it to:
+      #   1. Validate that a symbol the user wants to add is curated for
+      #      their plan (nt_symbol.plan_ids @> ARRAY[<plan_uuid>]::uuid[])
+      #   2. Resolve venue + asset_class for a symbol without needing the
+      #      user to specify them manually
+      nt_symbol_table: nt_symbol
+      # Cache TTL for nt_symbol lookups (seconds). The universe changes rarely.
+      nt_symbol_cache_ttl_sec: 300
+    # License key issued by the nobletradingapp subscription flow.
+    # Used to authenticate against the noble-trader-proxy's /quotes endpoint.
+    # Format: ss_<32hex> (Signal Scout) or pp_<32hex> (Precision Pro).
+    # The license key is hashed (SHA-256) and stored in license_keys.key_hash
+    # in Supabase; the proxy validates it via the license-validate Edge Function.
+    license_key: secret:noble_trader.license_key
+    # noble-trader-proxy — read-only quote cache deployed on Railway.
+    # The agent polls /quotes for cached signal snapshots instead of (or in
+    # addition to) calling TVDA directly. This decouples the agent from
+    # TradingView API rate limits and gives plan-filtered access.
+    quote_proxy:
+      url: secret:noble_trader.quote_proxy_url
+      # HTTP timeout for /quotes calls. The proxy responds from in-memory cache
+      # (no Redis on request path), so this should be fast.
+      timeout_sec: 5
+      # When true, the agent falls back to TVDA direct calls if the proxy is
+      # unreachable or returns 5xx. When false, the agent treats proxy
+      # unavailability as a hard failure (safer for paid-product gating).
+      fallback_to_tvda: false
+      # Polling cadence per urgency tier (seconds). MUST match the proxy's
+      # HOT/WARM/COLD TTLs so the agent doesn't poll faster than the proxy
+      # can refresh. Mismatches cause redundant calls.
+      poll_intervals:
+        hot: 5      # symbol has a fresh signal (< 5s old)
+        warm: 15    # signal 5-15s old
+        cold: 60    # signal 15-60s old
+        stale: 300  # signal older than COLD_TTL — poll less aggressively
 data_sources:
   policy: venue_native_only
   prohibited_sources:
@@ -217,6 +285,22 @@ position_management:
     method: brick_boundary
     atr_mult: 3.0
     brick_count: 1
+  # ── HIGH #7 (2026-07-22): decision_tree thresholds are now fully
+  # configurable. All 11 HermesDecisionTree.__init__ params map 1:1
+  # to keys here. See hermes/agent/decision_tree.py:97-115.
+  decision_tree:
+    stop_loss_pct: -0.01               # -1% hard stop
+    take_profit_pct: 0.025             # +2.5% native TP (no-signal path)
+    early_profit_pct: 0.045            # +4.5% agent early TP
+    fading_brick_count: 2              # 2+ adverse bricks = fading
+    strong_conviction_threshold: 0.7   # conviction >= 0.7 = strong
+    trail_stop_activation_pct: 0.01    # start trailing at +1%
+    # ── v5 (Phase C): Markov-persistence adaptive thresholds ──
+    markov_persistence_high: 0.7       # > this → trending
+    markov_persistence_low: 0.55       # < this → mean-reverting
+    trending_tp_multiplier: 1.5        # early_tp × 1.5 in trending
+    mean_reverting_tp_multiplier: 0.7  # early_tp × 0.7 in MR
+    trending_fading_bricks_delta: 1    # +1 adverse brick tolerance in trending
   exit:
     strategy: at_tp
     brick_momentum_threshold: 0.5
@@ -497,7 +581,6 @@ autonomy:
     max_new_exposure_pct: 0.05        # total new exposure <= 5% of equity
     exit_after_n_trades: 20           # leave cold-start after N closed trades
     exit_min_expectancy_bps: 0        # AND realized expectancy > 0 (positive)
-portfolio:
   # L4.5 selection layer: ranks candidate signals per cycle, admits top-N.
   # Excess candidates are DROPPED (not re-queued) — over-trading is a risk.
   selection:
