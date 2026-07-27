@@ -99,10 +99,16 @@ class SignalSynthesizer:
         self,
         config: HermesConfig,
         price_monitor=None,  # PriceMonitor from Phase 2 (for live market data)
+        microstructure_source=None,  # MicrostructureSSEConsumer (HIGH #9, audit 2026-07-22)
     ) -> None:
         self._config = config
         self._db_path = get_duckdb_path(config)
         self._monitor = price_monitor
+        # HIGH #9 (2026-07-22): optional SSE consumer for p_microstructure.
+        # When None, p_microstructure is None in classify() and the
+        # MetaRegimeClassifier runs without microstructure input (degraded
+        # but functional — preserves pre-HIGH-#9 behavior).
+        self._microstructure_source = microstructure_source
 
         # Sub-components
         self._meta_regime = MetaRegimeClassifier(

@@ -185,6 +185,11 @@ upstream:
       # Used for documentation/consistency; the authoritative value lives in the
       # backend. Per-(symbol,direction) min spacing between published signals.
       signal_cooldown_minutes: 60
+    # Plan prefix for the proxy's /sse/alerts X-Plan-Prefix header.
+    # pp=Precision Pro (set via env NOBLE_TRADER_PLAN_PREFIX; the agent's proxy
+    # Redis uses the Railway `default` admin user, which has no <prefix>-sub-<hex>
+    # form to derive it). Leave blank placeholder; env wins at runtime.
+    plan_prefix: <SET_PLAN_PREFIX>   # ps or pp
     supabase:
       url: secret:supabase.url
       anon_key: secret:supabase.anon_key
@@ -212,7 +217,7 @@ upstream:
     # addition to) calling TVDA directly. This decouples the agent from
     # TradingView API rate limits and gives plan-filtered access.
     quote_proxy:
-      url: secret:noble_trader.quote_proxy_url
+      url: https://noble-trader-proxy-production.up.railway.app
       # HTTP timeout for /quotes calls. The proxy responds from in-memory cache
       # (no Redis on request path), so this should be fast.
       timeout_sec: 5

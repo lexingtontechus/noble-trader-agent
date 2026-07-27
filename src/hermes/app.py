@@ -1697,10 +1697,19 @@ def synthesize(ctx: click.Context, symbols: str, equity: float) -> None:
     from hermes.signals.synthesizer import SignalSynthesizer
     from hermes.transport.heartbeat_writer import HeartbeatWriter
     from hermes.transport.redis_subscriber import HeartbeatSubscriber
+    from hermes.transport.sse_consumer import MicrostructureSSEConsumer
 
     async def run():
+        # HIGH #9 (2026-07-22): start the microstructure SSE consumer in
+        # parallel with the synthesizer. It feeds p_microstructure values
+        # from the proxy's /sse/alerts stream into the MetaRegimeClassifier
+        # via the synthesizer's microstructure_source. Degrades gracefully
+        # (logs warning) if the proxy is unreachable / plan prefix missing.
+        sse_consumer = MicrostructureSSEConsumer(config, symbols=symbol_list)
+        await sse_consumer.start()
+
         # Initialize synthesizer
-        synthesizer = SignalSynthesizer(config)
+        synthesizer = SignalSynthesizer(config, microstructure_source=sse_consumer)
         await synthesizer.start()
 
         # We need to consume heartbeats from the internal Redis channel
@@ -1830,6 +1839,7 @@ def synthesize(ctx: click.Context, symbols: str, equity: float) -> None:
         await pubsub.unsubscribe(*channels)
         await redis_client.close()
         await synthesizer.stop()
+        await sse_consumer.stop()
 
     try:
         asyncio.run(run())

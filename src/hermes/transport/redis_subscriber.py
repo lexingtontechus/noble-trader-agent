@@ -82,7 +82,11 @@ class HeartbeatSubscriber:
     ) -> None:
         nt_config = config.upstream.get("noble_trader", {}).get("redis", {})
         self._redis_url = redis_url or nt_config.get("url", "")
-        self._channel = channel or nt_config.get("channel", "signal.raw.noble_trader")
+        self._channel = (
+            channel
+            or nt_config.get("proxy_channel")
+            or nt_config.get("channel", "signal.raw.noble_trader")
+        )
         self._consumer_group = consumer_group or nt_config.get(
             "consumer_group", "hermes-l0"
         )
