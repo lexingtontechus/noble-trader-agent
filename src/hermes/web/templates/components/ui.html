@@ -11,18 +11,47 @@ Usage in templates:
 
 
 {# Card component
-   Usage (call block): {% call card(title="Title") %}content{% endcall %}
+   Usage (call block): {% call card(title="Title", extra="metadata row") %}content{% endcall %}
    Usage (body arg):    {{ card(title="Title", body="Content", extra_class="bg-base-200") }}
+
+   `extra` (optional) — small metadata row between title and body, rendered as
+   text-xs opacity-50 flex justify-between. Mirrors the deprecated dashboard's
+   Card.tsx `extra` prop (see .archive/dashboard-2026-07-16/src/components/layout/Card.tsx).
 #}
-{% macro card(title="", body="", extra_class="", id="") %}
+{% macro card(title="", body="", extra_class="", id="", extra="") %}
 <div class="card bg-base-200 shadow-xl mb-4 {{ extra_class }}" {% if id %}id="{{ id }}"{% endif %}>
     <div class="card-body">
         {% if title %}
         <h2 class="card-title text-lg font-semibold">{{ title }}</h2>
         <div class="divider my-1"></div>
         {% endif %}
+        {% if extra %}<div class="text-xs opacity-50 mb-2 flex justify-between items-center">{{ extra }}</div>{% endif %}
         {% if caller %}{{ caller() }}{% else %}{{ body|safe }}{% endif %}
     </div>
+</div>
+{% endmacro %}
+
+
+{# Page header — uniform title + subtitle + refresh-note + actions row.
+   Used at the top of every content page so all templates share one header
+   pattern (replaces ad-hoc <h1> + <p> blocks scattered across templates).
+
+   Usage:
+     {{ page_header(title="Portfolio", subtitle="3 open positions · $104k equity",
+                    refresh=10) }}
+     {{ page_header(title="Market Overview", subtitle="20 active symbols",
+                    refresh=30, actions='<a class="btn btn-ghost btn-sm" href="/api/market/overview">JSON</a>') }}
+#}
+{% macro page_header(title, subtitle=None, refresh=None, actions=None) %}
+<div class="flex items-start justify-between mb-4 gap-3 flex-wrap">
+  <div>
+    <h1 class="text-2xl font-bold">{{ title }}</h1>
+    {% if subtitle %}<p class="text-xs opacity-60 mt-1">{{ subtitle }}</p>{% endif %}
+  </div>
+  <div class="flex items-center gap-2 shrink-0">
+    {% if actions %}{{ actions | safe }}{% endif %}
+    {% if refresh %}{{ refresh_note(refresh) }}{% endif %}
+  </div>
 </div>
 {% endmacro %}
 
@@ -139,12 +168,24 @@ Usage in templates:
 {% endmacro %}
 
 
-{# Stat grid — renders N stat cards in a responsive grid #}
-{% macro stat_grid(stats) %}
-<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+{# Stat grid — renders N stat cards in a responsive grid.
+
+   `columns` (default 4) — responsive column count. Accepts 2, 3, 4, or 6.
+     Mirrors the deprecated dashboard's StatsGrid.tsx (which supported 2/3/4/6).
+   `size` (default "text-2xl") — Tailwind text size for each stat value.
+     Use "text-xl" for compact (6-col), "text-2xl" for normal (4-col),
+     "text-3xl" for headline (2-col).
+
+   Usage:
+     {{ stat_grid(stats, columns=6, size="text-xl") }}
+     {{ stat_grid(stats) }}  # default: 4 cols, text-2xl
+#}
+{% macro stat_grid(stats, columns=4, size="text-2xl") %}
+{% set col_map = {2: "grid-cols-1 md:grid-cols-2", 3: "grid-cols-2 md:grid-cols-3", 4: "grid-cols-2 md:grid-cols-3 lg:grid-cols-4", 6: "grid-cols-2 md:grid-cols-3 lg:grid-cols-6"} %}
+<div class="grid {{ col_map[columns] or col_map[4] }} gap-2">
     {% for stat in stats %}
     <div class="stat bg-base-200 rounded-box shadow">
-        <div class="stat-value text-2xl text-{{ stat.color or 'primary' }}">{{ stat.value }}</div>
+        <div class="stat-value {{ size }} text-{{ stat.color or 'primary' }}">{{ stat.value }}</div>
         <div class="stat-desc text-xs uppercase tracking-wide opacity-60">{{ stat.label }}</div>
     </div>
     {% endfor %}
@@ -224,5 +265,368 @@ Usage in templates:
 {% macro pagination_note(total_shown, total) %}
 <div class="text-xs opacity-50 text-center mt-2">
     Showing {{ total_shown }} of {{ total }} items
+</div>
+{% endmacro %}
+
+
+{# ===========================================================================
+   Dashboard upgrade macros (M2, M3) — see DASHBOARD-UPGRADE-SCOPING.md §8 + §9.2.
+
+   regime_strip  : one-row horizontal chip strip, top of every market page.
+   symbol_card   : compact card for the /market 20-symbol grid.
+   regime_color  : substring-match color helper used by both macros above.
+   =========================================================================== #}
+
+
+{# Regime color helper — substring match on lowercased regime label.
+   Returns one of: success | error | warning | ghost
+   Mirrors the matplotlib regime_color() in charts/_theme.py. #}
+{% macro regime_color_class(regime) %}
+{% set rl = (regime or '') | lower %}
+{% if 'bull' in rl or 'calm_trend' in rl or 'up' in rl %}success
+{% elif 'bear' in rl or 'risk_off' in rl or 'funding_stress' in rl or 'down' in rl %}error
+{% elif 'neutral' in rl or 'flat' in rl or 'choppy' in rl or 'transition' in rl or 'high_vol' in rl or 'liquidity_drained' in rl %}warning
+{% else %}ghost{% endif %}
+{% endmacro %}
+
+
+{# Last-brick direction arrow — derived from markov_current_state ('UP'/'DOWN'/'FLAT')
+   which is the closest per-heartbeat analog to "last brick direction".
+   'up' → green ▲, 'down' → red ▼, anything else → gray —. #}
+{% macro brick_arrow(markov_state) %}
+{% set s = (markov_state or '') | upper %}
+{% if s == 'UP' %}<span class="text-success text-xs" title="last brick up">▲</span>
+{% elif s == 'DOWN' %}<span class="text-error text-xs" title="last brick down">▼</span>
+{% else %}<span class="text-base-content/40 text-xs" title="flat / unknown">—</span>{% endif %}
+{% endmacro %}
+
+
+{# Effective Kelly badge — 0..1 fraction shown as small colored pill.
+
+   TUNED THRESHOLDS (2026-07-22) — aligned to the actual production
+   effective_kelly distribution, NOT a guess:
+     - MVP / starter recommended value: 0.01–0.02 (docs/mt4_mt5_bridge_spec.md:170)
+     - Typical kelly_f (pre-cap) range:  0.039–0.10 (docs/roadmap.md:1647)
+     - Standard test fixture:            0.10–0.12 (tests/test_phase3.py:36)
+     - "Large kelly" stress test:        0.50      (tests/test_phase3.py:541)
+
+   Tier         | Range                | Color    | Meaning
+   -------------|----------------------|----------|-----------------------------------
+   None         | kelly is None        | ghost    | not available (no heartbeat)
+   Zero         | kelly == 0           | error    | kill switch (meta_regime blocks)
+   Minimal      | 0 < k < 0.02         | warning  | minimal / testing — verify intent
+   Conservative | 0.02 ≤ k < 0.05      | info     | starter / small position
+   Standard     | 0.05 ≤ k < 0.15      | success  | typical production range
+   Aggressive   | 0.15 ≤ k < 0.25      | warning  | above typical — attention
+   Very aggr.   | k ≥ 0.25             | error    | review for safety (rare in prod)
+
+   PRIOR THRESHOLDS (replaced): >=0.25 success, 0.10–0.25 warning, <0.10 error.
+   Those made a normal 0.02 MVP signal render as red "defensive" and a standard
+   0.10 fixture render as yellow "reduced" — backwards vs. real production.
+
+   UPDATE (2026-07-22 v2) — three enhancements added:
+   1. Delta indicator (▲/▼/—): when `delta` arg is provided (positive/negative
+      number representing the change since the previous heartbeat), an arrow
+      is prepended. None or 0 delta → no arrow. Threshold: |delta| ≥ 0.005
+      (0.5pp) to avoid noise from rounding.
+   2. Pulse animation: when `live=True` (signal is from a fresh heartbeat
+      within the last 60s), the badge gets the `kelly-pulse` CSS class —
+      a subtle 1.5s opacity pulse so live badges stand out from cached ones.
+   3. Adaptive precision: minimal/conservative tier (k<0.05) shows 3 decimals
+      (k=0.020 vs k=0.025 are meaningfully different); other tiers show 2
+      decimals (k=0.10 vs k=0.12 are close enough that 2 decimals suffices).
+#}
+{% macro kelly_badge(kelly, delta=None, live=False) %}
+{% if kelly is none %}
+<span class="badge badge-ghost badge-xs{% if live %} kelly-pulse{% endif %}" title="effective_kelly not available">k=—</span>
+{% elif kelly == 0 %}
+<span class="badge badge-error badge-xs{% if live %} kelly-pulse{% endif %}" title="kill switch (meta_regime blocks sizing)">k=0</span>
+{% elif kelly < 0.02 %}
+{% set _prec = '%.3f' | format(kelly) %}<span class="badge badge-warning badge-xs{% if live %} kelly-pulse{% endif %}" title="minimal / testing — verify intentional">{{ kelly_delta_glyph(delta) }}k={{ _prec }}</span>
+{% elif kelly < 0.05 %}
+{% set _prec = '%.3f' | format(kelly) %}<span class="badge badge-info badge-xs{% if live %} kelly-pulse{% endif %}" title="conservative — starter / small position">{{ kelly_delta_glyph(delta) }}k={{ _prec }}</span>
+{% elif kelly < 0.15 %}
+<span class="badge badge-success badge-xs{% if live %} kelly-pulse{% endif %}" title="standard — typical production range">{{ kelly_delta_glyph(delta) }}k={{ '%.2f' | format(kelly) }}</span>
+{% elif kelly < 0.25 %}
+<span class="badge badge-warning badge-xs{% if live %} kelly-pulse{% endif %}" title="aggressive — above typical, attention">{{ kelly_delta_glyph(delta) }}k={{ '%.2f' | format(kelly) }}</span>
+{% else %}
+<span class="badge badge-error badge-xs{% if live %} kelly-pulse{% endif %}" title="very aggressive — review for safety">{{ kelly_delta_glyph(delta) }}k={{ '%.2f' | format(kelly) }}</span>
+{% endif %}
+{% endmacro %}
+
+
+{# Kelly delta glyph — small arrow indicating change direction since prior heartbeat.
+   Used by kelly_badge. Returns empty string for None/zero/insignificant delta.
+   Threshold: |delta| ≥ 0.005 (0.5pp) to filter rounding noise. #}
+{% macro kelly_delta_glyph(delta) %}
+{%- if delta is none or delta == 0 -%}
+{%- elif delta >= 0.005 -%}<span class="opacity-70">▲</span>
+{%- elif delta <= -0.005 -%}<span class="opacity-70">▼</span>
+{%- endif -%}
+{% endmacro %}
+
+
+{# ===========================================================================
+   Interactive Decision Tree Viz (UX-UNIFORMITY-2 — DecisionTreeViz port)
+
+   Pure CSS/Jinja2 port of the deprecated dashboard's DecisionTreeViz.tsx
+   React component (archived at .archive/dashboard-2026-07-16/src/components/
+   charts/DecisionTreeViz.tsx). Uses <details>/<summary> for click-to-collapse
+   behavior — no JS dependency. Color tiers mirror the original colorMap:
+     error / success / warning / info / primary / neutral
+
+   Expected input: tree node dict with keys
+     { id, label, question?, thresholds?, branches?, color?, icon?, action? }
+   `branches` is a dict {branch_key: child_node}.
+
+   Recursive: invokes itself for each child branch. Uses depth to auto-collapse
+   nodes deeper than depth=1 (matches deprecated behavior at TreeNode.tsx:34).
+
+   Usage:
+     {% from "components/ui.html" import decision_tree_viz %}
+     {{ decision_tree_viz(tree_root, depth=0) }}
+   =========================================================================== #}
+{% macro decision_tree_viz(node, depth=0, branch_key=None) %}
+<div class="dtree-node flex flex-col items-center">
+  {% set branches = node.branches if (node.branches is mapping) else {} %}
+  {% set has_branches = branches | length > 0 %}
+  {% set color_class = 'dtree-color-' ~ (node.color or 'neutral') %}
+
+  {% if has_branches and depth > 1 %}
+  {# Collapsed by default at depth > 1 (mirrors deprecated TreeNode.tsx:34) #}
+  <details class="dtree-collapse">
+    <summary class="flex flex-col items-center">
+      <span class="dtree-node-button has-branches {{ color_class }}">
+        {% if node.icon %}<span class="text-base mr-1">{{ node.icon }}</span>{% endif %}
+        <span class="font-semibold text-sm">{{ node.label }}</span>
+        <span class="dtree-toggle">
+          <span class="dtree-toggle-closed">▸ expand</span>
+          <span class="dtree-toggle-open">▾ collapse</span>
+        </span>
+      </span>
+      {% if node.question %}<div class="text-xs opacity-70 mt-1">{{ node.question }}</div>{% endif %}
+      {% if node.thresholds and node.thresholds | length > 0 %}
+      <div class="text-xs font-mono opacity-60 mt-1">
+        {% for k, v in node.thresholds.items() %}<span class="mr-2">{{ k }}={{ v }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </summary>
+    <div class="dtree-connector"></div>
+    <div class="dtree-branches">
+      {% for bk, child in branches.items() %}
+      <div class="dtree-branch">
+        <div class="dtree-branch-label">{{ bk }}</div>
+        {{ decision_tree_viz(child, depth=depth+1, branch_key=bk) }}
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% else %}
+  {# Always-visible node (root, depth ≤ 1, or leaf) #}
+  <span class="dtree-node-button {{ color_class }}{% if has_branches %} has-branches{% endif %}">
+    {% if node.icon %}<span class="text-base mr-1">{{ node.icon }}</span>{% endif %}
+    <span class="font-semibold text-sm">{{ node.label }}</span>
+  </span>
+  {% if node.question %}<div class="text-xs opacity-70 mt-1">{{ node.question }}</div>{% endif %}
+  {% if node.thresholds and node.thresholds | length > 0 %}
+  <div class="text-xs font-mono opacity-60 mt-1">
+    {% for k, v in node.thresholds.items() %}<span class="mr-2">{{ k }}={{ v }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if has_branches %}
+  <div class="dtree-connector"></div>
+  <div class="dtree-branches">
+    {% for bk, child in branches.items() %}
+    <div class="dtree-branch">
+      <div class="dtree-branch-label">{{ bk }}</div>
+      {{ decision_tree_viz(child, depth=depth+1, branch_key=bk) }}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# Kelly badge legend — reusable legend block explaining the 7 kelly tiers.
+   Use wherever kelly_badge is shown so users have on-page context.
+
+   Usage:
+     {% from "components/ui.html" import kelly_legend %}
+     {{ kelly_legend() }}
+#}
+{% macro kelly_legend() %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+  <div>
+    <div class="font-semibold mb-1">Kelly Badge (effective_kelly)</div>
+    <ul class="space-y-0.5">
+      <li><span class="badge badge-ghost badge-xs">k=—</span> — not available</li>
+      <li><span class="badge badge-error badge-xs">k=0</span> — kill switch (meta_regime blocks)</li>
+      <li><span class="badge badge-warning badge-xs">k&lt;0.02</span> — minimal / testing</li>
+      <li><span class="badge badge-info badge-xs">k 0.02–0.05</span> — conservative (starter)</li>
+    </ul>
+  </div>
+  <div>
+    <div class="font-semibold mb-1">&nbsp;</div>
+    <ul class="space-y-0.5">
+      <li><span class="badge badge-success badge-xs">k 0.05–0.15</span> — standard (typical prod)</li>
+      <li><span class="badge badge-warning badge-xs">k 0.15–0.25</span> — aggressive</li>
+      <li><span class="badge badge-error badge-xs">k≥0.25</span> — very aggressive (review)</li>
+    </ul>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# Regime strip — one-row horizontal chip strip showing every active symbol
+   at a glance. Clicking a chip drills down to /market/{symbol}.
+
+   Expected input: strip_data = list of dicts with keys
+     { symbol, regime, signal, markov_current_state, effective_kelly,
+       regime_conf, ts_received }
+
+   Usage (in any page template):
+     {% from "components/ui.html" import regime_strip %}
+     {% block content %}
+     {{ regime_strip(strip_data) }}
+     ...
+     {% endblock %}
+#}
+{% macro regime_strip(strip_data) %}
+{% if strip_data %}
+<div class="w-full mb-4 px-2 py-2 bg-base-200/60 rounded-box border border-base-300">
+  <div class="flex flex-wrap gap-1.5 items-center">
+    <div class="text-xs text-base-content/50 font-semibold uppercase tracking-wider mr-2 shrink-0">
+      Market Regime
+    </div>
+    {% for s in strip_data %}
+    <a href="/market/{{ s.symbol | urlencode }}"
+       class="flex items-center gap-1 px-2 py-0.5 rounded-md bg-base-300/70 hover:bg-base-300 transition-colors group"
+       title="{{ s.symbol }} · regime={{ s.regime or '—' }} · kelly={{ s.effective_kelly or '—' }}">
+      <span class="text-xs font-mono font-semibold group-hover:text-primary">{{ s.symbol }}</span>
+      {{ brick_arrow(s.markov_current_state) }}
+      {% if s.regime %}
+      <span class="badge badge-{{ regime_color_class(s.regime) }} badge-xs">{{ s.regime | truncate(14, true, '…') }}</span>
+      {% else %}
+      <span class="badge badge-ghost badge-xs">no signal</span>
+      {% endif %}
+      {{ kelly_badge(s.effective_kelly) }}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
+
+
+{# Symbol card — compact card for the /market 20-symbol grid.
+
+   Each card shows: symbol name, asset class badge, last price (or 'no data'),
+   regime badge, kelly badge, signal direction, EV/$, regime_confidence bar,
+   "View detail →" link.
+
+   Expected input: a single dict s with keys (all optional except `symbol`):
+     symbol, asset_class, venue, signal, regime, regime_conf, regime_shift,
+     entry_price, brick_size, kelly_f, effective_kelly, ev_per_dollar, p_win,
+     markov_current_state, ts_received, p_regime, p_markov, p_timesfm, p_pattern
+
+   Usage:
+     {% from "components/ui.html" import symbol_card %}
+     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+       {% for s in symbols_data %}{{ symbol_card(s) }}{% endfor %}
+     </div>
+#}
+{% macro symbol_card(s) %}
+<div class="card bg-base-200 shadow-md hover:shadow-xl transition-shadow border border-base-300">
+  <div class="card-body p-3 gap-2">
+    {# Header row: symbol + asset class + last-brick arrow #}
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <a href="/market/{{ s.symbol | urlencode }}" class="text-base font-mono font-bold hover:text-primary">
+          {{ s.symbol }}
+        </a>
+        {{ brick_arrow(s.markov_current_state) }}
+      </div>
+      <div class="flex items-center gap-1">
+        {% if s.asset_class %}<span class="badge badge-ghost badge-xs">{{ s.asset_class }}</span>{% endif %}
+        {% if s.signal == 'buy' %}<span class="badge badge-success badge-xs">BUY</span>
+        {% elif s.signal == 'sell' %}<span class="badge badge-error badge-xs">SELL</span>
+        {% elif s.signal %}<span class="badge badge-ghost badge-xs">{{ s.signal | upper }}</span>{% endif %}
+      </div>
+    </div>
+
+    {% if s.entry_price %}
+    {# Price + regime row #}
+    <div class="flex items-center justify-between text-sm">
+      <div>
+        <span class="text-base-content/60 text-xs">px</span>
+        <span class="font-mono">{{ '$%.4f' | format(s.entry_price) if s.entry_price < 1 else '$%.2f' | format(s.entry_price) }}</span>
+      </div>
+      {% if s.regime %}
+      <span class="badge badge-{{ regime_color_class(s.regime) }} badge-sm">{{ s.regime | truncate(20, true, '…') }}</span>
+      {% else %}
+      <span class="badge badge-ghost badge-sm">no regime</span>
+      {% endif %}
+    </div>
+
+    {# Metrics grid: kelly / EV/$ / p_win / shifts_24h #}
+    <div class="grid grid-cols-4 gap-1 text-xs">
+      <div class="text-center">
+        <div class="text-base-content/50 uppercase tracking-wide">Kelly</div>
+        <div class="font-mono">{{ '%.3f' | format(s.effective_kelly) if s.effective_kelly is not none else '—' }}</div>
+      </div>
+      <div class="text-center">
+        <div class="text-base-content/50 uppercase tracking-wide">EV/$</div>
+        <div class="font-mono {{ 'text-success' if (s.ev_per_dollar or 0) > 0 else 'text-error' if (s.ev_per_dollar or 0) < 0 else '' }}">
+          {{ '%.3f' | format(s.ev_per_dollar) if s.ev_per_dollar is not none else '—' }}
+        </div>
+      </div>
+      <div class="text-center">
+        <div class="text-base-content/50 uppercase tracking-wide">P(win)</div>
+        <div class="font-mono">{{ '%.2f' | format(s.p_win * 100) ~ '%' if s.p_win is not none else '—' }}</div>
+      </div>
+      <div class="text-center">
+        <div class="text-base-content/50 uppercase tracking-wide">Brick</div>
+        <div class="font-mono">{{ '%.4f' | format(s.brick_size) if s.brick_size else '—' }}</div>
+      </div>
+    </div>
+
+    {# Confidence bar #}
+    {% if s.regime_conf is not none %}
+    <div>
+      <div class="flex justify-between text-xs text-base-content/50 mb-0.5">
+        <span>regime conf</span><span>{{ '%.0f' | format(s.regime_conf * 100) }}%</span>
+      </div>
+      <progress class="progress progress-{{ regime_color_class(s.regime) }} w-full h-1.5" value="{{ s.regime_conf * 100 }}" max="100"></progress>
+    </div>
+    {% endif %}
+
+    {# Markov state + tail risk #}
+    <div class="flex items-center justify-between text-xs">
+      <span class="text-base-content/50">Markov:</span>
+      <span class="font-mono">{{ s.markov_current_state or '—' }}</span>
+      {% if s.tail_risk_action and s.tail_risk_action != 'none' %}
+      <span class="badge badge-warning badge-xs ml-1" title="tail_risk_action">{{ s.tail_risk_action }}</span>
+      {% endif %}
+    </div>
+
+    {% else %}
+    {# No heartbeat yet — placeholder #}
+    <div class="text-center py-2 text-base-content/50 text-xs italic">
+      No heartbeat yet — awaiting first signal from upstream
+    </div>
+    {% endif %}
+
+    {# Footer: last seen + drill-down link #}
+    <div class="flex items-center justify-between border-t border-base-300 pt-1.5 mt-1">
+      <span class="text-xs text-base-content/40 font-mono">
+        {% if s.ts_received %}{{ s.ts_received|string|truncate(19, true, '') }}{% else %}—{% endif %}
+      </span>
+      <a href="/market/{{ s.symbol | urlencode }}" class="text-xs text-primary hover:underline">
+        detail →
+      </a>
+    </div>
+  </div>
 </div>
 {% endmacro %}

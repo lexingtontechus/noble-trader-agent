@@ -35,3 +35,102 @@ pre { tab-size: 2; }
     background: oklch(var(--p));
     color: oklch(var(--pc));
 }
+
+/* ==========================================================================
+   Kelly badge pulse animation (UX-UNIFORMITY-2)
+   Subtle 1.5s opacity pulse for badges whose value is from a fresh heartbeat
+   (within the last 60s). Distinguishes "live" badges from cached ones without
+   being distracting. Mirrors the deprecated dashboard's pulse-dot keyframe.
+   ========================================================================== */
+@keyframes kelly-pulse-anim {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.65; transform: scale(1.04); }
+}
+.kelly-pulse {
+    animation: kelly-pulse-anim 1.5s ease-in-out infinite;
+}
+
+/* ==========================================================================
+   Interactive decision tree (UX-UNIFORMITY-2 — DecisionTreeViz port)
+   Pure CSS — no JS dependency. Uses <details> for collapse-on-click.
+   Tree nodes are connected by ::before/::after pseudo-elements forming
+   a vertical "spine" from parent down to each child branch.
+   ========================================================================== */
+.dtree-node { position: relative; }
+.dtree-node-button {
+    border: 2px solid oklch(var(--b3));
+    border-radius: 8px;
+    padding: 6px 14px;
+    text-align: center;
+    background: oklch(var(--b2));
+    transition: all 0.15s ease;
+    min-width: 180px;
+    max-width: 320px;
+    cursor: default;
+    display: inline-block;
+}
+.dtree-node-button.has-branches { cursor: pointer; }
+.dtree-node-button.has-branches:hover { transform: scale(1.03); }
+.dtree-color-error    { border-color: oklch(var(--er));   background: oklch(var(--er) / 0.10);   color: oklch(var(--erc)); }
+.dtree-color-success  { border-color: oklch(var(--su));   background: oklch(var(--su) / 0.10);   color: oklch(var(--suc)); }
+.dtree-color-warning  { border-color: oklch(var(--wa));   background: oklch(var(--wa) / 0.10);   color: oklch(var(--wac)); }
+.dtree-color-info     { border-color: oklch(var(--in));   background: oklch(var(--in) / 0.10);   color: oklch(var(--inc)); }
+.dtree-color-primary  { border-color: oklch(var(--p));    background: oklch(var(--p) / 0.10);    color: oklch(var(--pc)); }
+.dtree-color-neutral  { border-color: oklch(var(--b3));   background: oklch(var(--b3) / 0.30);   color: oklch(var(--bc)); }
+
+.dtree-branch-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    font-family: ui-monospace, monospace;
+    opacity: 0.6;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background: oklch(var(--b3) / 0.4);
+    margin-bottom: 4px;
+}
+
+/* Vertical connector line between parent and children row */
+.dtree-connector {
+    width: 1px;
+    height: 12px;
+    background: oklch(var(--b3));
+    margin: 0 auto;
+}
+
+/* Horizontal layout for sibling branches */
+.dtree-branches {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+.dtree-branch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* <details> disclosure triangle override — hide default marker, we draw our own */
+details.dtree-collapse > summary { list-style: none; }
+details.dtree-collapse > summary::-webkit-details-marker { display: none; }
+.dtree-toggle {
+    font-size: 10px;
+    opacity: 0.6;
+    margin-left: 6px;
+}
+details[open].dtree-collapse > summary .dtree-toggle-closed { display: none; }
+details:not([open]).dtree-collapse > summary .dtree-toggle-open { display: none; }
+
+/* ==========================================================================
+   Backtest click-to-select drill-down (UX-UNIFORMITY-2 — BacktestRow port)
+   Selected row gets a primary-tinted background. Detail panel renders below
+   the table with a smooth fade-in.
+   ========================================================================== */
+.bt-row { cursor: pointer; transition: background 0.1s; }
+.bt-row:hover { background: oklch(var(--b3) / 0.5); }
+.bt-row.active { background: oklch(var(--p) / 0.12); border-left: 3px solid oklch(var(--p)); }
+.bt-detail-panel { animation: bt-fade-in 0.2s ease-out; }
+@keyframes bt-fade-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}

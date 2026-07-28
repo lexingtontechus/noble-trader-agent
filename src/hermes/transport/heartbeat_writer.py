@@ -46,6 +46,10 @@ class HeartbeatWriter:
         "ev", "ev_per_dollar", "p_win", "p_regime", "p_imbalance", "p_markov", "ev_scale",
         "p_timesfm", "timesfm_horizon", "markov_current_state",
         "tail_risk_score", "tail_risk_action", "kelly_f", "effective_kelly",
+        # ── v5 EV source breakdown (Phase C, migration 016) ──────────
+        "p_pattern", "sources_used", "weights_used",
+        "calibration_bias", "calibration_status", "p_win_kelly_shrink",
+        # ─────────────────────────────────────────────────────────────
         "raw_payload", "accepted", "reject_reason", "reprocessed_at",
     ]
 
@@ -210,6 +214,14 @@ class HeartbeatWriter:
             row["tail_risk_action"],
             row["kelly_f"],
             row["effective_kelly"],
+            # ── v5 EV source breakdown (Phase C) ───────────────────────
+            row.get("p_pattern"),
+            row.get("sources_used"),
+            row.get("weights_used"),
+            row.get("calibration_bias"),
+            row.get("calibration_status"),
+            row.get("p_win_kelly_shrink"),
+            # ───────────────────────────────────────────────────────────
             row["raw_payload"],
             row["accepted"],
             row["reject_reason"],

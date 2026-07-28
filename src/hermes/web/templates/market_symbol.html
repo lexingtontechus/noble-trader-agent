@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, regime_strip, symbol_card, regime_badge, status_badge, signal_badge, empty_state, refresh_note, stat_grid, regime_color_class, kelly_badge, brick_arrow, timestamp, page_header %}
+
+{% block title %}Hermes Dashboard · {{ symbol }}{% endblock %}
+
+{% block meta %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% block content %}
+
+{% if not_found %}
+{% call card(title="Symbol Not Found") %}
+{{ empty_state(
+  message=symbol ~ " is not in the local symbols registry.",
+  hint="Add it via: platform symbols --add " ~ symbol ~ "  (or wait for upstream heartbeat to auto-register)"
+) }}
+{% endcall %}
+{% else %}
+
+{# Regime strip — consistent with /market #}
+{{ regime_strip(strip_data) }}
+
+{# Uniform page header (rich variant — symbol + asset/venue badges + brick arrow + regime + kelly) #}
+<div class="flex items-start justify-between mb-4 gap-3 flex-wrap">
+  <div class="flex items-center gap-3 flex-wrap">
+    <h1 class="text-2xl font-bold font-mono">{{ symbol }}</h1>
+    {% if detail.asset_class %}<span class="badge badge-ghost">{{ detail.asset_class }}</span>{% endif %}
+    {% if detail.venue %}<span class="badge badge-ghost">{{ detail.venue }}</span>{% endif %}
+    {% if detail.heartbeat %}
+      {{ brick_arrow(detail.heartbeat.markov_current_state) }}
+      {% if detail.heartbeat.regime %}
+      <span class="badge badge-{{ regime_color_class(detail.heartbeat.regime) }} badge-sm">
+        {{ detail.heartbeat.regime }}
+      </span>
+      {% endif %}
+      {{ kelly_badge(detail.heartbeat.effective_kelly, delta=detail.heartbeat.kelly_delta, live=detail.heartbeat.is_live) }}
+    {% endif %}
+  </div>
+  {{ refresh_note(30) }}
+</div>
+
+{# Stat grid — top-level metrics from latest heartbeat #}
+{% if detail.heartbeat %}
+{{ stat_grid([
+  {"value": '$%.4f' | format(detail.heartbeat.entry_price) if detail.heartbeat.entry_price < 1 else '$%.2f' | format(detail.heartbeat.entry_price),
+   "label": "Entry Price", "color": "primary"},
+  {"value": '$%.4f' | format(detail.heartbeat.stop_loss) if detail.heartbeat.stop_loss and detail.heartbeat.stop_loss < 1 else ('$%.2f' | format(detail.heartbeat.stop_loss) if detail.heartbeat.stop_loss else '—'),
+   "label": "Stop Loss", "color": "error"},
+  {"value": '$%.4f' | format(detail.heartbeat.take_profit) if detail.heartbeat.take_profit and detail.heartbeat.take_profit < 1 else ('$%.2f' | format(detail.heartbeat.take_profit) if detail.heartbeat.take_profit else '—'),
+   "label": "Take Profit", "color": "success"},
+  {"value": '%.3f' | format(detail.heartbeat.effective_kelly) if detail.heartbeat.effective_kelly is not none else '—',
+   "label": "Effective Kelly", "color": "info"},
+  {"value": '%.3f' | format(detail.heartbeat.ev_per_dollar) if detail.heartbeat.ev_per_dollar is not none else '—',
+   "label": "EV / $", "color": "success" if (detail.heartbeat.ev_per_dollar or 0) > 0 else "error"},
+  {"value": '%.2f%%' | format(detail.heartbeat.p_win * 100) if detail.heartbeat.p_win is not none else '—',
+   "label": "P(win)", "color": "accent"},
+  {"value": '%.4f' | format(detail.heartbeat.brick_size) if detail.heartbeat.brick_size else '—',
+   "label": "Brick Size", "color": "neutral"},
+  {"value": detail.heartbeat.shifts_24h if detail.heartbeat.shifts_24h is not none else '—',
+   "label": "Regime Shifts 24h", "color": "warning" if (detail.heartbeat.shifts_24h or 0) > 2 else "neutral"},
+]) }}
+{% endif %}
+
+{# Tabs #}
+<div role="tablist" class="tabs tabs-boxed bg-base-200 mb-4">
+  <a role="tab" class="tab tab-active" data-tab="overview">Overview</a>
+  <a role="tab" class="tab" data-tab="renko">Renko</a>
+  <a role="tab" class="tab" data-tab="regime">Regime</a>
+  <a role="tab" class="tab" data-tab="signals">Signals</a>
+</div>
+
+{# Tab panels #}
+<div id="tab-overview" class="tab-panel">
+  {% call card(title="Latest Heartbeat (full detail)") %}
+  {% if detail.heartbeat %}
+  <div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
+      <tbody>
+        <tr><th>Signal</th><td>{{ signal_badge(detail.heartbeat.signal) }}</td>
+            <th>Aggression</th><td>{{ detail.heartbeat.aggression or '—' }}</td></tr>
+        <tr><th>Regime</th><td>{{ regime_badge(detail.heartbeat.regime) }}</td>
+            <th>Regime Conf</th><td>{{ '%.4f' | format(detail.heartbeat.regime_conf) if detail.heartbeat.regime_conf else '—' }}</td></tr>
+        <tr><th>Prev Regime</th><td>{{ detail.heartbeat.prev_regime or '—' }}</td>
+            <th>Regime Shift</th><td>{{ status_badge('yes' if detail.heartbeat.regime_shift else 'no') }}</td></tr>
+        <tr><th>Markov State</th><td><code>{{ detail.heartbeat.markov_current_state or '—' }}</code></td>
+            <th>Shifts 24h</th><td>{{ detail.heartbeat.shifts_24h or '—' }}</td></tr>
+        <tr><th>Kelly F</th><td>{{ '%.4f' | format(detail.heartbeat.kelly_f) if detail.heartbeat.kelly_f else '—' }}</td>
+            <th>Effective Kelly</th><td>{{ '%.4f' | format(detail.heartbeat.effective_kelly) if detail.heartbeat.effective_kelly else '—' }}</td></tr>
+        <tr><th>EV / $</th><td>{{ '%.4f' | format(detail.heartbeat.ev_per_dollar) if detail.heartbeat.ev_per_dollar else '—' }}</td>
+            <th>EV Scale</th><td>{{ '%.4f' | format(detail.heartbeat.ev_scale) if detail.heartbeat.ev_scale else '—' }}</td></tr>
+        <tr><th>P(win)</th><td>{{ '%.4f' | format(detail.heartbeat.p_win) if detail.heartbeat.p_win else '—' }}</td>
+            <th>P(pattern)</th><td>{{ '%.4f' | format(detail.heartbeat.p_pattern) if detail.heartbeat.p_pattern else '—' }}</td></tr>
+        <tr><th>P(regime)</th><td>{{ '%.4f' | format(detail.heartbeat.p_regime) if detail.heartbeat.p_regime else '—' }}</td>
+            <th>P(markov)</th><td>{{ '%.4f' | format(detail.heartbeat.p_markov) if detail.heartbeat.p_markov else '—' }}</td></tr>
+        <tr><th>P(timesfm)</th><td>{{ '%.4f' | format(detail.heartbeat.p_timesfm) if detail.heartbeat.p_timesfm else '—' }}</td>
+            <th>P(imbalance)</th><td>{{ '%.4f' | format(detail.heartbeat.p_imbalance) if detail.heartbeat.p_imbalance else '—' }}</td></tr>
+        <tr><th>Tail Risk Score</th><td>{{ '%.4f' | format(detail.heartbeat.tail_risk_score) if detail.heartbeat.tail_risk_score else '—' }}</td>
+            <th>Tail Risk Action</th><td>{{ detail.heartbeat.tail_risk_action or 'none' }}</td></tr>
+        <tr><th>SL Bricks</th><td>{{ detail.heartbeat.sl_bricks or '—' }}</td>
+            <th>TP Bricks</th><td>{{ detail.heartbeat.tp_bricks or '—' }}</td></tr>
+        <tr><th>Calibration Bias</th><td>{{ '%.4f' | format(detail.heartbeat.calibration_bias) if detail.heartbeat.calibration_bias is not none else '—' }}</td>
+            <th>Calibration Status</th><td>{{ detail.heartbeat.calibration_status or '—' }}</td></tr>
+        <tr><th>Sources Used</th><td colspan="3"><code>{{ detail.heartbeat.sources_used or '—' }}</code></td></tr>
+        <tr><th>Weights Used</th><td colspan="3"><code>{{ detail.heartbeat.weights_used or '—' }}</code></td></tr>
+        <tr><th>Last Received</th><td colspan="3">{{ timestamp(detail.heartbeat.ts_received) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  {{ empty_state(message="No heartbeat received for " ~ symbol ~ " yet.") }}
+  {% endif %}
+  {% endcall %}
+
+  {# Meta-regime summary card #}
+  {% call card(title="Meta-Regime (computed live)") %}
+  {% if detail.meta_regime %}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+    <div>
+      <div class="text-xs opacity-60 uppercase">State</div>
+      <div class="text-lg font-bold">{{ regime_badge(detail.meta_regime.state) }}</div>
+    </div>
+    <div>
+      <div class="text-xs opacity-60 uppercase">Confidence</div>
+      <div class="text-lg font-mono">{{ '%.4f' | format(detail.meta_regime.confidence) if detail.meta_regime.confidence else '—' }}</div>
+    </div>
+    <div>
+      <div class="text-xs opacity-60 uppercase">Sizing Multiplier</div>
+      <div class="text-lg font-mono">{{ '%.3f×' | format(detail.meta_regime.sizing_multiplier) if detail.meta_regime.sizing_multiplier else '—' }}</div>
+    </div>
+    <div>
+      <div class="text-xs opacity-60 uppercase">Entry Aggression</div>
+      <div class="text-lg">{{ detail.meta_regime.entry_aggressiveness or '—' }}</div>
+    </div>
+  </div>
+  {% if detail.meta_regime.posterior_probs %}
+  <div class="mt-3">
+    <div class="text-xs opacity-60 uppercase mb-1">Posterior Probs</div>
+    <pre class="bg-base-300 rounded-box p-3 text-xs font-mono overflow-x-auto">{{ detail.meta_regime.posterior_probs | tojson(indent=2) }}</pre>
+  </div>
+  {% endif %}
+  {% if detail.meta_regime.reasons %}
+  <div class="mt-3">
+    <div class="text-xs opacity-60 uppercase mb-1">Reasons</div>
+    <ul class="text-xs list-disc list-inside space-y-0.5">
+      {% for r in detail.meta_regime.reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% else %}
+  {{ empty_state(message="Meta-regime classifier did not produce a result for this heartbeat.") }}
+  {% endif %}
+  {% endcall %}
+</div>
+
+{# Renko tab — brick chart + price+regime chart #}
+<div id="tab-renko" class="tab-panel hidden">
+  {% call card(title="Renko Brick Chart (last 100 bricks, rebuilt from TDVA candles)") %}
+  <img src="/api/charts/renko/{{ symbol | urlencode }}.png?last_n=100"
+       alt="Renko bricks for {{ symbol }}"
+       class="w-full rounded-box border border-base-300 bg-base-100"
+       loading="lazy">
+  <div class="text-xs opacity-50 text-center mt-2">
+    Rebuilt on-demand from TDVA candles · cached 60s ·
+    <a href="/api/charts/renko/{{ symbol | urlencode }}.png?last_n=100" target="_blank" class="link link-hover text-primary">open raw</a>
+  </div>
+  {% endcall %}
+
+  {% call card(title="Price + Regime Tint (last 200 TDVA candles)") %}
+  <img src="/api/charts/price_regime/{{ symbol | urlencode }}.png?horizon=200"
+       alt="Price + regime tint for {{ symbol }}"
+       class="w-full rounded-box border border-base-300 bg-base-100"
+       loading="lazy">
+  <div class="text-xs opacity-50 text-center mt-2">
+    Area fill color = regime at that timestamp · cached 60s
+  </div>
+  {% endcall %}
+</div>
+
+{# Regime tab — probability bars + meta-regime radial #}
+<div id="tab-regime" class="tab-panel hidden">
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    {% call card(title="7-State Regime Probabilities") %}
+    <img src="/api/charts/regime_probs/{{ symbol | urlencode }}.png"
+         alt="Regime probabilities for {{ symbol }}"
+         class="w-full rounded-box border border-base-300 bg-base-100"
+         loading="lazy">
+    {% endcall %}
+
+    {% call card(title="Meta-Regime Radial Gauge") %}
+    <img src="/api/charts/meta_regime_radial/{{ symbol | urlencode }}.png"
+         alt="Meta-regime radial for {{ symbol }}"
+         class="w-full rounded-box border border-base-300 bg-base-100"
+         loading="lazy">
+    {% endcall %}
+  </div>
+</div>
+
+{# Signals tab — recent heartbeats table #}
+<div id="tab-signals" class="tab-panel hidden">
+  {% call card(title="Recent Heartbeats (last 100)") %}
+  {% if detail.history %}
+  <div class="overflow-x-auto">
+    <table class="table table-zebra table-sm">
+      <thead>
+        <tr>
+          <th>Received</th>
+          <th>Signal</th>
+          <th>Regime</th>
+          <th>Markov</th>
+          <th>Entry</th>
+          <th>SL</th>
+          <th>TP</th>
+          <th>Brick</th>
+          <th>Kelly</th>
+          <th>EV/$</th>
+          <th>P(win)</th>
+          <th>Shift</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in detail.history %}
+        <tr>
+          <td>{{ timestamp(h.ts_received) }}</td>
+          <td>{{ signal_badge(h.signal) }}</td>
+          <td>{{ regime_badge(h.regime) }}</td>
+          <td><code class="text-xs">{{ h.markov_current_state or '—' }}</code></td>
+          <td class="font-mono text-xs">{{ '$%.4f' | format(h.entry_price) if h.entry_price and h.entry_price < 1 else ('$%.2f' | format(h.entry_price) if h.entry_price else '—') }}</td>
+          <td class="font-mono text-xs">{{ '$%.4f' | format(h.stop_loss) if h.stop_loss and h.stop_loss < 1 else ('$%.2f' | format(h.stop_loss) if h.stop_loss else '—') }}</td>
+          <td class="font-mono text-xs">{{ '$%.4f' | format(h.take_profit) if h.take_profit and h.take_profit < 1 else ('$%.2f' | format(h.take_profit) if h.take_profit else '—') }}</td>
+          <td class="font-mono text-xs">{{ '%.4f' | format(h.brick_size) if h.brick_size else '—' }}</td>
+          <td>{{ kelly_badge(h.effective_kelly, delta=h.kelly_delta, live=h.is_live) }}</td>
+          <td class="font-mono text-xs {{ 'text-success' if (h.ev_per_dollar or 0) > 0 else 'text-error' }}">{{ '%.3f' | format(h.ev_per_dollar) if h.ev_per_dollar else '—' }}</td>
+          <td class="font-mono text-xs">{{ '%.2f' | format(h.p_win * 100) ~ '%' if h.p_win else '—' }}</td>
+          <td>{{ '⚡' if h.regime_shift else '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  {{ empty_state(message="No heartbeat history yet for " ~ symbol ~ ".") }}
+  {% endif %}
+  {% endcall %}
+</div>
+
+{# Tab switching script — minimal, no extra JS file needed #}
+<script>
+  document.querySelectorAll('a[role="tab"]').forEach(tab => {
+    tab.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = tab.dataset.tab;
+      // Toggle tab active state
+      document.querySelectorAll('a[role="tab"]').forEach(t => t.classList.remove('tab-active'));
+      tab.classList.add('tab-active');
+      // Toggle panel visibility
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+      const panel = document.getElementById('tab-' + target);
+      if (panel) panel.classList.remove('hidden');
+    });
+  });
+</script>
+
+{% endif %}
+
+{% endblock %}

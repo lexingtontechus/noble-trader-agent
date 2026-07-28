@@ -38,6 +38,8 @@ dependencies = [
     "numpy>=1.26",         # Numerical computing for indicators
     # Optimization (Phase 8)
     "optuna>=3.6",         # Bayesian optimization for entry/execution params
+    # Live execution broker (MetaApi RPC — MT4/MT5)
+    "metaapi-cloud-sdk>=28.0.0",
 ]
 
 [project.optional-dependencies]

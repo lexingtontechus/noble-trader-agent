@@ -48,6 +48,14 @@
 
     <!-- Main content -->
     <main class="container mx-auto px-4 py-6 max-w-7xl">
+        {% if show_regime_strip and strip_data %}
+        {# Global regime strip — included at the top of every page that sets
+           show_regime_strip=True in its template context. See DASHBOARD-UPGRADE-SCOPING.md §8.
+           Default: not shown (False). Set True on /portfolio, /signals, /market,
+           /market/{symbol}, /approvals, etc. Set False on /config, /setup (admin pages). #}
+        {% from "components/ui.html" import regime_strip %}
+        {{ regime_strip(strip_data) }}
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
 

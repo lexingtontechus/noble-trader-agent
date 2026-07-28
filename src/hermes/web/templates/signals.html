@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, kelly_badge, page_header %}
 
 {% block title %}Hermes Dashboard · Signals{% endblock %}
 
@@ -7,13 +7,13 @@
 
 {% block content %}
 
-{% call card(title="Blended Signals (L4 Output)") %}
-<p class="text-sm opacity-60 mb-4">
-    Entry/execution decisions produced by Hermes's signal synthesizer.
-    Each row = one Noble Trader heartbeat processed through the 7-state meta-regime
-    classifier + renko pattern analysis + entry timing optimizer + sizing engine.
-</p>
+{{ page_header(
+    title="Blended Signals (L4 Output)",
+    subtitle=(signals | length) ~ " recent signals · entry/execution decisions from Hermes's signal synthesizer",
+    refresh=10
+) }}
 
+{% call card(title="Recent Signals") %}
 {% if signals %}
 <div class="overflow-x-auto">
     <table class="table table-zebra table-xs">
@@ -43,7 +43,7 @@
                 <td>{{ s.nt_entry_price }}</td>
                 <td>{{ s.nt_stop_price }}</td>
                 <td>{{ s.nt_target_price }}</td>
-                <td>{{ "%.4f" | format(s.nt_effective_kelly) }}</td>
+                <td>{{ kelly_badge(s.nt_effective_kelly, delta=s.kelly_delta, live=s.is_live) }}</td>
                 <td>{{ s.limit_price if s.limit_price else "-" }}</td>
                 <td><small class="opacity-60">{{ s.sizing_reason }}</small></td>
             </tr>

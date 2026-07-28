@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -34,6 +35,215 @@ from hermes.signals.renko_engine import BrickPatternAnalyzer, RenkoConstructor
 from hermes.signals.sizing import SizingEngine, SizingResult
 
 log = structlog.get_logger(__name__)
+
+
+# ── v5 4-source logit-pool P_win blend (Phase C) ───────────────────
+# Ported from EV-SYSTEM-REWORK-DESIGN-v2.md §4.1. The agent re-blends
+# the four P_win sources locally so it can substitute its own
+# pattern_performance (Wilson lower bound) for the server's p_pattern
+# (which is always 0.5 — the server has no trade journal).
+#
+# Logit pooling: logit(P_win) = Σ w_i × logit(p_i)
+# - Respects probability bounds (no source can push P_win to 0 or 1
+#   single-handedly).
+# - Weights are renormalised at blend time over the available sources.
+# - Missing sources are NOT substituted with 0.5 — they are dropped
+#   and the remaining weights rescaled to sum to 1.0. This prevents
+#   a missing source from diluting the signal toward 0.5.
+
+_LOGIT_CLAMP = 1e-15
+
+
+def _logit(p: float) -> float:
+    p = max(_LOGIT_CLAMP, min(1.0 - _LOGIT_CLAMP, p))
+    return math.log(p / (1.0 - p))
+
+
+def _inv_logit(x: float) -> float:
+    if x > 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    ex = math.exp(x)
+    return ex / (1.0 + ex)
+
+
+# Default 4-source weights — overridden by heartbeat.weights_used when present
+P_WIN_WEIGHTS_AGENT_DEFAULT: dict[str, float] = {
+    "p_pattern": 0.30,
+    "p_regime": 0.25,
+    "p_markov": 0.20,
+    "p_timesfm": 0.25,
+}
+
+
+def _normalise_source_key(k: str) -> str:
+    """Normalise source key between backend and agent conventions.
+
+    Backend payload uses both 'p_markov' and 'p_markov_hold_n'
+    depending on version. Agent internally uses 'p_markov'.
+    """
+    if k in ("p_markov_hold_n", "p_markov"):
+        return "p_markov"
+    return k
+
+
+# ── HIGH #8 (2026-07-23): single-step Markov T ──────────────────────
+def _compute_markov_persistence(
+    p_markov_single_step: float | None,
+    transition_matrix: dict[str, dict[str, float]] | None,
+    current_state: str,
+    direction: str,
+    p_markov_tn_fallback: float,
+) -> float:
+    """Resolve the single-step Markov persistence probability.
+
+    Used by the decision tree's adaptive-threshold check
+    (``markov_persistence > 0.7`` ⇒ trending regime). See the
+    synthesizer's call site for the resolution-order rationale.
+
+    Args:
+        p_markov_single_step: backend-sent single-step T[current][target].
+            None or 0.5 default for pre-HIGH-#8 heartbeats.
+        transition_matrix: 3x3 dict-of-dicts keyed by {UP, DOWN, FLAT}.
+            Sent by backend (HIGH #8); None for pre-HIGH-#8 heartbeats.
+        current_state: one of "UP", "DOWN", "FLAT".
+        direction: "buy" (target=UP), "sell" (target=DOWN), or "neutral".
+        p_markov_tn_fallback: T^N multi-step hold probability, used as
+            last-resort fallback for pre-HIGH-#8 heartbeats.
+
+    Returns:
+        Single-step T[current][target] in [0, 1]. Falls back to
+        ``p_markov_tn_fallback`` if neither explicit single-step value
+        nor a computable transition matrix is available.
+    """
+    # Tier 1: explicit single-step value from backend (HIGH #8 path).
+    # The backend sends 0.5 (neutral) when the Markov chain build fails,
+    # which is a real value — we accept it as-is. We only fall through
+    # if the field is missing entirely (None) or non-finite (NaN/inf).
+    if p_markov_single_step is not None:
+        try:
+            import math as _math
+            v = float(p_markov_single_step)
+            if _math.isfinite(v):
+                # Clamp to [0, 1] defensively.
+                return max(0.0, min(1.0, v))
+            # NaN / inf → fall through to tier 2
+        except (TypeError, ValueError):
+            pass  # fall through to tier 2
+
+    # Tier 2: compute locally from the transition matrix.
+    if transition_matrix and current_state:
+        target = "UP" if direction == "buy" else "DOWN" if direction == "sell" else None
+        if target:
+            try:
+                row = transition_matrix.get(current_state, {})
+                v = float(row.get(target, 0.5))
+                return max(0.0, min(1.0, v))
+            except (TypeError, ValueError, AttributeError):
+                pass  # fall through to tier 3
+
+    # Tier 3: pre-HIGH-#8 fallback. Use the T^N value as a proxy.
+    # Documented as conservative-but-wrong in mean-reverting regimes;
+    # preserved for backtest replay of historical heartbeats.
+    try:
+        return max(0.0, min(1.0, float(p_markov_tn_fallback)))
+    except (TypeError, ValueError):
+        return 0.5  # ultimate fallback
+
+
+def compute_blended_p_win(
+    p_pattern: float,
+    p_regime: float,
+    p_markov_hold_n: float,
+    p_timesfm: float | None,
+    sources_used: list[str] | None = None,
+    weights_used: dict[str, float] | None = None,
+) -> tuple[float, list[str]]:
+    """4-source logit-pooled P_win. Returns (p_win_agent, sources_blended).
+
+    Honours the backend's sources_used + weights_used: if the backend
+    dropped a source (e.g. TimesFM unreachable), the agent drops the
+    same source and uses the backend's renormalised weights — otherwise
+    re-applying the default weights double-counts the gap.
+
+    The agent's local p_pattern (from pattern_performance via Wilson
+    lower bound) ALWAYS overrides the backend's p_pattern (which is
+    always 0.5 because the server has no trade journal).
+
+    Args:
+        p_pattern: Agent's local Wilson-confident pattern win-rate.
+        p_regime: Backend's HMM-regime posterior P_win component.
+        p_markov_hold_n: Backend's T^N multi-step hold probability.
+        p_timesfm: Backend's TimesFM directional forecast, or None.
+        sources_used: Backend's reported available-source list.
+        weights_used: Backend's reported renormalised weights.
+
+    Returns:
+        Tuple of (p_win_agent in [0,1], sources_blended list).
+    """
+    # Agent-side source values (after override of p_pattern)
+    agent_values: dict[str, float] = {
+        "p_pattern": p_pattern,
+        "p_regime": p_regime,
+        "p_markov": p_markov_hold_n,
+    }
+    if p_timesfm is not None:
+        agent_values["p_timesfm"] = p_timesfm
+
+    if sources_used and weights_used:
+        # Backend sent source info — honour its available-source set.
+        # Re-normalise the backend's weights over the intersection of
+        # (backend's available sources) and (agent's available sources).
+        normalised_backend_sources = {
+            _normalise_source_key(k) for k in sources_used
+        }
+        available_keys = [
+            k for k in agent_values
+            if k in normalised_backend_sources
+        ]
+        if not available_keys:
+            # No overlap — fall back to agent defaults
+            weights = {
+                k: P_WIN_WEIGHTS_AGENT_DEFAULT.get(k, 0.0)
+                for k in agent_values
+            }
+            total_w = sum(weights.values())
+            if total_w > 0:
+                weights = {k: v / total_w for k, v in weights.items()}
+            else:
+                weights = {k: 1.0 / len(agent_values) for k in agent_values}
+            available_keys = list(agent_values.keys())
+        else:
+            # Map backend weight keys to agent-internal keys before lookup
+            mapped_weights = {
+                _normalise_source_key(k): v for k, v in weights_used.items()
+            }
+            weights = {k: mapped_weights.get(k, 0.0) for k in available_keys}
+            total_w = sum(weights.values())
+            if total_w > 0:
+                weights = {k: v / total_w for k, v in weights.items()}
+            else:
+                weights = {k: 1.0 / len(available_keys) for k in available_keys}
+    else:
+        # Backend didn't send source info — use agent defaults
+        weights = {
+            k: P_WIN_WEIGHTS_AGENT_DEFAULT.get(k, 0.0)
+            for k in agent_values
+        }
+        total_w = sum(weights.values())
+        if total_w > 0:
+            weights = {k: v / total_w for k, v in weights.items()}
+        else:
+            weights = {k: 1.0 / len(agent_values) for k in agent_values}
+        available_keys = list(agent_values.keys())
+
+    if not available_keys:
+        return 0.5, []
+
+    logit_sum = sum(
+        weights[k] * _logit(agent_values[k]) for k in available_keys
+    )
+    p_win = _inv_logit(logit_sum)
+    return p_win, available_keys
 
 
 class BlendedSignal(BaseModel):
@@ -78,6 +288,38 @@ class BlendedSignal(BaseModel):
 
     # Config
     config_hash: str = ""
+
+    # ── v5: 4-source blended EV (Phase C) ──────────────────────────
+    # p_win_agent is the agent's locally re-blended P_win via
+    # compute_blended_p_win. It uses the backend's per-source
+    # breakdown (p_regime, p_markov, p_timesfm) but OVERRIDES
+    # p_pattern with the agent's own Wilson-confident
+    # pattern_performance value (the one source the server cannot
+    # know). Downstream (decision tree, sizing, risk gate) should
+    # prefer p_win_agent over heartbeat.p_win for conviction checks.
+    p_win_agent: float = 0.5
+    # Single-step Markov persistence T[current][target]. Used by the
+    # decision tree to adapt TP/SL thresholds: strong persistence
+    # (>0.7) widens trailing stops; weak persistence (<0.55) takes
+    # early profit. Approximated by heartbeat.p_markov (which is
+    # actually T^N, not single-step) until backend sends a separate
+    # single-step field.
+    markov_persistence: float = 0.5
+    # T^N multi-step hold probability (N=tp_bricks). Same value as
+    # heartbeat.p_markov; renamed at this layer for clarity.
+    markov_hold_n: float = 0.5
+    # Backend's pre-blended P_win (heartbeat.p_win). Preserved for
+    # audit / calibration comparison vs p_win_agent and vs the
+    # realized trade outcome.
+    p_win_server: float = 0.5
+    # The Wilson lower-bound pattern win-rate the agent actually
+    # used in its local blend. 0.5 when pattern_performance has no
+    # data for this brick_pattern.
+    p_pattern_local: float = 0.5
+    # Which of the 4 sources were available for the local blend
+    # (after agent override of p_pattern + backend's sources_used
+    # intersection).
+    sources_blended: list[str] = Field(default_factory=list)
 
 
 class SignalSynthesizer:
@@ -150,12 +392,38 @@ class SignalSynthesizer:
             ),
         )
 
+        # ── Bayesian alpha engine (v5) ─────────────────────────────
+        # Rolling trade-outcome posterior → position-sizing modulator.
+        # NEVER a gate — alpha in [0.10, 1.0] scales the baseline size.
+        # Computed from local DuckDB pnl_realized (agent source of truth).
+        # Lazy-imported to avoid hard dependency at module load time.
+        try:
+            from hermes.agent.bayesian_alpha import BayesianAlpha
+            _alpha_cfg = getattr(config, "bayesian_alpha", None) or {}
+            self._alpha_engine = BayesianAlpha(
+                db_path=self._db_path,
+                alpha_floor=_alpha_cfg.get("alpha_floor", 0.10),
+                alpha_ceiling=_alpha_cfg.get("alpha_ceiling", 1.0),
+                lookback_trades=_alpha_cfg.get("lookback_trades", 30),
+                decay=_alpha_cfg.get("decay", 0.95),
+                cache_ttl_s=_alpha_cfg.get("cache_ttl_s", 30.0),
+            )
+            log.info("bayesian_alpha_engine_initialised", db_path=str(self._db_path))
+        except Exception as exc:
+            log.warning("bayesian_alpha_init_failed", error=str(exc))
+            self._alpha_engine = None
+
         # Per-symbol renko constructors (keyed by symbol)
         self._renko_constructors: dict[str, RenkoConstructor] = {}
         # Last bar ts fed to each renko constructor (prevents double-counting volume
         # when synthesize() runs repeatedly on the same monitor window).
         self._renko_last_ts: dict[str, Any] = {}
         self._pattern_analyzer = BrickPatternAnalyzer(lookback=10)
+
+        # Per-symbol last seen meta-regime state — used by the
+        # meta_regime_history writer to detect state transitions
+        # (inserts a row only when state actually changes).
+        self._meta_regime_last_state: dict[str, str] = {}
 
         # Redis for publishing blended signals
         self._redis = None
@@ -255,6 +523,15 @@ class SignalSynthesizer:
         # Gather inputs from monitor if available
         cross_asset_corr = None
         funding_pct = None
+        # [SOFT-DEPRECATED P3.5] book_depth_pct is intentionally hardcoded to
+        # None here. L2 order-book depth was deprecated in P3.5 (the upstream
+        # WebSocket feed was decommissioned), so there is no live source for
+        # this field anymore. The MetaRegimeClassifier.classify() signature
+        # still accepts it for backward compat with backtest replay, but in
+        # production it is dead weight. The replacement microstructure input
+        # is `p_microstructure` (see ~10 lines below + meta_regime.py:128-148
+        # + HIGH #9 which wired the SSE consumer as the live source). Do NOT
+        # "fix" this by re-wiring L2 — that feed no longer exists.
         book_depth_pct = None
 
         if self._monitor:
@@ -273,6 +550,17 @@ class SignalSynthesizer:
             if funding:
                 funding_pct = funding.annualized_pct
 
+        # HIGH #9 (2026-07-22): pull p_microstructure from the SSE consumer
+        # if wired. Returns None when not configured or stale — the
+        # MetaRegimeClassifier treats None as "no microstructure input"
+        # and skips the confidence adjustment.
+        p_microstructure: float | None = None
+        if self._microstructure_source is not None:
+            try:
+                p_microstructure = self._microstructure_source.get_p_microstructure(sym)
+            except Exception:
+                p_microstructure = None
+
         meta_result = self._meta_regime.classify(
             heartbeat=heartbeat,
             symbol=sym,
@@ -280,7 +568,46 @@ class SignalSynthesizer:
             funding_annualized_pct=funding_pct,
             book_depth_percentile=book_depth_pct,
             upstream_regime_shift=(heartbeat.regime_shift == "true"),
+            p_microstructure=p_microstructure,
         )
+
+        # ── M1-M10 open-issue fix: persist meta-regime state transitions ──
+        # Fire-and-forget write to meta_regime_history table. Only inserts a
+        # row when the new state differs from the previously-seen state for
+        # this symbol (or first observation for this symbol). Failures are
+        # swallowed inside the writer so they never break signal processing.
+        try:
+            new_state = str(meta_result.state)
+            prev_state = self._meta_regime_last_state.get(sym)
+            if prev_state != new_state:
+                from hermes.signals.meta_regime_history_writer import (
+                    record_meta_regime_transition,
+                )
+                trigger = "initial" if prev_state is None else "shift"
+                record_meta_regime_transition(
+                    db_path=self._db_path,
+                    symbol=sym,
+                    prev_state=prev_state,
+                    new_state=new_state,
+                    confidence=float(meta_result.confidence),
+                    posterior_probs=dict(meta_result.posterior_probs or {}),
+                    upstream_regime=meta_result.upstream_regime,
+                    upstream_regime_conf=meta_result.upstream_regime_conf,
+                    trigger=trigger,
+                    trigger_detail=dict(meta_result.trigger_detail or {}),
+                    extra_cols={
+                        "cross_asset_corr_mean": cross_asset_corr,
+                        "funding_rate_8h": funding_pct,
+                        "book_depth_percentile": book_depth_pct,
+                    },
+                )
+                self._meta_regime_last_state[sym] = new_state
+        except Exception as _mrh_exc:  # noqa: BLE001
+            log.debug(
+                "meta_regime_history_dispatch_failed",
+                symbol=sym,
+                error=str(_mrh_exc)[:120],
+            )
 
         # 4. Analyze brick pattern
         bricks = renko.get_bricks(n=20)
@@ -305,6 +632,74 @@ class SignalSynthesizer:
         if pattern_conf >= 0.6 and meta_result.state not in ("unknown",):
             regime_conf = min(1.0, regime_conf + (pattern_conf - 0.5) * 0.3)
             regime_conf = min(regime_conf, meta_result.confidence + 0.15)
+
+        # ── HIGH #6 (2026-07-22): Apply calibration_bias shrink to live
+        # regime_conf. Schema docstring (heartbeat.py:135-138) says:
+        # "Positive calibration_bias = overconfident model; agent should
+        # shrink p_regime toward 0.5." Backtest applies the same field
+        # as a linear subtraction on raw p_win (engine.py:271); the live
+        # path uses the documented multiplicative shrink on regime_conf
+        # — this avoids double-correcting the 4-source blend, which
+        # would distort the relative weights of markov/regime/pattern/
+        # timesfm in compute_blended_p_win(). Only positive bias
+        # (overconfident) triggers the shrink; negative bias
+        # (underconfident) is left to the backtest's subtractive path.
+        if heartbeat.calibration_bias is not None and heartbeat.calibration_bias > 0:
+            regime_conf = 0.5 + (regime_conf - 0.5) * max(0.0, 1.0 - heartbeat.calibration_bias)
+
+        # ── v5: 4-source logit-pool P_win re-blend (Phase C) ────────
+        # The agent re-blends the four P_win sources locally, overriding
+        # the server's p_pattern (always 0.5 — no trade journal on
+        # server) with the local Wilson-confident pattern_performance
+        # value. The result, p_win_agent, is the canonical P_win used
+        # by downstream consumers (decision tree conviction check,
+        # sizing, risk gate). The backend's pre-blended p_win is
+        # preserved on BlendedSignal.p_win_server for audit.
+        p_pattern_local = pattern_conf if pattern_conf > 0 else 0.5
+        try:
+            p_win_agent, sources_blended = compute_blended_p_win(
+                p_pattern=p_pattern_local,
+                p_regime=heartbeat.p_regime,
+                p_markov_hold_n=heartbeat.p_markov,
+                p_timesfm=heartbeat.p_timesfm,
+                sources_used=heartbeat.sources_used,
+                weights_used=heartbeat.weights_used,
+            )
+        except Exception as exc:
+            log.warning(
+                "compute_blended_p_win_failed",
+                symbol=sym, error=str(exc),
+            )
+            # Fall back to server's pre-blended p_win
+            p_win_agent = heartbeat.p_win
+            sources_blended = []
+        # ── HIGH #8 (2026-07-23): single-step Markov T ──────────────
+        # The decision tree's adaptive thresholds check
+        # `markov_persistence > 0.7` to detect trending regimes and
+        # switch to the "let winners run" branch. Previously the
+        # synthesizer used heartbeat.p_markov (the T^N multi-step hold
+        # probability) as a proxy for single-step T[current][target].
+        # That approximation was conservative-but-wrong in mean-reverting
+        # regimes where T^N can be high while single-step T is low.
+        #
+        # Resolution order (highest precedence first):
+        #   1. heartbeat.p_markov_single_step — sent by backend (HIGH #8)
+        #   2. locally computed from heartbeat.markov_transition_matrix +
+        #      heartbeat.markov_current_state + direction
+        #   3. heartbeat.p_markov (T^N value) — pre-HIGH-#8 fallback,
+        #      preserved for backtest replay of historical heartbeats
+        #      that don't have the new fields.
+        #
+        # markov_hold_n is ALWAYS heartbeat.p_markov (T^N value) — that
+        # field's semantics didn't change, only `markov_persistence` did.
+        markov_hold_n = heartbeat.p_markov
+        markov_persistence = _compute_markov_persistence(
+            p_markov_single_step=heartbeat.p_markov_single_step,
+            transition_matrix=heartbeat.markov_transition_matrix,
+            current_state=heartbeat.markov_current_state,
+            direction=heartbeat.signal,
+            p_markov_tn_fallback=heartbeat.p_markov,
+        )
 
         # 5. Entry timing decision
         current_price = renko.get_last_price() or heartbeat.entry_price
@@ -343,12 +738,44 @@ class SignalSynthesizer:
                 expected_entry_alpha_bps=0.0,
                 sizing_reason=entry_decision.reason,
                 config_hash=get_config_hash(self._config),
+                # ── v5 EV fields (Phase C) ───────────────────────────
+                p_win_agent=p_win_agent,
+                markov_persistence=markov_persistence,
+                markov_hold_n=markov_hold_n,
+                p_win_server=heartbeat.p_win,
+                p_pattern_local=p_pattern_local,
+                sources_blended=sources_blended,
             )
             await self._write_and_publish(signal)
             return signal
 
         # 7. Sizing
         stop_distance_pct = abs(heartbeat.entry_price - heartbeat.stop_loss) / heartbeat.entry_price
+
+        # ── Bayesian alpha (v5) ────────────────────────────────────
+        # Compute rolling alpha from local DuckDB trade outcomes.
+        # Alpha is a MODULATOR in [0.10, 1.0] — never blocks trading.
+        # When alpha_engine is unavailable (init failure) or the symbol
+        # has no trade history, alpha defaults to 1.0 (no modulation).
+        alpha_value = 1.0
+        if self._alpha_engine is not None:
+            try:
+                alpha_result = self._alpha_engine.compute_alpha(sym)
+                alpha_value = alpha_result.alpha
+                log.debug(
+                    "bayesian_alpha_computed",
+                    symbol=sym,
+                    alpha=alpha_result.alpha,
+                    posterior_mean=alpha_result.posterior_mean,
+                    n_trades=alpha_result.n_trades_used,
+                    wins=alpha_result.wins,
+                    losses=alpha_result.losses,
+                    reason=alpha_result.reason,
+                )
+            except Exception as exc:
+                log.warning("bayesian_alpha_compute_failed", symbol=sym, error=str(exc))
+                alpha_value = 1.0
+
         sizing_result = self._sizing.compute(
             equity=equity,
             nt_effective_kelly=heartbeat.effective_kelly,
@@ -356,6 +783,7 @@ class SignalSynthesizer:
             portfolio_drawdown_pct=portfolio_drawdown_pct,
             current_gross_exposure_usd=current_gross_exposure_usd,
             stop_distance_pct=stop_distance_pct,
+            alpha=alpha_value,
         )
 
         # 8. Execution method
@@ -394,6 +822,13 @@ class SignalSynthesizer:
             sizing_limits_hit=sizing_result.limits_hit,
             sizing_reason=sizing_result.reason,
             config_hash=get_config_hash(self._config),
+            # ── v5 EV fields (Phase C) ───────────────────────────────
+            p_win_agent=p_win_agent,
+            markov_persistence=markov_persistence,
+            markov_hold_n=markov_hold_n,
+            p_win_server=heartbeat.p_win,
+            p_pattern_local=p_pattern_local,
+            sources_blended=sources_blended,
         )
 
         self._stats["signals_produced"] += 1
@@ -501,8 +936,10 @@ class SignalSynthesizer:
                         final_size_usd, final_size_pct, risk_amount_usd,
                         brick_pattern, pattern_confidence, expected_entry_alpha_bps,
                         sizing_limits_hit, sizing_reason,
-                        autonomy_tier, config_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        autonomy_tier, config_hash,
+                        p_win_agent, markov_persistence, markov_hold_n,
+                        p_win_server, p_pattern_local
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         signal.signal_id,
@@ -532,6 +969,12 @@ class SignalSynthesizer:
                         signal.sizing_reason,
                         signal.autonomy_tier,
                         signal.config_hash,
+                        # ── v5 EV fields (Phase C, migration 017) ────────
+                        signal.p_win_agent,
+                        signal.markov_persistence,
+                        signal.markov_hold_n,
+                        signal.p_win_server,
+                        signal.p_pattern_local,
                     ],
                 )
         except Exception as e:

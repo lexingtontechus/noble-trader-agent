@@ -624,12 +624,27 @@ class TradingViewApiAdapter(VenueAdapter):
     # ------------------------------------------------------------------ #
     # Batch-first quote fetch with per-symbol fallback
     # ------------------------------------------------------------------ #
+    # TradingViewAPI batch endpoint hard-limits to 10 symbols per request.
+    # Sending more either 4xx-errors or silently truncates to the first 10,
+    # causing the missing symbols to fall through to the slower single-fetch
+    # fallback path (10x the API calls). We chunk the input into batches of
+    # 10 and fire them sequentially (could be parallelised with a semaphore
+    # if rate limits allow — left sequential for safety).
+    BATCH_CHUNK_SIZE = 10
+
     async def get_quotes(self, symbols: list[str]) -> dict[str, float | None]:
         """Return {symbol: price|None}. Batch endpoint first; fall back per-symbol.
 
         TradingViewAPI batch schema (RapidAPI):
           POST /api/price/batch  body {"requests":[{"symbol":"EURUSD"}, ...]}
           resp {"success":true,"data":{"data":[{"symbol","current":{"close":..}}, ...]}}
+
+        The batch endpoint accepts a MAXIMUM of 10 symbols per request. We
+        chunk longer lists into batches of 10 and fire them sequentially.
+        Single-symbol fallback is used only for symbols that the batch
+        response failed to return (typically due to a malformed symbol or
+        a 429 on one of the batch chunks).
+
         Single fallback:
           GET  /api/price/{symbol}  -> {"data":{"symbol","current":{"close":..}}}
         """
@@ -637,13 +652,18 @@ class TradingViewApiAdapter(VenueAdapter):
         if not symbols or not self._configured:
             return out
 
-        batch = await self._request(
-            "POST",
-            f"{self._base_url}/api/price/batch",
-            json={"requests": [{"symbol": self.normalize_symbol(s)} for s in symbols]},
-        )
-        if batch:
-            out.update(self._extract_prices(batch, symbols))
+        # ── Batch in chunks of BATCH_CHUNK_SIZE (10) ──────────────────────
+        for i in range(0, len(symbols), self.BATCH_CHUNK_SIZE):
+            chunk = symbols[i : i + self.BATCH_CHUNK_SIZE]
+            batch = await self._request(
+                "POST",
+                f"{self._base_url}/api/price/batch",
+                json={"requests": [{"symbol": self.normalize_symbol(s)} for s in chunk]},
+            )
+            if batch:
+                out.update(self._extract_prices(batch, chunk))
+
+        # ── Per-symbol fallback for any symbols the batch didn't return ───
         missing = [s for s in symbols if out[s] is None]
         for sym in missing:
             single = await self._request("GET", f"{self._base_url}/api/price/{self.normalize_symbol(sym)}")

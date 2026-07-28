@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · PnL Analytics{% endblock %}
 
@@ -9,12 +9,15 @@
 
 {% block content %}
 
+{{ page_header(
+    title="PnL Analytics",
+    subtitle="Tear sheet · equity curve · trade history · by-regime breakdown",
+    refresh=30
+) }}
+
 {% if tear_sheet and tear_sheet.error %}
 {% call card(title="PnL Analytics") %}
-{{ empty_state(message="Insufficient data for tear sheet.", hint="Run: platform risk + platform execute") }}
-<p class="text-xs opacity-60 mt-2 text-center">
-    Accumulate account snapshots + realized trades, then re-visit this page.
-</p>
+{{ empty_state(message="Insufficient data for tear sheet.", hint="Run: platform risk + platform execute. Accumulate account snapshots + realized trades, then re-visit this page.") }}
 {% endcall %}
 {% elif tear_sheet and tear_sheet.summary %}
 
@@ -24,7 +27,7 @@
     {"value": "${:.2f}".format(tear_sheet.summary.final_equity), "label": "Final Equity", "color": "primary"},
     {"value": tear_sheet.summary.n_trades, "label": "Total Trades", "color": "info"},
     {"value": tear_sheet.summary.n_data_points, "label": "Data Points", "color": "secondary"}
-]) }}
+], columns=3, size="text-3xl") }}
 <div class="text-xs opacity-50 text-right mt-2">
     Period: {{ tear_sheet.summary.period_start[:19] if tear_sheet.summary.period_start else "?" }} →
     {{ tear_sheet.summary.period_end[:19] if tear_sheet.summary.period_end else "?" }}
@@ -102,6 +105,23 @@
 {% endcall %}
 </div>
 
+{# VaR Distribution Histogram (UX-UNIFORMITY-2).
+   Server-rendered matplotlib PNG replacing the deprecated dashboard's
+   VarDistHistogram.tsx React component. Shows the historical distribution
+   of VaR 1d 99% values from account_snapshots — bins < 0 are tinted red
+   (loss-side tail risk), bins ≥ 0 are tinted green (gain-side confidence). #}
+{% call card(title="VaR 1d 99% Distribution (matplotlib)", id="var-histogram-card") %}
+<img src="/api/charts/var_histogram.png?limit=500"
+     alt="VaR 1d 99% distribution histogram"
+     class="w-full rounded-box border border-base-300 bg-base-100"
+     loading="lazy">
+<div class="text-xs opacity-50 text-center mt-2">
+  Server-rendered PNG · cached 60s ·
+  <a href="/api/charts/var_histogram.png?limit=500" target="_blank" class="link link-hover text-primary">open raw</a> ·
+  <a href="/api/portfolio/var_history?limit=500" target="_blank" class="link link-hover text-primary">JSON</a>
+</div>
+{% endcall %}
+
 {# By Regime #}
 {% if tear_sheet.trading and tear_sheet.trading.get("by_regime") %}
 {% call card(title="PnL by Meta-Regime") %}
@@ -132,25 +152,17 @@
 {% endcall %}
 {% endif %}
 
-{# Equity Curve (live chart) #}
+{# Equity Curve (server-rendered matplotlib PNG, cached 60s) #}
 {% if equity_curve %}
-{% call card(title="Equity Curve (live chart, {} pts)".format(equity_curve | length), id="equity-curve-card") %}
-<div id="equity-curve" class="h-72 w-full" data-chart="equity"
-     data-api="/api/pnl/tear_sheet"></div>
-<div class="text-xs opacity-50 text-center mt-2">Interactive · hover for values</div>
-<script id="equity-curve-data" type="application/json">{{ equity_curve_json }}</script>
-<script>
-  if (window.HermesChart) {
-    var _ec = document.getElementById("equity-curve");
-    var _raw = document.getElementById("equity-curve-data");
-    try {
-      var _data = JSON.parse(_raw.textContent);
-      HermesChart.equityCurveFromData(_ec, _data).catch(function(){});
-    } catch (e) {
-      HermesChart.equityCurve(_ec, "/api/pnl/tear_sheet").catch(function(){});
-    }
-  }
-</script>
+{% call card(title="Equity Curve + Drawdown (matplotlib, {} pts)".format(equity_curve | length), id="equity-curve-card") %}
+<img src="/api/charts/equity.png?limit=500"
+     alt="Portfolio equity curve + drawdown"
+     class="w-full rounded-box border border-base-300 bg-base-100"
+     loading="lazy">
+<div class="text-xs opacity-50 text-center mt-2">
+  Server-rendered PNG · cached 60s ·
+  <a href="/api/charts/equity.png?limit=500" target="_blank" class="link link-hover text-primary">open raw</a>
+</div>
 {% endcall %}
 
 {# Cumulative Realized PnL (live chart) #}

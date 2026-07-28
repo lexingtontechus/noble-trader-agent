@@ -129,6 +129,7 @@ class MetaRegimeClassifier:
         spread_percentile: float | None = None,
         posterior_entropy: float | None = None,
         upstream_regime_shift: bool = False,
+        p_microstructure: float | None = None,
     ) -> MetaRegimeResult:
         """
         Classify the current portfolio-level regime.
@@ -139,9 +140,20 @@ class MetaRegimeClassifier:
             cross_asset_corr_mean: Mean |ρ| across portfolio (from CrossPriceMonitor)
             funding_annualized_pct: Annualized funding rate (from FundingWatcher)
             book_depth_percentile: L2 depth percentile (1-100, lower = thinner)
+                [SOFT-DEPRECATED P3.5] — L2 was deprecated; always None in
+                production. Kept for backward compat with backtest replay.
             spread_percentile: Spread percentile (1-100, higher = wider)
             posterior_entropy: HMM posterior entropy in bits (if available)
             upstream_regime_shift: True if NT flagged regime_shift="true"
+            p_microstructure: Composite L1+TA directional probability in
+                [-1, +1] from the proxy's /sse/alerts microstructure event
+                stream (HIGH #9, audit 2026-07-22). Positive = bullish
+                microstructure pressure, negative = bearish. Used as a
+                confidence adjuster after the rule-based waterfall: when
+                |p_microstructure| is large (strong microstructure signal),
+                confidence is nudged toward the mapped state; when near 0,
+                confidence is nudged toward 0.5 (uncertain). Adjustment is
+                bounded ±0.10 to avoid overriding the rule-based waterfall.
 
         Returns:
             MetaRegimeResult with state, confidence, sizing_multiplier, entry_aggressiveness
@@ -234,6 +246,47 @@ class MetaRegimeClassifier:
         # Determine dominant state
         state = max(probs, key=probs.get)
         confidence = probs[state]
+
+        # ── HIGH #9 (2026-07-22): p_microstructure confidence adjuster ──
+        # The proxy's composite microstructure signal (L1 + TVDA TA) is a
+        # directional probability in [-1, +1]. We use it as a *bounded*
+        # confidence adjuster:
+        #   - When |p_microstructure| is large (strong signal), nudge
+        #     confidence toward the dominant state (max +0.10 boost)
+        #   - When |p_microstructure| is small (weak/neutral), nudge
+        #     confidence toward 0.5 (uncertain; max -0.10 penalty)
+        # The ±0.10 bound is intentional — microstructure is a *secondary*
+        # input and must not override the rule-based waterfall's primary
+        # crisis/transition logic. The mapping is sign-aware:
+        #   - Positive p_microstructure + bullish state (calm_trend,
+        #     high_vol_breakout) → boost
+        #   - Negative p_microstructure + bullish state → penalty
+        #   - Same for bearish-direction states (none currently in the
+        #     7-state taxonomy; risk_off/funding_stress are non-directional
+        #     and skipped)
+        # Crisis + transition states (risk_off, funding_stress,
+        # liquidity_drained, regime_transition) are skipped — microstructure
+        # pressure is irrelevant when the portfolio is in crisis.
+        if (
+            p_microstructure is not None
+            and state in ("calm_trend", "choppy_range", "high_vol_breakout")
+        ):
+            # Map p_microstructure from [-1, +1] to a [-0.10, +0.10] nudge.
+            # |p_microstructure| drives magnitude; sign drives direction
+            # relative to the state's inherent bullishness.
+            state_bullishness = {
+                "calm_trend": 1.0,           # trending up = bullish bias
+                "high_vol_breakout": 1.0,    # breakout = bullish bias
+                "choppy_range": 0.0,         # range = no directional bias
+            }.get(state, 0.0)
+            # Sign agreement: bullish p_micro + bullish state = + nudge
+            # bearish p_micro + bullish state = - nudge
+            # Either + range state = 0 nudge (no directional bias to confirm)
+            if state_bullishness != 0.0:
+                sign_agreement = 1.0 if (p_microstructure * state_bullishness) > 0 else -1.0
+                magnitude = min(abs(p_microstructure), 1.0)  # clamp to [0, 1]
+                nudge = sign_agreement * magnitude * 0.10
+                confidence = max(0.0, min(1.0, confidence + nudge))
 
         # Track state changes
         prev_state = self._last_state.get(sym)

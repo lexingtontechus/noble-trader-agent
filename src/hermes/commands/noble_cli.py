@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 
 import click
@@ -203,7 +204,15 @@ async def _seed_cache_from_upstream(timeout_sec: int = 20) -> None:
 
 
 def _hl_candles(symbol_hl: str, n: int = 200) -> list[float]:
-    """Fetch recent closes for a Hyperliquid perp via the project REST endpoint.
+    """[DEPRECATED — M4 migration] Fetch recent closes for a Hyperliquid perp.
+
+    This function is retained for backward compatibility with any external
+    callers, but is no longer used by the dashboard or `noble assets` CLI.
+    New code should use `hermes.web.charts._data.fetch_tdva_candles()` instead
+    — it's multi-asset (crypto + forex + equities + commodities) and supports
+    the local proxy's /history/{symbol} endpoint as a cached fallback.
+
+    See DASHBOARD-UPGRADE-SCOPING.md §7.4 for the migration plan.
 
     Uses the same credential-resolver pattern as live_equity.py (creds never
     leave the subprocess). Falls back to [] on any error.
@@ -248,16 +257,22 @@ def _hl_candles(symbol_hl: str, n: int = 200) -> list[float]:
 
 
 def _renko_ladder(closes: list[float], brick_size: float, n_show: int = 8) -> dict:
-    """Rebuild renko bricks from closes using the project RenkoConstructor."""
+    """Rebuild renko bricks from closes using the project RenkoConstructor.
+
+    M4 migration (DASHBOARD-UPGRADE-SCOPING.md §7.4): venue is now TRADINGVIEW
+    (TDVA) instead of HYPERLIQUID. The constructor's venue field is metadata
+    only — it doesn't affect brick geometry, just labels the bricks for
+    downstream consumers.
+    """
     from hermes.schemas.market import Tick, Venue
     from hermes.signals.renko_engine import RenkoConstructor
 
     if not closes or brick_size <= 0:
         return {"bricks": [], "current_price": closes[-1] if closes else None}
-    constructor = RenkoConstructor(brick_size=brick_size, symbol="X", venue=Venue.HYPERLIQUID)
+    constructor = RenkoConstructor(brick_size=brick_size, symbol="X", venue=Venue.TRADINGVIEW)
     for i, px in enumerate(closes):
         ts = datetime.fromtimestamp(1_700_000_000 + i * 60, tz=timezone.utc)
-        constructor.on_tick(Tick(symbol="X", venue=Venue.HYPERLIQUID, price=px, size=1.0, ts=ts))
+        constructor.on_tick(Tick(symbol="X", venue=Venue.TRADINGVIEW, price=px, size=1.0, ts=ts))
     bricks = constructor.get_bricks()
     shown = [
         {"n": b.brick_number, "dir": b.direction.value if hasattr(b.direction, "value") else str(b.direction),
@@ -337,9 +352,19 @@ def noble_assets(with_bricks: bool, seed_timeout: int) -> None:
                 click.echo(f"      -- Hermes meta-regime --")
                 click.echo(f"      state={mr.state} (conf={mr.confidence:.2f})  sizing_x={mr.sizing_multiplier}  entry={mr.entry_aggressiveness}")
 
-                if with_bricks and r["venue"] in ("hyperliquid", "hyperliquid-spot"):
-                    hl_sym = sym.replace("-PERP", "")
-                    closes = _hl_candles(hl_sym)
+                if with_bricks:
+                    # M4 migration (DASHBOARD-UPGRADE-SCOPING.md §7.4): switch from
+                    # legacy crypto-only _hl_candles() to multi-asset fetch_tdva_candles().
+                    # This enables renko ladders for forex/equities/commodities PP
+                    # symbols (EURUSD=X, GC=F, ES=F, etc.) for the first time.
+                    try:
+                        from hermes.core.config import load_config as _load_cfg
+                        from hermes.web.charts._data import fetch_tdva_candles as _fetch_tdva
+                        _cfg = _load_cfg()
+                        closes = _fetch_tdva(_cfg, sym, limit=200, timeframe="15m")
+                    except Exception as e:
+                        log.warning("tdva_fetch_failed_in_cli", symbol=sym, error=str(e)[:120])
+                        closes = []
                     if closes:
                         lad = _renko_ladder(closes, hb.brick_size)
                         brick_str = " ".join(
@@ -348,7 +373,7 @@ def noble_assets(with_bricks: bool, seed_timeout: int) -> None:
                         click.echo(f"      -- Renko ladder (last {len(lad['bricks'])} of {lad['n_total_bricks']}) --")
                         click.echo(f"      {brick_str}  | last_dir={lad['last_dir']}  price=${lad['current_price']:.2f}")
                     else:
-                        click.echo("      -- Renko ladder: HL candle feed unavailable (brick_size above) --")
+                        click.echo("      -- Renko ladder: TDVA candle feed unavailable (brick_size above) --")
             else:
                 click.echo("      (no Noble Trader heartbeat cached for this symbol - run: noble listen)")
         click.echo("\n" + "=" * 100)
@@ -676,6 +701,179 @@ def noble_bug(title, description, repo, labels, traceback_file, dry_run):
 def _derive_bug_title(description: str) -> str:
     first = description.strip().splitlines()[0] if description.strip() else "Bug report"
     return (first[:80].rstrip() or "Bug report") + " (tenant)"
+
+
+# --------------------------------------------------------------------------- #
+# noble journal — trade journal: LLM postmortem generation + backfill
+# --------------------------------------------------------------------------- #
+# Phase 1A entry point. The Hermes agent reads skills/trade_journal/SKILL.md
+# and updates rows in the trade_postmortem table (1:1 with
+# trade_signals_blended, keyed by signal_id).
+#
+# Cron model:
+#   nightly:        noble journal generate --date $(yesterday)
+#   retry cron:     noble journal backfill --retry-failed --start <win> --end <win>
+#
+# When invoked from the agent runtime, TradeJournal is constructed with the
+# agent's skill_invoker (its own inference router). When invoked manually
+# outside the agent runtime, skill_invoker is None and the command raises
+# a clear error.
+
+
+@noble.group(name="journal", help="Trade journal: hypothesis + LLM postmortem + backfill.")
+def journal() -> None:
+    """Trade journal commands."""
+    pass
+
+
+@journal.command(name="generate", help="Generate LLM postmortems for one trading day.")
+@click.option("--date", "trade_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Trading day to postmortem (YYYY-MM-DD).")
+@click.option("--force", is_flag=True, default=False,
+              help="Regenerate even if postmortem_status='generated' (never touches 'reviewed' or 'skipped').")
+def journal_generate(trade_date: datetime) -> None:
+    """Generate LLM postmortems for every signal emitted on --date.
+
+    Calls TradeJournal.generate_postmortem_for_day(trade_date.date()).
+    Writes postmortem_llm, postmortem_status, postmortem_generated_at into
+    trade_postmortem. On LLM failure: sets postmortem_status='llm_unavailable'.
+    Skips rows that already have postmortem_status != NULL unless --force.
+
+    Never overwrites rows where postmortem_status IN ('reviewed', 'skipped')
+    — those are human-acked / human-dismissed.
+    """
+    from hermes.ops.trade_journal import TradeJournal
+    from hermes.core.config import load_config
+
+    cfg = load_config()
+    tj = TradeJournal(cfg)
+    try:
+        updated = tj.generate_postmortem_for_day(trade_date.date(), force=force)
+    except RuntimeError as e:
+        click.echo(f"  ERROR: {e}", err=True)
+        sys.exit(1)
+    stats = tj.get_stats()
+    click.echo(f"  postmortems written: {updated}")
+    click.echo(f"  generated: {stats['generated']}, failed: {stats['failed']}, skipped: {stats['skipped']}")
+
+
+@journal.command(name="backfill", help="Idempotent backfill of missing/failed postmortems.")
+@click.option("--start", "start_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Backfill start (YYYY-MM-DD, inclusive).")
+@click.option("--end", "end_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Backfill end (YYYY-MM-DD, inclusive).")
+@click.option("--retry-failed", is_flag=True, default=False,
+              help="Also retry rows where postmortem_status='llm_unavailable' (default: only NULL).")
+def journal_backfill(start_date: datetime, end_date: datetime) -> None:
+    """Backfill postmortems for a date range.
+
+    Dispatches to TradeJournal.backfill(start_date.date(), end_date.date(), retry_failed=...).
+    Selects rows where postmortem_status IS NULL (always), plus
+    postmortem_status='llm_unavailable' iff --retry-failed. Never overwrites
+    postmortem_status='reviewed' or 'skipped' (human-edited).
+
+    Idempotent: safe to re-run; skips rows already in 'generated' or 'reviewed'.
+    """
+    from hermes.ops.trade_journal import TradeJournal
+    from hermes.core.config import load_config
+
+    cfg = load_config()
+    tj = TradeJournal(cfg)
+    try:
+        n = tj.backfill(start_date.date(), end_date.date(), retry_failed=retry_failed)
+    except RuntimeError as e:
+        click.echo(f"  ERROR: {e}", err=True)
+        sys.exit(1)
+    stats = tj.get_stats()
+    click.echo(f"  backfilled: {n}")
+    click.echo(f"  generated: {stats['generated']}, failed: {stats['failed']}, skipped: {stats['skipped']}")
+
+
+# --------------------------------------------------------------------------- #
+# noble explanation — signal explainer: LLM rationale + structured explanation
+# --------------------------------------------------------------------------- #
+# Phase 1B entry point. The Hermes agent reads skills/signal-explainer/SKILL.md
+# and updates rows in the signal_explanations table (1:1 with
+# signal_heartbeats, keyed by heartbeat_id).
+#
+# Cron model:
+#   nightly:        noble explanation generate --date $(yesterday)
+#   retry cron:     noble explanation backfill --retry-failed --start <win> --end <win>
+#
+# When invoked from the agent runtime, SignalExplainer is constructed with the
+# agent's skill_invoker (its own inference router). When invoked manually
+# outside the agent runtime, skill_invoker is None and the command raises
+# a clear error.
+
+
+@noble.group(name="explanation", help="Signal explainer: LLM rationale + structured explanation + backfill.")
+def explanation() -> None:
+    """Signal explainer commands."""
+    pass
+
+
+@explanation.command(name="generate", help="Generate LLM explanations for one trading day's signals.")
+@click.option("--date", "trade_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Trading day to explain (YYYY-MM-DD).")
+@click.option("--force", is_flag=True, default=False,
+              help="Regenerate even if explanation_status='generated' (never touches 'reviewed' or 'skipped').")
+def explanation_generate(trade_date: datetime) -> None:
+    """Generate LLM explanations for every signal emitted on --date.
+
+    Calls SignalExplainer.generate_explanations_for_day(trade_date.date()).
+    Writes rationale, explanation, source_breakdown, explanation_status,
+    explanation_generated_at into signal_explanations. On LLM failure:
+    sets explanation_status='llm_unavailable'. Skips rows that already
+    have explanation_status != NULL unless --force.
+
+    Never overwrites rows where explanation_status IN ('reviewed', 'skipped')
+    — those are human-acked / human-dismissed.
+    """
+    from hermes.ops.signal_explainer import SignalExplainer
+    from hermes.core.config import load_config
+
+    cfg = load_config()
+    se = SignalExplainer(cfg)
+    try:
+        updated = se.generate_explanations_for_day(trade_date.date(), force=force)
+    except RuntimeError as e:
+        click.echo(f"  ERROR: {e}", err=True)
+        sys.exit(1)
+    stats = se.get_stats()
+    click.echo(f"  explanations written: {updated}")
+    click.echo(f"  generated: {stats['generated']}, failed: {stats['failed']}, skipped: {stats['skipped']}")
+
+
+@explanation.command(name="backfill", help="Idempotent backfill of missing/failed explanations.")
+@click.option("--start", "start_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Backfill start (YYYY-MM-DD, inclusive).")
+@click.option("--end", "end_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
+              help="Backfill end (YYYY-MM-DD, inclusive).")
+@click.option("--retry-failed", is_flag=True, default=False,
+              help="Also retry rows where explanation_status='llm_unavailable' (default: only NULL).")
+def explanation_backfill(start_date: datetime, end_date: datetime) -> None:
+    """Backfill explanations for a date range.
+
+    Dispatches to SignalExplainer.backfill(start_date.date(), end_date.date(), retry_failed=...).
+    Selects rows where explanation_status IS NULL (always), plus
+    explanation_status='llm_unavailable' iff --retry-failed. Never overwrites
+    explanation_status='reviewed' or 'skipped' (human-edited).
+
+    Idempotent: safe to re-run; skips rows already in 'generated' or 'reviewed'.
+    """
+    from hermes.ops.signal_explainer import SignalExplainer
+    from hermes.core.config import load_config
+
+    cfg = load_config()
+    se = SignalExplainer(cfg)
+    try:
+        n = se.backfill(start_date.date(), end_date.date(), retry_failed=retry_failed)
+    except RuntimeError as e:
+        click.echo(f"  ERROR: {e}", err=True)
+        sys.exit(1)
+    stats = se.get_stats()
+    click.echo(f"  backfilled: {n}")
+    click.echo(f"  generated: {stats['generated']}, failed: {stats['failed']}, skipped: {stats['skipped']}")
 
 
 def register_noble(parent) -> None:

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, stat_grid, status_badge, subsystem_row, empty_state, refresh_note %}
+{% from "components/ui.html" import card, stat_grid, status_badge, subsystem_row, empty_state, refresh_note, signal_badge, regime_badge, kelly_badge, page_header %}
 
 {% block title %}Hermes Dashboard · Status{% endblock %}
 
@@ -7,11 +7,11 @@
 
 {% block content %}
 
-{# Overall status #}
-{% call card(title="Overall: " ~ status.overall) %}
-{{ refresh_note(10) }}
-<div class="text-xs opacity-50">Last checked: {{ status.checked_at[:19] }}Z</div>
-{% endcall %}
+{{ page_header(
+    title="Status · " ~ status.overall,
+    subtitle="Last checked: " ~ status.checked_at[:19] ~ "Z · " ~ (status.subsystems | length) ~ " subsystems",
+    refresh=10
+) }}
 
 {# Subsystem connections #}
 {% call card(title="Subsystem Connections") %}
@@ -31,8 +31,8 @@
     {"value": stats.rejected, "label": "Rejected", "color": "error"},
     {"value": stats.last_hour, "label": "Last Hour", "color": "info"},
     {"value": stats.regime_shifts, "label": "Regime Shifts", "color": "warning"},
-    {"value": stats.by_symbol | length, "label": "Symbols Seen", "color": "secondary"}
-]) }}
+    {"value": stats.by_symbol | length, "label": "Symbols Seen", "color": "info"}
+], columns=6, size="text-xl") }}
 
 {% if stats.by_symbol %}
 <div class="divider"></div>
@@ -58,11 +58,7 @@
         <thead><tr><th>Signal</th><th>Count</th></tr></thead>
         <tbody>
             {% for row in stats.by_signal %}
-            <tr><td>
-                {% if row.signal == "buy" %}<span class="badge badge-success badge-sm">buy</span>
-                {% elif row.signal == "sell" %}<span class="badge badge-error badge-sm">sell</span>
-                {% else %}<span class="badge badge-ghost badge-sm">{{ row.signal }}</span>{% endif %}
-            </td><td>{{ row.count }}</td></tr>
+            <tr><td>{{ signal_badge(row.signal) }}</td><td>{{ row.count }}</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -78,7 +74,7 @@
 {% call card(title="Recent Heartbeats (last 20)") %}
 {% if recent_heartbeats %}
 <div class="overflow-x-auto">
-    <table class="table table-zebra table-xs">
+    <table class="table table-zebra table-sm">
         <thead><tr>
             <th>Received</th><th>Symbol</th><th>Signal</th><th>Regime</th>
             <th>Conf</th><th>Entry</th><th>Stop</th><th>TP</th>
@@ -89,16 +85,14 @@
             <tr>
                 <td><span class="font-mono text-xs opacity-60">{{ hb.ts_received|string|truncate(19, true, '') }}</span></td>
                 <td class="font-semibold">{{ hb.symbol }}</td>
-                <td>{% if hb.signal == "buy" %}<span class="badge badge-success badge-xs">buy</span>
-                    {% elif hb.signal == "sell" %}<span class="badge badge-error badge-xs">sell</span>
-                    {% else %}<span class="badge badge-ghost badge-xs">{{ hb.signal }}</span>{% endif %}</td>
-                <td>{{ hb.regime }}</td>
+                <td>{{ signal_badge(hb.signal) }}</td>
+                <td>{{ regime_badge(hb.regime) if hb.regime else '-' }}</td>
                 <td>{{ "%.3f" | format(hb.regime_conf) if hb.regime_conf else "-" }}</td>
                 <td>{{ hb.entry_price }}</td>
                 <td>{{ hb.stop_loss }}</td>
                 <td>{{ hb.take_profit }}</td>
                 <td>{{ hb.brick_size }}</td>
-                <td>{{ "%.4f" | format(hb.effective_kelly) if hb.effective_kelly else "-" }}</td>
+                <td>{{ kelly_badge(hb.effective_kelly, live=hb.is_live) }}</td>
                 <td>{{ "%.3f" | format(hb.p_win) if hb.p_win else "-" }}</td>
                 <td>{{ status_badge("ok" if hb.accepted else (hb.reject_reason or "rejected")) }}</td>
             </tr>

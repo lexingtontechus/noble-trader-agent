@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Monitor{% endblock %}
 
@@ -9,8 +9,14 @@
 
 {% block content %}
 
+{{ page_header(
+    title="Active Price Monitor",
+    subtitle=("live · " ~ (live_data.positions | length) ~ " positions watched" if monitor_running else "DuckDB event log (monitor not in-process)"),
+    refresh=10
+) }}
+
 {# Monitor status #}
-{% call card(title="Active Price Monitor") %}
+{% call card(title="Monitor Status") %}
 {% if monitor_running %}
 {{ status_badge("live") }}
 {% if live_data and live_data.stats %}
@@ -22,15 +28,11 @@
     {"value": live_data.stats.events_emitted, "label": "Events Emitted", "color": "success"},
     {"value": live_data.stats.funding_processed, "label": "Funding Updates", "color": "warning"},
     {"value": live_data.positions | length, "label": "Positions Watched", "color": "neutral"}
-]) }}
+], columns=6, size="text-xl") }}
 </div>
 {% endif %}
 {% else %}
-{{ empty_state(message="Monitor not running in this process.", hint="Run: platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP") }}
-<p class="text-xs opacity-60 mt-2 text-center">
-    The events below are from the DuckDB <code class="text-primary">price_monitor_events</code> table
-    (populated when the monitor is running).
-</p>
+{{ empty_state(message="Monitor not running in this process.", hint="Run: platform monitor --symbols BTC/USD,SOL/USD,BTC-PERP. The events below are from the DuckDB price_monitor_events table (populated when the monitor is running).") }}
 {% endif %}
 {% endcall %}
 

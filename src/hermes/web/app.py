@@ -151,7 +151,17 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Global config + optional monitor reference
 _config: HermesConfig | None = None
-_monitor = None  # Set by dashboard if monitor is running in same process
+# MEDIUM-LOW-AGENT-REPO Fix #14 (2026-07-22): _monitor is wired ONLY by
+# ``create_app(config, monitor=...)`` (line ~161) when the dashboard is
+# launched in the SAME process as the price monitor (e.g. via
+# ``platform dashboard --with-monitor`` or the dev CLI). In standalone
+# web mode (``platform dashboard`` alone, or uvicorn hermes.web.app:app
+# with no monitor process attached), ``_monitor`` stays ``None`` and the
+# /monitor page degrades to a DuckDB-event-log view with an informative
+# "Monitor not running in this process" banner (see monitor.html:35).
+# Route handlers must always guard ``_monitor is not None`` before
+# touching attributes — never assume it is set.
+_monitor = None  # Set by create_app() when the price monitor runs in-process
 
 
 def create_app(config: HermesConfig, monitor=None) -> FastAPI:
@@ -450,12 +460,15 @@ async def index(request: Request) -> HTMLResponse:
 # First use of the web app routes here. After setup is complete the wizard is
 # hidden (root redirects to /portfolio and /setup redirects there too).
 _SETUP_REQUIRED_KEYS = (
-    "NOBLE_TRADER_REDIS_URL",
+    "NOBLE_TRADER_PROXY_REDIS_URL",
     "TRADINGVIEW_API_KEY",
     "MT4_MT5_BRIDGE_TOKEN",
+    "NOBLE_TRADER_LICENSE_KEY",
+    "NOBLE_TRADER_QUOTE_PROXY_URL",
 )
 _PLACEHOLDER_VALUES = {"", "<nt-redis-host>", "redis://<nt-redis-host>:<port>",
-                       "<publishable-anon-key>", "<paper-api-key>", "<0x-your-dedicated-trading-wallet>"}
+                       "<publishable-anon-key>", "<paper-api-key>", "<0x-your-dedicated-trading-wallet>",
+                       "<license-key>", "<quote-proxy-url>"}
 
 
 def _env_path() -> Path:
@@ -888,6 +901,8 @@ async def approvals_page(request: Request, _auth: dict[str, Any] = Depends(requi
             "version": __version__,
             "environment": config.environment,
             "pending": rows,
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
@@ -953,6 +968,7 @@ async def heartbeats_page(
 
     # Derive lag_ms (received - upstream) for display. Heartbeats carry pandas
     # Timestamps; compute here so the template only renders plain values.
+    now = datetime.datetime.now(datetime.timezone.utc)
     for h in heartbeats:
         _tr, _tu = h.get("ts_received"), h.get("ts_upstream")
         try:
@@ -960,24 +976,62 @@ async def heartbeats_page(
         except Exception:
             h["lag_ms"] = None
 
+        # UX-UNIFORMITY-2: mark recent heartbeats as "live" (within 60s of now)
+        # so the kelly_badge pulse animation distinguishes fresh from cached.
+        try:
+            if _tr is not None:
+                # Normalize: pandas Timestamp or datetime → aware UTC seconds
+                _tr_aware = _tr.to_pydatetime().astimezone(datetime.timezone.utc) if hasattr(_tr, "to_pydatetime") else _tr
+                if _tr_aware.tzinfo is None:
+                    _tr_aware = _tr_aware.replace(tzinfo=datetime.timezone.utc)
+                age_sec = (now - _tr_aware).total_seconds()
+                h["is_live"] = 0 <= age_sec <= 60
+            else:
+                h["is_live"] = False
+        except Exception:
+            h["is_live"] = False
+
+    # UX-UNIFORMITY-2: compute kelly_delta (change in effective_kelly vs prior
+    # heartbeat for the same symbol). Sorted DESC by ts_received, so iterate
+    # from oldest→newest by reversing, then track prior_kelly per symbol.
+    _prior_kelly: dict[str, float | None] = {}
+    for h in reversed(heartbeats):
+        sym = h.get("symbol")
+        cur = h.get("effective_kelly")
+        prev = _prior_kelly.get(sym)
+        try:
+            if prev is not None and cur is not None:
+                h["kelly_delta"] = float(cur) - float(prev)
+            else:
+                h["kelly_delta"] = None
+        except Exception:
+            h["kelly_delta"] = None
+        if cur is not None:
+            _prior_kelly[sym] = cur
+
     return templates.TemplateResponse(
         request,
         "heartbeats.html",
         {
             "version": __version__,
             "config_hash": get_config_hash(config),
+            "environment": config.environment,
             "heartbeats": heartbeats[:limit],
             "filter_symbol": symbol,
             "limit": limit,
             "total_shown": len(heartbeats[:limit]),
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
 
-@app.get("/test")
-async def test_endpoint() -> JSONResponse:
-    """Simple test endpoint."""
-    return JSONResponse({"message": "Backend is working!"})
+# MEDIUM-LOW-AGENT-REPO Fix #23 (2026-07-22): the duplicate /test route
+# that previously lived here (returning {"message": "Backend is working!"})
+# was deleted — it shadowed the earlier /test registration at line ~346
+# (which returns {"message": "Test endpoint works!"}). FastAPI keeps only
+# the LAST registration for a given path, so the first one was unreachable.
+# Kept the line-346 registration; removed this one to avoid confusion.
 
 @app.get("/health-simple")
 async def health_simple() -> JSONResponse:
@@ -991,10 +1045,18 @@ async def health_simple() -> JSONResponse:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    """JSON health endpoint (for monitoring/CI)."""
+    """JSON health endpoint (for monitoring/CI).
+
+    MEDIUM-LOW-AGENT-REPO Fix #24 (2026-07-22): previously returned a
+    hardcoded ``"0.1.0-dev"`` string that drifted from the canonical
+    ``hermes.__version__`` (currently "0.1.0" per src/hermes/__init__.py:3).
+    Now uses the module-level ``__version__`` imported at app.py:39
+    (with a "0.1.0-dev" fallback only if the import fails). Response
+    shape is unchanged.
+    """
     return JSONResponse({
         "status": "healthy",
-        "version": "0.1.0-dev",
+        "version": __version__,
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "message": "Hermes backend is running"
     })
@@ -1044,7 +1106,13 @@ async def monitor_page(request: Request) -> HTMLResponse:
 
     events = get_recent_monitor_events(config, limit=50)
 
-    # Get live data from monitor if running in-process
+    # Get live data from monitor if running in-process.
+    # MEDIUM-LOW-AGENT-REPO Fix #14 (2026-07-22): in standalone web mode
+    # (no monitor passed to create_app), _monitor is None and we gracefully
+    # fall back to an empty live_data dict + monitor_running=False — the
+    # monitor.html template then renders the "Monitor not running in this
+    # process" banner (see monitor.html:35) and the page still shows the
+    # DuckDB event-log card below. We never raise on a missing monitor.
     live_data = {}
     if _monitor is not None:
         live_data = {
@@ -1076,6 +1144,9 @@ async def monitor_page(request: Request) -> HTMLResponse:
             "events": events,
             "live_data": live_data,
             "monitor_running": _monitor is not None,
+            # Explicit standalone-mode flag so the template can render a
+            # clearer hint when no monitor is attached to this process.
+            "standalone_mode": _monitor is None,
         },
     )
 
@@ -1103,6 +1174,42 @@ async def signals_page(request: Request) -> HTMLResponse:
 
     signals = get_recent_blended_signals(config, limit=100)
 
+    # UX-UNIFORMITY-2 (delta/live wiring): mirror the /heartbeats route's
+    # computation so the kelly_badge on this page can show the same delta
+    # arrow + live pulse. Signals are emitted only when entry conditions
+    # fire (much rarer than heartbeats), so:
+    #   - is_live = signal was emitted within last 60s (very fresh)
+    #   - kelly_delta = change in nt_effective_kelly vs prior signal for
+    #     the SAME symbol — answers "is sizing ramping up or down?"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    _prior_kelly_sig: dict[str, float | None] = {}
+    # signals is DESC by ts_emitted — iterate oldest→newest to compute deltas
+    for s in reversed(signals):
+        sym = s.get("symbol")
+        cur = s.get("nt_effective_kelly")
+        prev = _prior_kelly_sig.get(sym)
+        try:
+            if prev is not None and cur is not None:
+                s["kelly_delta"] = float(cur) - float(prev)
+            else:
+                s["kelly_delta"] = None
+        except Exception:
+            s["kelly_delta"] = None
+        if cur is not None:
+            _prior_kelly_sig[sym] = cur
+
+        _te = s.get("ts_emitted")
+        try:
+            if _te is not None:
+                _te_aware = _te.to_pydatetime().astimezone(datetime.timezone.utc) if hasattr(_te, "to_pydatetime") else _te
+                if _te_aware.tzinfo is None:
+                    _te_aware = _te_aware.replace(tzinfo=datetime.timezone.utc)
+                s["is_live"] = 0 <= (now - _te_aware).total_seconds() <= 60
+            else:
+                s["is_live"] = False
+        except Exception:
+            s["is_live"] = False
+
     return templates.TemplateResponse(
         request,
         "signals.html",
@@ -1111,6 +1218,8 @@ async def signals_page(request: Request) -> HTMLResponse:
             "config_hash": get_config_hash(config),
             "environment": config.environment,
             "signals": signals,
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
@@ -1133,6 +1242,8 @@ async def portfolio_page(request: Request) -> HTMLResponse:
             "environment": config.environment,
             "metrics": metrics,
             "decisions": decisions,
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
@@ -1167,6 +1278,8 @@ async def orders_page(request: Request) -> HTMLResponse:
             "environment": config.environment,
             "orders": orders,
             "fills": fills,
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
@@ -1206,6 +1319,8 @@ async def pnl_page(request: Request) -> HTMLResponse:
             "equity_curve": equity_curve,
             "equity_curve_json": equity_curve_json,
             "pnl_history": pnl_history,
+            "strip_data": _build_regime_strip(config),
+            "show_regime_strip": True,
         },
     )
 
@@ -1252,12 +1367,17 @@ async def optimize_page(request: Request) -> HTMLResponse:
 
 @app.get("/agent", response_class=HTMLResponse)
 async def agent_page(request: Request) -> HTMLResponse:
-    """Agent page — shows hypotheses + trade journal + decision tree."""
-    config = get_config()
-    from hermes.web.status import get_hypotheses, get_trade_journal_entries
+    """Agent page — shows trade journal + decision tree.
 
-    hypotheses = get_hypotheses(config, limit=50)
+    Phase 1A v10: Hypotheses card removed (hermes_hypotheses table dropped;
+    hypothesis is now a per-signal column on trade_postmortem, surfaced via
+    `noble journal generate`). See LLM-INTEGRATION-STRATEGY.md §7.
+    """
+    config = get_config()
+    from hermes.web.status import get_trade_journal_entries, get_decision_tree_definition
+
     journal = get_trade_journal_entries(config, limit=50)
+    decision_tree = get_decision_tree_definition()
 
     return templates.TemplateResponse(
         request,
@@ -1266,25 +1386,9 @@ async def agent_page(request: Request) -> HTMLResponse:
             "version": __version__,
             "config_hash": get_config_hash(config),
             "environment": config.environment,
-            "hypotheses": hypotheses,
             "journal": journal,
+            "decision_tree": decision_tree,
         },
-    )
-
-
-@app.get("/api/hypotheses")
-async def api_hypotheses(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
-    """JSON hypotheses endpoint."""
-    import json as _json
-
-    config = get_config()
-    from hermes.web.status import get_hypotheses
-
-    hyps = get_hypotheses(config, limit=limit)
-    return JSONResponse(
-        content=safe_json(
-            {"count": len(hyps), "hypotheses": hyps},
-        )
     )
 
 
@@ -1370,9 +1474,49 @@ async def api_portfolio_exposure(
 async def api_agent_decision_tree(
     _auth: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
-    """Static decision tree definition (interactive tree viz source)."""
+    """Live decision tree definition (interactive tree viz source).
+
+    MEDIUM-LOW-AGENT-REPO Fix #13 (2026-07-22): previously returned a
+    hardcoded static dict via ``hermes.web.status.get_decision_tree_definition``
+    — operators couldn't tell whether a config edit had actually
+    propagated to the runtime decision tree. Now constructs a fresh
+    ``HermesDecisionTree`` from the *loaded* config (mirroring
+    ``execution/orchestrator.py:101-118``) and surfaces its actual
+    11 threshold values via ``to_dict()`` alongside the static tree
+    structure. Response shape is unchanged (still has ``root``); a
+    new top-level ``thresholds`` key carries the live values.
+    """
+    from hermes.agent.decision_tree import HermesDecisionTree
     from hermes.web.status import get_decision_tree_definition
-    return JSONResponse(get_decision_tree_definition())
+
+    config = get_config()
+    _dt_cfg = (
+        config.position_management.get("decision_tree", {})
+        if hasattr(config, "position_management")
+        else {}
+    )
+    # Per-key fallback preserves backward compat for configs that don't
+    # yet have a decision_tree subsection (matches orchestrator behavior).
+    tree = HermesDecisionTree(
+        stop_loss_pct=_dt_cfg.get("stop_loss_pct", -0.01),
+        take_profit_pct=_dt_cfg.get("take_profit_pct", 0.025),
+        early_profit_pct=_dt_cfg.get("early_profit_pct", 0.045),
+        fading_brick_count=_dt_cfg.get("fading_brick_count", 2),
+        strong_conviction_threshold=_dt_cfg.get("strong_conviction_threshold", 0.7),
+        trail_stop_activation_pct=_dt_cfg.get("trail_stop_activation_pct", 0.01),
+        markov_persistence_high=_dt_cfg.get("markov_persistence_high", 0.7),
+        markov_persistence_low=_dt_cfg.get("markov_persistence_low", 0.55),
+        trending_tp_multiplier=_dt_cfg.get("trending_tp_multiplier", 1.5),
+        mean_reverting_tp_multiplier=_dt_cfg.get("mean_reverting_tp_multiplier", 0.7),
+        trending_fading_bricks_delta=_dt_cfg.get("trending_fading_bricks_delta", 1),
+    )
+
+    # Merge: keep the static tree structure for the interactive viz
+    # (root + nested branches), AND add a top-level "thresholds" key
+    # with the live config-driven values + decision counters.
+    payload = get_decision_tree_definition()
+    payload["thresholds"] = tree.to_dict()
+    return JSONResponse(safe_json(payload))
 
 
 @app.get("/api/agent/trade_journal")
@@ -1676,12 +1820,12 @@ def _get_session_id(request: Request) -> str | None:
             user = session.get('user')
             if isinstance(user, dict) and 'username' in user:
                 return f"user:{user['username']}"
-    
+
     # Check for session cookie
     session_id = request.cookies.get('session')
     if session_id:
         return f"session:{session_id}"
-    
+
     # Check for bearer token (agent auth)
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
@@ -1689,5 +1833,376 @@ def _get_session_id(request: Request) -> str | None:
         token = auth_header[7:]
         token_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
         return f"agent:{token_hash}"
-    
+
     return None
+
+
+# =========================================================================== #
+# Market dashboard — per-symbol regime + renko + meta-regime drill-down.
+#
+# Routes (added as part of the DASHBOARD-UPGRADE-SCOPING.md migration):
+#   GET /market                      — 20-symbol grid + regime strip (M3)
+#   GET /market/{symbol}             — per-symbol detail page with 4 tabs (M9)
+#   GET /api/market/overview         — JSON overview, 10s cached (M1)
+#   GET /api/market/symbol/{symbol}  — JSON detail (M9 helper)
+#   GET /api/charts/renko/{symbol}.png              — renko brick PNG (M4)
+#   GET /api/charts/price_regime/{symbol}.png       — price + regime tint (M5)
+#   GET /api/charts/regime_probs/{symbol}.png       — 7-state probability bars (M6)
+#   GET /api/charts/meta_regime_radial/{symbol}.png — 7-state radial gauge (M7)
+#   GET /api/charts/equity.png                      — portfolio equity curve (M8)
+#
+# All chart endpoints return PNG bytes via local-agent matplotlib (Agg backend).
+# All data comes from the local DuckDB file or TDVA (TradingView Data API) —
+# never Hyperliquid. See DASHBOARD-UPGRADE-SCOPING.md §3.3 + §7.4.
+# =========================================================================== #
+
+
+# --- M1: /api/market/overview JSON endpoint ----------------------------------
+#
+# In-memory TTL cache (10s) so concurrent page refreshes don't re-query DuckDB.
+# Single shared dict — thread-safe for reads (GIL), occasional writes are fine
+# because the worst case is two threads compute the same payload simultaneously.
+_market_overview_cache: dict[str, Any] = {"key": None, "value": None, "expires_at": 0.0}
+_MARKET_OVERVIEW_TTL_SEC = 10.0
+
+
+def _get_market_overview_cached(config: HermesConfig) -> list[dict[str, Any]]:
+    """Return cached /api/market/overview payload, refreshing if older than 10s."""
+    import time
+
+    now = time.time()
+    if (
+        _market_overview_cache["value"] is not None
+        and now < _market_overview_cache["expires_at"]
+    ):
+        return _market_overview_cache["value"]  # type: ignore[return-value]
+
+    from hermes.web.status import get_market_overview
+
+    value = get_market_overview(config)
+    _market_overview_cache["key"] = "overview"
+    _market_overview_cache["value"] = value
+    _market_overview_cache["expires_at"] = now + _MARKET_OVERVIEW_TTL_SEC
+    return value
+
+
+def _build_regime_strip(config: HermesConfig) -> list[dict[str, Any]]:
+    """Build the condensed regime-strip payload from cached market overview.
+
+    Used by every market-context route handler (/portfolio, /signals, /heartbeats,
+    /approvals, /pnl, /orders, /market, /market/{symbol}) so the regime strip
+    at the top of every page renders the same 20-symbol snapshot.
+
+    Returns a list of dicts with the keys expected by the regime_strip macro:
+      { symbol, regime, signal, markov_current_state, effective_kelly,
+        regime_conf, ts_received }
+    """
+    symbols_data = _get_market_overview_cached(config)
+    return [
+        {
+            "symbol": s["symbol"],
+            "regime": s.get("regime"),
+            "signal": s.get("signal"),
+            "markov_current_state": s.get("markov_current_state"),
+            "effective_kelly": s.get("effective_kelly"),
+            "regime_conf": s.get("regime_conf"),
+            "ts_received": s.get("ts_received"),
+        }
+        for s in symbols_data
+    ]
+
+
+@app.get("/api/market/overview")
+async def api_market_overview(
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """JSON: latest heartbeat per active symbol + asset_class + venue.
+
+    One row per symbol. Symbols with no heartbeat yet are included with
+    `ts_received: null` so the dashboard can render a placeholder card.
+
+    Cached for 10 seconds in-process (per DASHBOARD-UPGRADE-SCOPING.md §6.3).
+    """
+    config = get_config()
+    payload = _get_market_overview_cached(config)
+    return JSONResponse(content=safe_json({"symbols": payload, "count": len(payload)}))
+
+
+# --- M3: /market HTML page -------------------------------------------------- #
+
+
+@app.get("/market", response_class=HTMLResponse)
+async def market_page(request: Request) -> HTMLResponse:
+    """Market overview page — 20-symbol grid + regime strip.
+
+    Pulls /api/market/overview data (cached 10s) and renders one symbol_card
+    per active symbol. Auto-refreshes every 30s (less aggressive than
+    /portfolio's 10s because the underlying data is already cached).
+    """
+    config = get_config()
+    symbols_data = _get_market_overview_cached(config)
+    strip_data = _build_regime_strip(config)
+
+    return templates.TemplateResponse(
+        request,
+        "market.html",
+        {
+            "version": __version__,
+            "config_hash": get_config_hash(config),
+            "environment": config.environment,
+            "symbols_data": symbols_data,
+            "strip_data": strip_data,
+            "show_regime_strip": True,
+        },
+    )
+
+
+# --- M9: /market/{symbol} detail page -------------------------------------- #
+
+
+@app.get("/market/{symbol}", response_class=HTMLResponse)
+async def market_symbol_page(request: Request, symbol: str) -> HTMLResponse:
+    """Per-symbol detail page with 4 DaisyUI tabs: Overview / Renko / Regime / Signals."""
+    config = get_config()
+    from hermes.web.status import get_symbol_detail
+
+    detail = get_symbol_detail(config, symbol)
+    if detail is None:
+        return templates.TemplateResponse(
+            request,
+            "market_symbol.html",
+            {
+                "version": __version__,
+                "config_hash": get_config_hash(config),
+                "environment": config.environment,
+                "symbol": symbol,
+                "detail": None,
+                "not_found": True,
+                "show_regime_strip": False,
+            },
+            status_code=404,
+        )
+
+    # Pull the strip data too so the regime strip at the top is consistent.
+    strip_data = _build_regime_strip(config)
+
+    return templates.TemplateResponse(
+        request,
+        "market_symbol.html",
+        {
+            "version": __version__,
+            "config_hash": get_config_hash(config),
+            "environment": config.environment,
+            "symbol": symbol,
+            "detail": detail,
+            "strip_data": strip_data,
+            "not_found": False,
+            "show_regime_strip": True,
+        },
+    )
+
+
+# --- M4: Renko brick chart PNG endpoint ------------------------------------ #
+#
+# NOTE: This is a SYNC def (not async). Starlette runs sync routes in a
+# threadpool so matplotlib's blocking render doesn't stall the event loop.
+# This is intentional — per DASHBOARD-UPGRADE-SCOPING.md §12.1 risk R4.
+#
+# Returns image/png bytes. The PNG is cached 60s in-process via charts._cache.
+
+
+@app.get("/api/charts/renko/{symbol}.png")
+def chart_renko_png(symbol: str, last_n: int = 100):
+    """Renko brick chart PNG — rebuilt on-demand from TDVA candles, cached 60s."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.renko import render_renko_png
+
+    try:
+        png_bytes = render_renko_png(config, symbol, last_n=last_n)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("renko_chart_failed", symbol=symbol, error=str(e)[:200])
+        # Return a 200 with an error PNG so the <img> tag doesn't break —
+        # the user sees the error message in the chart area.
+        from hermes.web.charts._theme import render_empty_chart
+
+        png_bytes = render_empty_chart(symbol, f"Render error: {str(e)[:80]}")
+        return Response(content=png_bytes, media_type="image/png")
+
+
+# --- Smoke-test endpoint for the chart package ----------------------------- #
+
+
+@app.get("/api/charts/_cache_stats")
+async def chart_cache_stats(_auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
+    """JSON: in-memory chart cache stats — for debugging / monitoring."""
+    from hermes.web.charts._cache import chart_cache
+
+    return JSONResponse(content=safe_json(chart_cache.stats()))
+
+
+# --- M5: Price + regime tint chart ----------------------------------------- #
+
+
+@app.get("/api/charts/price_regime/{symbol}.png")
+def chart_price_regime_png(symbol: str, horizon: int = 200):
+    """Price area chart with regime-colored fill, cached 60s."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.price_regime import render_price_regime_png
+
+    try:
+        png_bytes = render_price_regime_png(config, symbol, horizon=horizon)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("price_regime_chart_failed", symbol=symbol, error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart(symbol, f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+# --- M6: Regime probability bars ------------------------------------------- #
+
+
+@app.get("/api/charts/regime_probs/{symbol}.png")
+def chart_regime_probs_png(symbol: str):
+    """7-state regime probability bars (live MetaRegimeClassifier), cached 60s."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.regime_probs import render_regime_probs_png
+
+    try:
+        png_bytes = render_regime_probs_png(config, symbol)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("regime_probs_chart_failed", symbol=symbol, error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart(symbol, f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+# --- M7: Meta-regime radial gauge ------------------------------------------ #
+
+
+@app.get("/api/charts/meta_regime_radial/{symbol}.png")
+def chart_meta_regime_radial_png(symbol: str):
+    """Meta-regime radial gauge (7-state polar plot), cached 60s."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.meta_regime_radial import render_meta_regime_radial_png
+
+    try:
+        png_bytes = render_meta_regime_radial_png(config, symbol)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("meta_regime_radial_chart_failed", symbol=symbol, error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart(symbol, f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+# --- M8: Portfolio equity curve (replaces uPlot on /portfolio) ------------- #
+
+
+@app.get("/api/charts/equity.png")
+def chart_equity_png(limit: int = 500):
+    """Portfolio equity curve + drawdown, cached 60s. Replaces uPlot equityCurve."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.equity import render_equity_png
+
+    try:
+        png_bytes = render_equity_png(config, limit=limit)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("equity_chart_failed", error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart("Portfolio", f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+# --- UX-UNIFORMITY-2: portfolio allocation donut + exposure bars + VaR histogram
+# Three new chart endpoints porting the deprecated dashboard's AllocationPie,
+# ExposureBars, and VarDistHistogram React components to server-rendered PNGs.
+# All three use the same 60s in-process TTL cache as the other chart endpoints.
+
+
+@app.get("/api/charts/allocation.png")
+def chart_allocation_png():
+    """Portfolio allocation donut chart — cached 60s. Replaces AllocationPie.tsx."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.portfolio_allocation import render_allocation_png
+
+    try:
+        png_bytes = render_allocation_png(config)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("allocation_chart_failed", error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart("Portfolio Allocation", f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+@app.get("/api/charts/exposure_bars.png")
+def chart_exposure_bars_png():
+    """Exposure breakdown horizontal bars — cached 60s. Replaces ExposureBars.tsx."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.exposure_bars import render_exposure_bars_png
+
+    try:
+        png_bytes = render_exposure_bars_png(config)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("exposure_bars_chart_failed", error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart("Exposure Breakdown", f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )
+
+
+@app.get("/api/charts/var_histogram.png")
+def chart_var_histogram_png(limit: int = 500):
+    """VaR 1d 99% distribution histogram — cached 60s. Replaces VarDistHistogram.tsx."""
+    from fastapi import Response
+
+    config = get_config()
+    from hermes.web.charts.var_histogram import render_var_histogram_png
+
+    try:
+        png_bytes = render_var_histogram_png(config, limit=limit)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        log.error("var_histogram_chart_failed", error=str(e)[:200])
+        from hermes.web.charts._theme import render_empty_chart
+
+        return Response(
+            content=render_empty_chart("VaR Distribution", f"Render error: {str(e)[:80]}"),
+            media_type="image/png",
+        )

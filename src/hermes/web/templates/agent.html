@@ -1,91 +1,36 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header, decision_tree_viz %}
 
 {% block title %}Hermes Dashboard · Agent{% endblock %}
 
 {% block content %}
 
-{# Decision Tree Reference #}
-{% call card(title="Hermes Agent Decision Tree") %}
-<pre class="bg-base-300 rounded-box p-4 overflow-x-auto font-mono text-xs leading-relaxed opacity-80">                     ┌─────────────────────────────────┐
-                     │   Evaluate existing position     │
-                     └────────────┬────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │   Position exists?          │
-                    └─────────────┬─────────────┘
-                           YES    │    NO
-                    ┌─────────────┘    └──────────────┐
-                    ▼                                  ▼
-         ┌──────────────────────┐          ┌───────────────────┐
-         │ Check SL: pnl ≤ -1%  │          │ Renko signal      │
-         │   → close (🛑)       │          │ present?          │
-         └──────────┬───────────┘          └────────┬──────────┘
-                    ▼                               │
-         ┌──────────────────────┐           NO      │      YES
-         │ Check TP: pnl ≥ 2.5% │          ┌────────┘       └────────┐
-         │   → close (💰)       │          ▼                        ▼
-         └──────────┬───────────┘  ┌───────────┐          ┌─────────────────┐
-                    ▼              │ Skip      │          │ Kelly sizing    │
-         ┌──────────────────────┐  │ (no entry)│          │ + Execute       │
-         │ Signal present?      │  └───────────┘          └─────────────────┘
-         └──────────┬───────────┘
-                    ▼
-         ┌──────────────────────────────────┐
-         │ Same direction?                  │
-         ├── YES + pnl&gt;0 + fading → trail   │
-         ├── YES + pnl&gt;4.5% → early profit  │
-         ├── YES + no exit → hold           │
-         ├── OPPOSITE + strong → flip close │
-         └── NO SIGNAL → hold, native stops │
-         └──────────────────────────────────┘</pre>
-<div class="alert alert-info mt-3">
-    <div class="text-xs">
-        Thresholds: SL=-1%, TP=+2.5%, Early TP=+4.5%, Fading=2+ adverse bricks,
-        Flip=conviction≥0.7+regime confirms. All configurable.
-    </div>
-</div>
-{% endcall %}
+{{ page_header(
+    title="Agent",
+    subtitle=(journal | length) ~ " trade journal entries · decision tree reference"
+) }}
 
-{# Hypotheses #}
-{% call card(title="Hypotheses ({})".format(hypotheses | length)) %}
-<p class="text-sm opacity-60 mb-4">
-    Hermes generates improvement hypotheses from EOD analysis. Lifecycle:
-    proposed → backtested → shadow → live / rejected.
-    Run <code class="text-primary">platform agent --eod</code> to generate new hypotheses.
-</p>
-
-{% if hypotheses %}
-<div class="overflow-x-auto">
-    <table class="table table-zebra table-sm">
-        <thead>
-            <tr>
-                <th>Created</th>
-                <th>ID</th>
-                <th>Status</th>
-                <th>Confidence</th>
-                <th>Hypothesis</th>
-                <th>Rationale</th>
-                <th>Promoted</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for h in hypotheses %}
-            <tr>
-                <td>{{ timestamp(h.ts_created) }}</td>
-                <td><code>{{ h.hypothesis_id|string|truncate(8, true, '') }}...</code></td>
-                <td>{{ status_badge(h.status) }}</td>
-                <td>{{ "%.2f" | format(h.confidence) if h.confidence else "0" }}</td>
-                <td>{{ h.hypothesis }}</td>
-                <td><small class="opacity-60">{{ h.rationale|string|truncate(60, true, '...') if h.rationale else "-" }}</small></td>
-                <td>{{ timestamp(h.promoted_at) if h.promoted_at else "-" }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+{# Interactive Decision Tree — replaces ASCII art (UX-UNIFORMITY-2).
+   Renders the JSON definition from /api/agent/decision_tree (status.py:
+   get_decision_tree_definition) as a collapsible tree visualization.
+   Click any node with branches to expand/collapse. Color tiers mirror
+   the deprecated dashboard's DecisionTreeViz.tsx colorMap. #}
+{% call card(title="Hermes Agent Decision Tree", extra="click any branch node to expand / collapse · thresholds from HermesDecisionTree defaults") %}
+{% if decision_tree and decision_tree.root %}
+<div class="overflow-x-auto py-4">
+  {{ decision_tree_viz(decision_tree.root, depth=0) }}
 </div>
+{% if decision_tree.thresholds %}
+<div class="divider my-2"></div>
+<div class="text-xs opacity-60">
+  <span class="font-semibold">All thresholds (configurable in config/default.yaml):</span>
+  {% for k, v in decision_tree.thresholds.items() %}
+  <code class="ml-2">{{ k }}={{ v }}</code>
+  {% endfor %}
+</div>
+{% endif %}
 {% else %}
-{{ empty_state(message="No hypotheses yet.", hint="Run: platform agent --eod") }}
+{{ empty_state(message="Decision tree definition not available.", hint="Check /api/agent/decision_tree") }}
 {% endif %}
 {% endcall %}
 
@@ -94,6 +39,8 @@
 <p class="text-sm opacity-60 mb-4">
     Postmortems for closed trades. Each entry includes entry thesis, exit reason,
     PnL, R-multiple, automated postmortem, and actionable lessons.
+    Run <code class="text-primary">noble journal generate --date $(yesterday)</code>
+    to attach LLM postmortems to recent signals.
 </p>
 
 {% if journal %}
@@ -152,7 +99,7 @@
     </table>
 </div>
 {% else %}
-{{ empty_state(message="No trade journal entries yet.", hint="Run: platform agent --eod") }}
+{{ empty_state(message="No trade journal entries yet.", hint="Run: noble journal generate --date $(yesterday)") }}
 {% endif %}
 {% endcall %}
 

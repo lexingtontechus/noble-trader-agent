@@ -371,7 +371,7 @@ class PaperTradingEngine:
     def _get_maker_fee(self, venue: str) -> float:
         return self._alpaca_maker_fee if venue == "alpaca" else self._maker_fee
 
-    def get_order(self, order_id: str) -> Order | None:
+    async def get_order(self, order_id: str) -> Order | None:
         return self._orders.get(order_id)
 
     def get_all_orders(self) -> list[Order]:
@@ -384,3 +384,39 @@ class PaperTradingEngine:
 
     def get_stats(self) -> dict[str, Any]:
         return self._stats.copy()
+
+    # ── ExecutionBroker interface (paper = no-op for live-only ops) ──────
+
+    async def connect(self) -> None:
+        """Paper engine needs no connection."""
+        return None
+
+    async def disconnect(self) -> None:
+        """Paper engine needs no teardown."""
+        return None
+
+    async def close_position(
+        self, position_id: str, reason: str = ""
+    ) -> None:
+        """Paper mode: position already removed from portfolio state by caller."""
+        return None
+
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel a paper order (delegates to existing impl)."""
+        return await self._cancel_sync(order_id)
+
+    async def _cancel_sync(self, order_id: str) -> bool:
+        order = self._orders.get(order_id)
+        if not order:
+            return False
+        if order.status in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXPIRED,
+        ):
+            return False
+        event = OrderStateMachine.transition(order, OrderStatus.CANCELED)
+        await self._emit_event(order_id, event)
+        self._stats["orders_canceled"] += 1
+        return True

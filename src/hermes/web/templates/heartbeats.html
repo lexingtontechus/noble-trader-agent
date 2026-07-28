@@ -1,11 +1,19 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, timestamp %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, timestamp, kelly_badge, page_header, refresh_note, pagination_note %}
 
 {% block title %}Hermes Dashboard · Heartbeats{% endblock %}
 
+{% block meta %}<meta http-equiv="refresh" content="15">{% endblock %}
+
 {% block content %}
 
-{% call card(title="Heartbeats") %}
+{{ page_header(
+    title="Heartbeats",
+    subtitle=total_shown ~ " records" ~ (" · filter: " ~ filter_symbol if filter_symbol else ""),
+    refresh=15
+) }}
+
+{% call card(title="Filters") %}
 <form class="flex flex-wrap items-end gap-2" method="get" action="/heartbeats">
     <div class="form-control">
         <label class="label">
@@ -28,7 +36,6 @@
     <button type="submit" class="btn btn-primary btn-sm">Apply</button>
     <a href="/heartbeats" class="btn btn-ghost btn-sm">Clear</a>
 </form>
-<div class="text-xs opacity-50 mt-3">Showing {{ total_shown }} heartbeats</div>
 {% endcall %}
 
 {% call card(title="Heartbeat Records") %}
@@ -71,8 +78,8 @@
                 <td>{{ hb.stop_loss }}</td>
                 <td>{{ hb.take_profit }}</td>
                 <td>{{ hb.brick_size }}</td>
-                <td>{{ "%.4f" | format(hb.kelly_f) if hb.kelly_f is not none else "-" }}</td>
-                <td>{{ "%.4f" | format(hb.effective_kelly) if hb.effective_kelly is not none else "-" }}</td>
+                <td>{{ kelly_badge(hb.kelly_f, live=hb.is_live) }}</td>
+                <td>{{ kelly_badge(hb.effective_kelly, delta=hb.kelly_delta, live=hb.is_live) }}</td>
                 <td>{{ "%.4f" | format(hb.ev_per_dollar) if hb.ev_per_dollar is not none else "-" }}</td>
                 <td>{{ "%.4f" | format(hb.p_win) if hb.p_win is not none else "-" }}</td>
                 <td>
@@ -87,6 +94,7 @@
         </tbody>
     </table>
 </div>
+{{ pagination_note(total_shown, total_shown) }}
 {% else %}
 {{ empty_state(message="No heartbeats found." ~ (" (Filter: symbol=\"" ~ filter_symbol ~ "\")" if filter_symbol else ""), hint="Run: platform ingest  or  platform backfill") }}
 {% endif %}

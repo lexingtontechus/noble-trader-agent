@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, empty_state, refresh_note %}
+{% from "components/ui.html" import card, status_badge, empty_state, refresh_note, stat_grid, page_header %}
 
 {% block title %}Hermes Dashboard · Symbols{% endblock %}
 
@@ -10,13 +10,21 @@
 {% set total_count = symbols | length %}
 {% set validated_count = symbols | selectattr('validation_status', 'equalto', 'ok') | list | length %}
 
-{% call card(title="Symbol Registry") %}
-<div class="text-xs opacity-50 mb-3">
-    {{ active_count }} active · {{ total_count - active_count }} inactive ·
-    {{ validated_count }} validated ·
-    <a href="/api/symbols" target="_blank" class="link link-hover">JSON</a>
-</div>
+{{ page_header(
+    title="Symbol Registry",
+    subtitle=active_count ~ " active · " ~ (total_count - active_count) ~ " inactive · " ~ validated_count ~ " validated · " ~ '<a href="/api/symbols" target="_blank" class="link link-hover text-primary">JSON</a>'
+) }}
 
+{% call card(title="Registry Summary") %}
+{{ stat_grid([
+    {"value": active_count, "label": "Active", "color": "success"},
+    {"value": total_count - active_count, "label": "Inactive", "color": "neutral"},
+    {"value": validated_count, "label": "Validated", "color": "info"},
+    {"value": total_count, "label": "Total", "color": "primary"}
+], columns=4, size="text-2xl") }}
+{% endcall %}
+
+{% call card(title="Symbols") %}
 {# Toolbar #}
 <div class="flex flex-wrap gap-2 mb-4">
     <button class="btn btn-primary btn-sm" onclick="document.getElementById('add-symbol-modal').showModal()">

@@ -1,11 +1,18 @@
 """
-Sizing module — Trust NT's effective_kelly + portfolio overlay.
+Sizing module — Trust NT's effective_kelly + portfolio overlay + Bayesian alpha.
 
 Hermes does NOT re-derive Kelly or Masaniello from scratch. It trusts
-NT's effective_kelly as the baseline and applies a portfolio-level
-multiplier from the 7-state meta-regime.
+NT's effective_kelly as the baseline and applies:
+  1. Portfolio-level multiplier from the 7-state meta-regime
+  2. Drawdown adjustment (clip to floor)
+  3. Bayesian alpha modulation (rolling trade-outcome posterior)
+  4. Caps (max position %, notional, gross exposure, risk amount)
 
-See roadmap §2.2.2 for full design.
+The Bayesian alpha is a MODULATOR, never a gate. alpha in [0.10, 1.0]
+scales the baseline size based on recent trade outcomes. A floor of 0.10
+ensures the agent can always trade at reduced size — never fully blocked.
+
+See roadmap §2.2.2 + v5 EV-REWORK design for full details.
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ class SizingResult(BaseModel):
     sizing_multiplier: float
     dd_adjustment: float
     size_after_dd: float
+    alpha: float = 1.0           # Bayesian alpha (v5) — modulator, never gate
+    size_after_alpha: float = 0.0
     final_size_usd: float
     final_size_pct_of_equity: float
     risk_amount_usd: float
@@ -65,6 +74,7 @@ class SizingEngine:
         portfolio_drawdown_pct: float,
         current_gross_exposure_usd: float,
         stop_distance_pct: float,  # |entry - stop| / entry
+        alpha: float = 1.0,        # Bayesian alpha (v5) — modulator in [0.10, 1.0]
     ) -> SizingResult:
         """
         Compute final position size.
@@ -76,6 +86,9 @@ class SizingEngine:
             portfolio_drawdown_pct: Current portfolio drawdown (0.0 = no DD, 0.15 = 15% DD)
             current_gross_exposure_usd: Current total exposure across all positions
             stop_distance_pct: Stop-loss distance as fraction of entry price
+            alpha: Bayesian alpha in [0.10, 1.0] from BayesianAlpha.compute_alpha().
+                   MODULATOR — scales baseline size, NEVER blocks trading.
+                   Default 1.0 (no modulation) when not provided.
 
         Returns:
             SizingResult with final_size_usd and all intermediate values
@@ -90,6 +103,8 @@ class SizingEngine:
                 sizing_multiplier=meta_regime.sizing_multiplier,
                 dd_adjustment=0.0,
                 size_after_dd=0.0,
+                alpha=alpha,
+                size_after_alpha=0.0,
                 final_size_usd=0.0,
                 final_size_pct_of_equity=0.0,
                 risk_amount_usd=0.0,
@@ -102,8 +117,18 @@ class SizingEngine:
         dd_mult = min(dd_mult, 1.0)  # never scale up beyond 1.0
         size_after_dd = baseline * dd_mult
 
-        # 3. Apply caps
-        final_size = size_after_dd
+        # 3. Bayesian alpha modulation (v5 — modulator, never gate)
+        # alpha in [0.10, 1.0] scales the post-DD size. A floor of 0.10
+        # ensures the agent can always trade at reduced size — never
+        # fully blocked. The alpha is computed from rolling trade
+        # outcomes via a Beta-Binomial conjugate posterior (see
+        # agent/bayesian_alpha.py). When alpha=1.0 (no modulation),
+        # size_after_alpha == size_after_dd.
+        alpha_clamped = max(0.10, min(1.0, alpha))
+        size_after_alpha = size_after_dd * alpha_clamped
+
+        # 4. Apply caps
+        final_size = size_after_alpha
 
         # Cap 1: max position size % of equity
         max_by_pct = equity * self._max_position_pct
@@ -140,6 +165,8 @@ class SizingEngine:
             sizing_multiplier=meta_regime.sizing_multiplier,
             dd_adjustment=round(dd_mult, 4),
             size_after_dd=round(size_after_dd, 2),
+            alpha=round(alpha_clamped, 4),
+            size_after_alpha=round(size_after_alpha, 2),
             final_size_usd=round(final_size, 2),
             final_size_pct_of_equity=round(final_size / equity, 6) if equity > 0 else 0,
             risk_amount_usd=round(risk_amount, 2),

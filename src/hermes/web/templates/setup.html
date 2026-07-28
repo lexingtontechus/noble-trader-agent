@@ -22,8 +22,8 @@
 
         <label class="form-control w-full">
           <span class="label-text">Noble Trader Redis URL</span>
-          <input type="text" name="NOBLE_TRADER_REDIS_URL" placeholder="redis://&lt;nt-redis-host&gt;:&lt;port&gt;"
-                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_REDIS_URL', '') }}" required>
+          <input type="text" name="NOBLE_TRADER_PROXY_REDIS_URL" placeholder="redis://&lt;nt-proxy-redis-host&gt;:&lt;port&gt;"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_PROXY_REDIS_URL', '') }}" required>
           <span class="label-text-alt opacity-50">From your subscription — the real-time signal stream.</span>
         </label>
 
@@ -39,6 +39,26 @@
           <input type="password" name="MT4_MT5_BRIDGE_TOKEN" placeholder="shared secret from bridge_relay"
                  class="input input-bordered w-full" value="{{ existing.get('MT4_MT5_BRIDGE_TOKEN', '') }}" required>
           <span class="label-text-alt opacity-50">Your brokerage is the MT4/MT5 bridge (Alpaca/HL deprecated).</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">Noble Trader License Key</span>
+          <input type="password" name="NOBLE_TRADER_LICENSE_KEY" placeholder="pp_<32hex> or ss_<32hex>"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_LICENSE_KEY', '') }}" required>
+          <span class="label-text-alt opacity-50">
+            Issued by your subscription. Format: <code>pp_</code> (Precision Pro) or <code>ss_</code> (Signal Scout)
+            followed by 32 hex chars. Authenticates against the quote proxy. Do NOT share — bound to your account.
+          </span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">Quote Proxy URL</span>
+          <input type="text" name="NOBLE_TRADER_QUOTE_PROXY_URL" placeholder="https://noble-trader-proxy.up.railway.app"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_QUOTE_PROXY_URL', '') }}" required>
+          <span class="label-text-alt opacity-50">
+            The Railway-hosted noble-trader-proxy endpoint. Provides plan-filtered, license-gated quotes.
+            Same URL for all subscribers — the proxy routes by your license key.
+          </span>
         </label>
       </div>
     </div>

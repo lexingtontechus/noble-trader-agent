@@ -225,22 +225,6 @@ CREATE TABLE IF NOT EXISTS circuit_breaker_events (
 CREATE INDEX IF NOT EXISTS idx_cb_ts ON circuit_breaker_events (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_cb_type ON circuit_breaker_events (breaker_type, ts DESC);
 
--- === Hermes hypotheses (§6.3) — learning loop ===
-CREATE TABLE IF NOT EXISTS hermes_hypotheses (
-    hypothesis_id       VARCHAR PRIMARY KEY,
-    ts_created          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    hypothesis          TEXT NOT NULL,
-    rationale           TEXT,
-    proposed_change     JSON,
-    backtest_result     JSON,
-    status              VARCHAR NOT NULL,           -- proposed | backtested | shadow | live | rejected | retired
-    confidence          DOUBLE,
-    promoted_at         TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_hyp_status ON hermes_hypotheses (status, ts_created DESC);
-CREATE INDEX IF NOT EXISTS idx_hyp_ts ON hermes_hypotheses (ts_created DESC);
-
 -- === Meta-regime history (§6.2.9) ===
 CREATE TABLE IF NOT EXISTS meta_regime_history (
     event_id             VARCHAR PRIMARY KEY,
@@ -274,6 +258,27 @@ CREATE TABLE IF NOT EXISTS meta_regime_history (
 CREATE INDEX IF NOT EXISTS idx_mrh_ts       ON meta_regime_history (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_mrh_symbol   ON meta_regime_history (symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_mrh_state    ON meta_regime_history (new_state, ts DESC);
+
+-- === Microstructure SSE events (§6.2.10) ===
+-- Persisted from the proxy's /sse/alerts `microstructure` frames so the
+-- p_microstructure signal is auditable + researchable (it feeds
+-- MetaRegimeClassifier live but was previously lost after a 10-min TTL).
+-- `alert` SSE frames are intentionally NOT stored — they duplicate the
+-- signal pipeline already persisted by ingest L0 to signal_heartbeats.
+CREATE TABLE IF NOT EXISTS microstructure_events (
+    symbol              VARCHAR NOT NULL,
+    ts_ms               BIGINT NOT NULL,           -- proxy compute time (ms)
+    received_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    p_microstructure    DOUBLE NOT NULL,           -- composite [-1, +1]
+    p_micro_l1          DOUBLE,                     -- L1 sub-signal
+    p_micro_ta          DOUBLE,                     -- TVDA TA sub-signal
+    direction           VARCHAR NOT NULL,           -- buy | sell | neutral
+    ta_vetoed           BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (symbol, ts_ms)
+);
+
+CREATE INDEX IF NOT EXISTS idx_micro_symbol_ts ON microstructure_events (symbol, ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_micro_ts        ON microstructure_events (ts_ms DESC);
 
 -- === Audit log (general-purpose) ===
 CREATE TABLE IF NOT EXISTS audit_log (

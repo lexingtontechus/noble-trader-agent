@@ -25,7 +25,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from hermes.core.config import HermesConfig
-from hermes.db.migrate import get_duckdb_path
+from hermes.db.migrate import get_duckdb_path, safe_duckdb_connect
 from hermes.execution.orders import Fill, Order
 from hermes.portfolio.state import PortfolioStateService
 
@@ -42,6 +42,21 @@ class RealizedPnL(BaseModel):
     venue: str
     strategy_id: str = ""
     regime_at_close: str | None = None
+
+    # ── Phase 1A cleanup: upstream signal linkage + exit reason ──────
+    # signal_id is the upstream trade_signals_blended.signal_id that
+    # this closed position was opened from. TradeJournal._select_pending
+    # JOINs pnl_realized to trade_signals_blended on this column so the
+    # postmortem skill payload can include realized PnL attribution.
+    # Nullable for backfill of pre-021 rows + research-only / paper
+    # trades that weren't opened from a blended signal.
+    signal_id: str | None = None
+    # exit_reason is the orchestrator's exit decision reason (e.g.
+    # 'tp_hit', 'sl_hit', 'manual', 'regime_change'). Same value the
+    # orchestrator already wrote to the legacy trade_journal.exit_reason
+    # column; now persisted on pnl_realized so TradeJournal can read it
+    # without a separate trade_journal JOIN.
+    exit_reason: str | None = None
 
     # Components (in USD)
     gross_pnl: float  # (exit - entry) * qty, signed
@@ -66,6 +81,17 @@ class RealizedPnL(BaseModel):
     regime_pnl: float | None = None
 
     config_hash: str = ""
+
+    # ── v5 (Phase C): Bayesian alpha tracking ────────────────────────
+    # Snapshot of the BlendedSignal's v5 EV fields at trade entry time.
+    # Persisted to pnl_realized so BayesianAlpha.record_outcome() can
+    # update the row in-place, and so backtest can correlate p_win_agent
+    # predictions vs realized outcomes for calibration analysis.
+    # All fields optional — pre-Phase C callers won't populate them.
+    p_win_agent: float | None = None
+    p_win_server: float | None = None
+    alpha_at_entry: float | None = None
+    ev_per_dollar: float | None = None
 
 
 class UnrealizedPnL(BaseModel):
@@ -256,12 +282,19 @@ class PnLService:
         self,
         config: HermesConfig,
         portfolio_state: PortfolioStateService,
+        alpha_engine: "BayesianAlpha | None" = None,  # Phase C — optional DI
     ) -> None:
         self._config = config
         self._state = portfolio_state
         self._db_path = get_duckdb_path(config)
         self._drawdown = DrawdownTracker()
         self._funding_accrual: dict[str, float] = defaultdict(float)  # symbol → accumulated funding
+        # ── v5 (Phase C): Bayesian alpha engine ──────────────────────
+        # Injected by the caller (ExecutionOrchestrator) so that
+        # record_realized_pnl() can feed trade outcomes to the same
+        # BayesianAlpha instance the synthesizer uses for compute_alpha().
+        # Optional — if None, alpha tracking is silently skipped.
+        self._alpha_engine = alpha_engine
         self._stats = {
             "realized_recorded": 0,
             "unrealized_snapshots": 0,
@@ -293,6 +326,22 @@ class PnLService:
         regime_at_close: str | None = None,
         strategy_id: str = "",
         config_hash: str = "",
+        # ── Phase 1A cleanup (migration 021): upstream signal linkage +
+        # exit reason. The orchestrator passes these so the row can be
+        # JOINed to trade_signals_blended by TradeJournal._select_pending
+        # (signal_id) and so the postmortem skill payload can read the
+        # exit reason without a separate trade_journal JOIN.
+        signal_id: str | None = None,
+        exit_reason: str | None = None,
+        # ── v5 (Phase C): Bayesian alpha tracking fields ─────────────
+        # Snapshot of the BlendedSignal's v5 EV fields at trade entry.
+        # Passed in by ExecutionOrchestrator._on_position_closed() so
+        # that BayesianAlpha has the prediction-vs-outcome data it
+        # needs to compute a rolling posterior.
+        p_win_agent: float | None = None,
+        p_win_server: float | None = None,
+        alpha_at_entry: float | None = None,
+        ev_per_dollar: float | None = None,
     ) -> RealizedPnL:
         """
         Record realized PnL for a closed trade.
@@ -338,6 +387,9 @@ class PnLService:
             venue=venue,
             strategy_id=strategy_id,
             regime_at_close=regime_at_close,
+            # ── Phase 1A cleanup (migration 021) ─────────────────────
+            signal_id=signal_id,
+            exit_reason=exit_reason,
             gross_pnl=round(gross_pnl, 2),
             fees_total=round(fees, 2),
             funding_pnl=round(funding, 2),
@@ -353,6 +405,11 @@ class PnLService:
             sizing_pnl=attribution["sizing_pnl"],
             regime_pnl=attribution["regime_pnl"],
             config_hash=config_hash,
+            # ── v5 (Phase C): Bayesian alpha tracking ─────────────────
+            p_win_agent=p_win_agent,
+            p_win_server=p_win_server,
+            alpha_at_entry=alpha_at_entry,
+            ev_per_dollar=ev_per_dollar,
         )
 
         # Write to DuckDB
@@ -364,6 +421,33 @@ class PnLService:
 
         self._stats["realized_recorded"] += 1
 
+        # ── v5 (Phase C): feed outcome to BayesianAlpha ──────────────
+        # The alpha engine needs (prediction, outcome) pairs to compute
+        # its Beta-Binomial posterior. This is the ONLY call site that
+        # feeds it real outcomes — without this hook, alpha is always
+        # 1.0 and sizing is never modulated. The record_outcome method
+        # updates the pnl_realized row in-place (the columns already
+        # exist via migration 014) and invalidates the per-symbol cache
+        # so the next compute_alpha() call picks up the new outcome.
+        if self._alpha_engine is not None:
+            try:
+                won = net_pnl > 0
+                self._alpha_engine.record_outcome(
+                    symbol=symbol,
+                    trade_id=trade_id,
+                    won=won,
+                    p_win_agent=p_win_agent,
+                    p_win_server=p_win_server,
+                    ev_per_dollar=ev_per_dollar,
+                    alpha_at_entry=alpha_at_entry,
+                )
+            except Exception as exc:
+                # Non-fatal — alpha is best-effort. Don't break trade recording.
+                log.warning(
+                    "bayesian_alpha_record_outcome_failed",
+                    symbol=symbol, trade_id=trade_id, error=str(exc),
+                )
+
         log.info(
             "realized_pnl_recorded",
             trade_id=trade_id,
@@ -371,6 +455,8 @@ class PnLService:
             net_pnl=net_pnl,
             r_multiple=r_multiple,
             regime=regime_at_close,
+            p_win_agent=p_win_agent,
+            alpha_at_entry=alpha_at_entry,
         )
 
         return realized
@@ -438,21 +524,28 @@ class PnLService:
                     """
                     INSERT INTO pnl_realized (
                         pnl_id, trade_id, ts, symbol, venue, strategy_id, regime_at_close,
+                        signal_id, exit_reason,
                         gross_pnl, fees_total, funding_pnl, slippage_cost,
                         net_pnl, net_pnl_bps, risk_amount, r_multiple,
                         hold_duration_sec, n_fills,
                         direction_pnl, timing_pnl, sizing_pnl, regime_pnl,
-                        config_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        config_hash,
+                        p_win_agent, p_win_server, alpha_at_entry, ev_per_dollar
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         pnl.pnl_id, pnl.trade_id, pnl.ts, pnl.symbol, pnl.venue,
                         pnl.strategy_id, pnl.regime_at_close,
+                        # ── Phase 1A cleanup (migration 021) ─────────────
+                        pnl.signal_id, pnl.exit_reason,
                         pnl.gross_pnl, pnl.fees_total, pnl.funding_pnl, pnl.slippage_cost,
                         pnl.net_pnl, pnl.net_pnl_bps, pnl.risk_amount, pnl.r_multiple,
                         pnl.hold_duration_sec, pnl.n_fills,
                         pnl.direction_pnl, pnl.timing_pnl, pnl.sizing_pnl, pnl.regime_pnl,
                         pnl.config_hash,
+                        # ── v5 (Phase C, migration 014) ──────────────────
+                        pnl.p_win_agent, pnl.p_win_server,
+                        pnl.alpha_at_entry, pnl.ev_per_dollar,
                     ],
                 )
         except Exception as e:

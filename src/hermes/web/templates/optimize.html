@@ -1,15 +1,19 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Optimization{% endblock %}
 
 {% block content %}
 
+{{ page_header(
+    title="Optimization",
+    subtitle=(runs | length) ~ " simulation runs · entry/execution parameter sweep vs blind-baseline"
+) }}
+
 {% call card(title="Simulation Runs (last 50)") %}
 <p class="text-sm opacity-60 mb-4">
-    Entry/execution optimization results. Each row = one parameter combination tested
-    against the "blindly execute at market" baseline. Run with
-    <code class="text-primary">platform optimize --symbols BTC-PERP --days-back 90</code>.
+    Run with <code class="text-primary">platform optimize --symbols BTC-PERP --days-back 90</code>.
+    Each row = one parameter combination tested against the "blindly execute at market" baseline.
 </p>
 
 {% if runs %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Orders{% endblock %}
 
@@ -8,6 +8,12 @@
 {% endblock %}
 
 {% block content %}
+
+{{ page_header(
+    title="Orders & Fills",
+    subtitle=(orders | length) ~ " orders · " ~ (fills | length) ~ " fills · last 100 of each",
+    refresh=10
+) }}
 
 {% call card(title="Orders (last 100)") %}
 {% if orders %}
@@ -57,7 +63,6 @@
 </div>
 {% else %}
 {{ empty_state(message="No orders yet.", hint="Run: platform execute --equity 100000 --paper") }}
-<p class="text-xs opacity-60 mt-2 text-center">Orders will appear here as risk decisions are received from L5.</p>
 {% endif %}
 {% endcall %}
 

@@ -33,6 +33,29 @@ from hermes.schemas.heartbeat import NobleTraderHeartbeat
 from hermes.schemas.market import Bar, Tick, Venue
 from hermes.signals.synthesizer import BlendedSignal, SignalSynthesizer
 
+
+def _decode_json_field(v: Any) -> Any:
+    """Decode a JSON string field from DuckDB VARCHAR storage.
+
+    The signal_heartbeats table stores sources_used / weights_used as
+    JSON-encoded VARCHAR (DuckDB list/dict columns require newer
+    versions; JSON-in-VARCHAR is the standard pattern this codebase
+    uses). This helper decodes them back to native Python list/dict
+    when rehydrating a NobleTraderHeartbeat for backtest replay.
+
+    Returns None if v is None or unparseable.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (list, dict)):
+        return v  # already decoded (e.g. from a newer DuckDB with native types)
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except (ValueError, TypeError):
+            return None
+    return None
+
 log = structlog.get_logger(__name__)
 
 
@@ -219,8 +242,47 @@ class BacktestEngine:
                         price_series[_sym] = None
 
                 # Process each heartbeat
+                # ── v5: apply calibration_bias as P_win correction (sim-only) ──
+                # The backtest replays historical heartbeats. Each heartbeat
+                # now carries a calibration_bias value (migration 015) which
+                # represents the server-side P_win bias at the time the
+                # heartbeat was generated. We apply this as a linear
+                # correction to p_win so the sim reflects the calibration
+                # drift that production would have experienced.
+                #
+                # This correction is SIM-ONLY — live trading reads p_win
+                # directly from the live Redis heartbeat (which already
+                # reflects the server's current calibration state via the
+                # 4-source logit-pool blend). The agent's synthesizer can
+                # additionally use calibration_bias to shrink regime_conf
+                # toward 0.5 when overconfident, but that is a separate
+                # production-side mechanism, not this sim correction.
                 for hb_data in heartbeats:
                     try:
+                        # ── Apply calibration bias correction (v5, sim-only) ──
+                        raw_p_win = float(hb_data.get("p_win", 0.5))
+                        cal_bias = hb_data.get("calibration_bias")
+                        if cal_bias is not None:
+                            try:
+                                cal_bias = float(cal_bias)
+                                # Linear subtraction: if server was overconfident
+                                # (positive bias), reduce p_win. If underconfident
+                                # (negative bias), increase p_win.
+                                p_win_corrected = max(0.01, min(0.99, raw_p_win - cal_bias))
+                            except (TypeError, ValueError):
+                                p_win_corrected = raw_p_win
+                        else:
+                            p_win_corrected = raw_p_win
+
+                        if cal_bias is not None and abs(cal_bias) > 0.001:
+                            log.debug(
+                                "backtest_cal_bias_applied",
+                                symbol=hb_data.get("symbol"),
+                                raw_p_win=raw_p_win,
+                                cal_bias=cal_bias,
+                                corrected_p_win=p_win_corrected,
+                            )
+
                         hb = NobleTraderHeartbeat(
                             type="heartbeat",
                             symbol=hb_data["symbol"],
@@ -239,7 +301,7 @@ class BacktestEngine:
                             effective_kelly=hb_data.get("effective_kelly", 0.1),
                             ev=hb_data.get("ev", 0),
                             ev_per_dollar=hb_data.get("ev_per_dollar", 0),
-                            p_win=hb_data.get("p_win", 0.5),
+                            p_win=p_win_corrected,  # v5: calibration-bias-corrected
                             p_regime=hb_data.get("p_regime", 0.5),
                             p_imbalance=hb_data.get("p_imbalance", 0.5),
                             p_markov=hb_data.get("p_markov", 0.5),
@@ -252,6 +314,27 @@ class BacktestEngine:
                             prev_regime=hb_data.get("prev_regime"),
                             shift_at=0,
                             shifts_24h=hb_data.get("shifts_24h", 0),
+                            # ── v5 EV source breakdown (Phase C) ─────────────
+                            # Pass through persisted v5 fields so the
+                            # synthesizer's compute_blended_p_win can
+                            # re-blend locally with current
+                            # pattern_performance state. Falls back to
+                            # None for pre-Phase C heartbeats (migration
+                            # 016 not yet applied) — the synthesizer
+                            # handles None by using agent default weights.
+                            p_pattern=hb_data.get("p_pattern"),
+                            p_timesfm=hb_data.get("p_timesfm"),
+                            timesfm_horizon=hb_data.get("timesfm_horizon"),
+                            calibration_bias=hb_data.get("calibration_bias"),
+                            calibration_status=hb_data.get("calibration_status"),
+                            p_win_kelly_shrink=hb_data.get("p_win_kelly_shrink"),
+                            # sources_used / weights_used are stored as
+                            # JSON strings in DuckDB (VARCHAR). Decode
+                            # before passing — the schema validator
+                            # accepts both list/dict and JSON string,
+                            # but explicit decode is cleaner.
+                            sources_used=_decode_json_field(hb_data.get("sources_used")),
+                            weights_used=_decode_json_field(hb_data.get("weights_used")),
                         )
 
                         # L4: Synthesize

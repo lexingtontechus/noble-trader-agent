@@ -1,9 +1,14 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Backtest{% endblock %}
 
 {% block content %}
+
+{{ page_header(
+    title="Backtest",
+    subtitle=(runs | length) ~ " runs · replay historical heartbeats through L4→L5→L3 pipeline · click any row for detail"
+) }}
 
 {# Backtest return vs drawdown (live scatter) #}
 {% call card(title="Return vs Max Drawdown (live chart)", id="bt-scatter-card") %}
@@ -34,10 +39,16 @@
 </script>
 {% endcall %}
 
-{% call card(title="Backtest Runs (last 20)") %}
+{# Backtest runs table — click-to-select drill-down (UX-UNIFORMITY-2).
+   Each row has class="bt-row" + data-run-id attribute. Click handler in
+   the script block at the bottom fetches /api/backtest/runs/{run_id} and
+   renders the detail panel below. Re-selecting the same row collapses it.
+   Mirrors the deprecated dashboard's Backtest.tsx drill-down pattern. #}
+{% call card(title="Backtest Runs (last 20)", extra="click any row to expand detail panel · re-click to collapse") %}
 <p class="text-sm opacity-60 mb-4">
-    Replays historical Noble Trader heartbeats through the full Hermes pipeline (L4→L5→L3).
     Run with <code class="text-primary">platform backtest --symbols BTC-PERP --days-back 90</code>.
+    After backtesting, run <code class="text-primary">platform rigor --symbols BTC-PERP</code>
+    to check statistical significance (walk-forward, Deflated Sharpe, Monte Carlo, bootstrap CI).
 </p>
 
 {% if runs %}
@@ -64,7 +75,7 @@
         </thead>
         <tbody>
             {% for r in runs %}
-            <tr>
+            <tr class="bt-row" data-run-id="{{ r.run_id }}">
                 <td>{{ timestamp(r.ts_started) }}</td>
                 <td>{{ r.duration_sec }}s</td>
                 <td>{{ r.mode }}</td>
@@ -87,11 +98,206 @@
 </div>
 {% else %}
 {{ empty_state(message="No backtest runs yet.", hint="Run: platform backtest --symbols BTC-PERP --days-back 30") }}
-<p class="text-xs opacity-60 mt-2 text-center">
-    After backtesting, run <code class="text-primary">platform rigor --symbols BTC-PERP</code>
-    to check statistical significance (walk-forward, Deflated Sharpe, Monte Carlo, bootstrap CI).
-</p>
 {% endif %}
 {% endcall %}
+
+{# Detail panel placeholder — populated by JS when a row is clicked #}
+<div id="bt-detail-container"></div>
+
+<script>
+(function() {
+  // Click-to-select drill-down for backtest runs (UX-UNIFORMITY-2).
+  // Mirrors the deprecated Backtest.tsx React component's drill-down logic:
+  // 1. Click row → fetch /api/backtest/runs/{run_id} → render detail panel
+  // 2. Click same row again → collapse panel
+  // 3. Click different row → swap to new detail
+  //
+  // Endpoint /api/backtest/runs/{run_id} is already defined at app.py:1339.
+  // The detail payload mirrors BacktestRunDetail type (run_id, mode, symbols,
+  // ts_started, ts_finished, initial_equity, final_equity, total_return_pct,
+  // total_net_pnl, max_drawdown_pct, n_heartbeats, n_signals_produced,
+  // n_signals_approved, n_signals_rejected, n_orders, n_fills, duration_sec,
+  // tear_sheet: {equity_curve, trades, summary, returns, ...}, error).
+
+  const container = document.getElementById('bt-detail-container');
+  if (!container) return;
+
+  let activeRunId = null;
+
+  function fmtUSD(v) {
+    if (v === null || v === undefined) return '—';
+    return '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+  function fmtPct(v) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toFixed(2) + '%';
+  }
+  function fmtNum(v, decimals) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toFixed(decimals || 2);
+  }
+  function fmtTs(v) {
+    if (!v) return '—';
+    try { return new Date(v).toLocaleString(); } catch (e) { return String(v); }
+  }
+  function fmtRunId(id) {
+    return id && id.length > 8 ? id.slice(0, 8) + '...' : (id || '—');
+  }
+  function colorFor(v) {
+    if (v === null || v === undefined) return '';
+    return v >= 0 ? 'text-success' : 'text-error';
+  }
+
+  function renderDetail(run) {
+    const ts = run.tear_sheet || {};
+    const equityCurve = ts.equity_curve || [];
+    const trades = ts.trades || [];
+    const symbols = (run.symbols || []).join(', ') || '—';
+    const colorReturn = colorFor(run.total_return_pct);
+    const colorPnl = colorFor(run.total_net_pnl);
+    const colorFinal = (run.final_equity != null && run.initial_equity != null && run.final_equity >= run.initial_equity) ? 'text-success' : 'text-error';
+
+    let tradesHtml = '';
+    if (trades.length > 0) {
+      const rows = trades.slice(0, 100).map(function(t, i) {
+        const pnl = t.net_pnl;
+        const r = t.r_multiple;
+        const pnlCls = (pnl != null && pnl >= 0) ? 'text-success' : 'text-error';
+        const rCls = (r != null && r >= 0) ? 'text-success' : 'text-error';
+        return '<tr>' +
+          '<td>' + (i + 1) + '</td>' +
+          '<td class="font-mono font-semibold">' + (t.symbol || '—') + '</td>' +
+          '<td>' + (t.regime_at_close || '—') + '</td>' +
+          '<td class="text-right font-mono ' + pnlCls + '">' + (pnl != null ? fmtUSD(pnl) : '—') + '</td>' +
+          '<td class="text-right font-mono ' + rCls + '">' + (r != null ? fmtNum(r, 2) : '—') + '</td>' +
+          '<td class="text-right">' + (t.hold_duration_sec != null ? t.hold_duration_sec + 's' : '—') + '</td>' +
+          '</tr>';
+      }).join('');
+      const truncateNote = trades.length > 100
+        ? '<div class="text-xs opacity-50 text-right mt-2">Showing first 100 of ' + trades.length + ' trades</div>'
+        : '';
+      tradesHtml =
+        '<div class="card bg-base-200 shadow-xl mb-4">' +
+          '<div class="card-body">' +
+            '<h2 class="card-title text-lg font-semibold">Trades</h2>' +
+            '<div class="divider my-1"></div>' +
+            '<div class="text-xs opacity-50 mb-2 flex justify-between">' +
+              '<span>' + trades.length + ' trade(s)</span>' +
+            '</div>' +
+            '<div class="overflow-x-auto">' +
+              '<table class="table table-zebra table-xs">' +
+                '<thead><tr><th>#</th><th>Symbol</th><th>Regime</th><th class="text-right">Net PnL</th><th class="text-right">R Multiple</th><th class="text-right">Hold (sec)</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody>' +
+              '</table>' +
+            '</div>' +
+            truncateNote +
+          '</div>' +
+        '</div>';
+    }
+
+    let errorHtml = run.error
+      ? '<div class="alert alert-error mt-4"><span class="font-mono text-xs">' + run.error + '</span></div>'
+      : '';
+
+    container.innerHTML =
+      '<div class="bt-detail-panel">' +
+        '<div class="card bg-base-200 shadow-xl mb-4">' +
+          '<div class="card-body">' +
+            '<h2 class="card-title text-lg font-semibold">Run ' + fmtRunId(run.run_id) + ' — Detail</h2>' +
+            '<div class="divider my-1"></div>' +
+            '<div class="text-xs opacity-50 mb-2 flex justify-between">' +
+              '<span>' + (run.mode || '—') + ' · ' + symbols + ' · ' + fmtTs(run.ts_started) + ' → ' + fmtTs(run.ts_finished) + '</span>' +
+              '<span><a class="link link-hover text-primary" href="/api/backtest/runs/' + run.run_id + '" target="_blank">JSON</a></span>' +
+            '</div>' +
+            '<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mt-2">' +
+              statCard('Initial Equity', fmtUSD(run.initial_equity), 'neutral') +
+              statCard('Final Equity', fmtUSD(run.final_equity), colorFinal.replace('text-', '')) +
+              statCard('Total Return', fmtPct(run.total_return_pct), colorReturn.replace('text-', '')) +
+              statCard('Net PnL', fmtUSD(run.total_net_pnl), colorPnl.replace('text-', '')) +
+              statCard('Max DD', fmtPct(run.max_drawdown_pct), 'error') +
+              statCard('Duration', (run.duration_sec || 0) + 's', 'neutral') +
+              statCard('Heartbeats', run.n_heartbeats || 0, 'primary') +
+              statCard('Signals', run.n_signals_produced || 0, 'info') +
+              statCard('Approved', run.n_signals_approved || 0, 'success') +
+              statCard('Rejected', run.n_signals_rejected || 0, 'error') +
+              statCard('Orders', run.n_orders || 0, 'neutral') +
+              statCard('Fills', run.n_fills || 0, 'neutral') +
+            '</div>' +
+            errorHtml +
+          '</div>' +
+        '</div>' +
+        tradesHtml +
+      '</div>';
+  }
+
+  function statCard(label, value, color) {
+    return '<div class="stat bg-base-300 rounded-box shadow">' +
+      '<div class="stat-value text-xl text-' + color + '">' + value + '</div>' +
+      '<div class="stat-desc text-xs uppercase tracking-wide opacity-60">' + label + '</div>' +
+    '</div>';
+  }
+
+  function renderLoading(runId) {
+    container.innerHTML =
+      '<div class="bt-detail-panel">' +
+        '<div class="card bg-base-200 shadow-xl mb-4">' +
+          '<div class="card-body">' +
+            '<h2 class="card-title text-lg font-semibold">Run ' + fmtRunId(runId) + ' — Loading</h2>' +
+            '<div class="divider my-1"></div>' +
+            '<div class="text-center py-8 text-xs opacity-50">Loading tear sheet…</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderError(runId, msg) {
+    container.innerHTML =
+      '<div class="bt-detail-panel">' +
+        '<div class="card bg-base-200 shadow-xl mb-4">' +
+          '<div class="card-body">' +
+            '<h2 class="card-title text-lg font-semibold">Run ' + fmtRunId(runId) + ' — Error</h2>' +
+            '<div class="divider my-1"></div>' +
+            '<div class="alert alert-error">Failed to load run detail: ' + (msg || 'unknown error') + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  async function loadDetail(runId) {
+    renderLoading(runId);
+    try {
+      const r = await fetch('/api/backtest/runs/' + encodeURIComponent(runId), { credentials: 'same-origin' });
+      if (!r.ok) {
+        renderError(runId, 'HTTP ' + r.status);
+        return;
+      }
+      const data = await r.json();
+      renderDetail(data);
+    } catch (e) {
+      renderError(runId, e && e.message ? e.message : String(e));
+    }
+  }
+
+  // Wire up click handlers on all rows
+  document.querySelectorAll('.bt-row').forEach(function(row) {
+    row.addEventListener('click', function() {
+      const runId = row.getAttribute('data-run-id');
+      if (!runId) return;
+      if (activeRunId === runId) {
+        // Collapse
+        row.classList.remove('active');
+        container.innerHTML = '';
+        activeRunId = null;
+        return;
+      }
+      // Deactivate previous
+      document.querySelectorAll('.bt-row.active').forEach(function(r) { r.classList.remove('active'); });
+      row.classList.add('active');
+      activeRunId = runId;
+      loadDetail(runId);
+    });
+  });
+})();
+</script>
 
 {% endblock %}

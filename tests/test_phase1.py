@@ -140,6 +140,9 @@ def test_heartbeat_to_duckdb_row():
         "markov_current_state", "tail_risk_score", "tail_risk_action",
         "kelly_f", "effective_kelly", "raw_payload", "accepted", "reject_reason",
         "reprocessed_at",
+        # ── v5 EV source breakdown (Phase C, migration 016) ──────────
+        "p_pattern", "sources_used", "weights_used",
+        "calibration_bias", "calibration_status", "p_win_kelly_shrink",
     }
     assert set(row.keys()) == expected_keys
     assert row["symbol"] == "BTC"

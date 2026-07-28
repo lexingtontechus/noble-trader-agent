@@ -17,6 +17,17 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+def _json_dumps_or_none(v: object) -> str | None:
+    """JSON-encode a list/dict for DuckDB VARCHAR storage, or None if missing."""
+    if v is None:
+        return None
+    import json as _json
+    try:
+        return _json.dumps(v, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
 class NobleTraderHeartbeat(BaseModel):
     """
     Validated Noble Trader heartbeat.
@@ -54,8 +65,12 @@ class NobleTraderHeartbeat(BaseModel):
         ..., description="Did regime change this cycle?"
     )
     prev_regime: str | None = Field(None, description="Previous regime label before shift")
-    shift_at: int = Field(..., ge=0, description="Unix ms when shift was detected")
-    shifts_24h: int = Field(..., ge=0, description="Regime shifts in last 24h")
+    # Made Optional with default=0 (audit 2026-07-22): the backend's agent_payload
+    # (orchestrator.py:1521-1576 + heavy_sweep.py:755-791) does NOT include these
+    # fields. Requiring them caused every live heartbeat to fail Pydantic
+    # validation and be quarantined. Default values are conservative.
+    shift_at: int = Field(0, ge=0, description="Unix ms when shift was detected (0 if not sent)")
+    shifts_24h: int = Field(0, ge=0, description="Regime shifts in last 24h (0 if not sent)")
 
     # === Upstream EV engine v4 ===
     kelly_f: float = Field(..., ge=0, description="Base Kelly fraction (full-Kelly, pre-cap)")
@@ -64,8 +79,11 @@ class NobleTraderHeartbeat(BaseModel):
     ev_per_dollar: float = Field(..., description="EV normalized per dollar risked")
     p_win: float = Field(..., ge=0, le=1, description="EV Engine v4 blended P_win")
     p_regime: float = Field(..., ge=0, le=1, description="HMM regime component of P_win")
-    p_imbalance: float = Field(..., ge=0, le=1, description="L2 imbalance component")
     p_markov: float = Field(..., ge=0, le=1, description="Markov transition component")
+    # Made Optional with default=0.5 (audit 2026-07-22): L2 imbalance was
+    # deprecated in P3.5; the backend no longer sends p_imbalance. Default
+    # to 0.5 (no information) instead of requiring it.
+    p_imbalance: float = Field(0.5, ge=0, le=1, description="L2 imbalance component (deprecated P3.5, defaults to 0.5)")
     ev_scale: float = Field(..., description="EV-scaled Kelly multiplier")
 
     # === TimesFM (optional — null if unavailable) ===
@@ -75,8 +93,34 @@ class NobleTraderHeartbeat(BaseModel):
     timesfm_horizon: str | None = Field(None, description="Forecast window label, e.g. '12h'")
 
     # === Markov ===
+    # Made Optional with default='FLAT' (audit 2026-07-22): the backend's
+    # agent_payload does not include this field. Defaulting to FLAT is
+    # conservative (neutral).
     markov_current_state: Literal["UP", "DOWN", "FLAT"] = Field(
-        ..., description="Current Markov state"
+        "FLAT", description="Current Markov state (defaults to FLAT if not sent)"
+    )
+    # ── HIGH #8 (2026-07-23): single-step Markov T ──────────────────
+    # Backend now sends both the single-step transition probability and
+    # the full 3x3 transition matrix. The agent's synthesizer uses
+    # p_markov_single_step as `markov_persistence` for the decision
+    # tree's adaptive-threshold check (markov_persistence > 0.7 ⇒
+    # "let winners run" branch in trending regimes). Previously the
+    # synthesizer used heartbeat.p_markov (the T^N multi-step hold
+    # probability) as a proxy, which was conservative-but-wrong in
+    # mean-reverting regimes.
+    #
+    # Default to 0.5 (neutral) for backtest replay of pre-HIGH-#8
+    # heartbeats that don't have these fields.
+    p_markov_single_step: float = Field(
+        0.5, ge=0, le=1,
+        description="Single-step T[current_state][target_state] probability. "
+                    "target = 'UP' for long, 'DOWN' for short. "
+                    "Defaults to 0.5 (neutral) for pre-HIGH-#8 heartbeats."
+    )
+    markov_transition_matrix: dict[str, dict[str, float]] | None = Field(
+        None,
+        description="3x3 Markov transition matrix keyed by {UP, DOWN, FLAT}. "
+                    "Sent by backend (HIGH #8); None for pre-HIGH-#8 heartbeats."
     )
 
     # === Tail risk (optional) ===
@@ -85,6 +129,47 @@ class NobleTraderHeartbeat(BaseModel):
     )
     tail_risk_action: Literal["none", "reduce_25", "reduce_50", "skip"] | None = Field(
         None, description="Recommended action"
+    )
+
+    # === v5 EV source breakdown (Phase C — backend already sends these) ===
+    # The backend runs the 4-source logit-pool blend in EVEngine.compute_ev
+    # (ev_engine.py:408-539) and pushes the full per-source breakdown in
+    # every agent_payload (orchestrator.py:1547-1556). The agent RE-BLENDS
+    # these locally via compute_blended_p_win in synthesizer.py, overriding
+    # p_pattern with its own Wilson-confident pattern_performance value
+    # (the one source the server cannot know).
+    p_pattern: float | None = Field(
+        None, ge=0, le=1,
+        description="Server-side P_pattern (always 0.5 — server has no trade "
+                    "journal). Agent overrides with local pattern_performance "
+                    "Wilson lower bound."
+    )
+    sources_used: list[str] | None = Field(
+        None, description="Which of the 4 sources the backend actually had "
+                          "available (e.g. ['p_regime','p_pattern','p_markov'] "
+                          "when TimesFM was unreachable). Agent must drop the "
+                          "same source to avoid double-counting."
+    )
+    weights_used: dict[str, float] | None = Field(
+        None, description="Backend's renormalised weights over the available "
+                          "sources. Agent uses these (re-normalised again after "
+                          "overriding p_pattern) instead of defaults."
+    )
+    calibration_bias: float | None = Field(
+        None, ge=-1, le=1,
+        description="Server-side P_win bias = avg_predicted_p_win - actual_win_rate. "
+                    "Positive = overconfident; agent should shrink p_regime toward 0.5."
+    )
+    calibration_status: str | None = Field(
+        None, description="CALIBRATED | OVERCONFIDENT | UNDERCONFIDENT | "
+                          "INSUFFICIENT_DATA"
+    )
+    p_win_kelly_shrink: float | None = Field(
+        None, ge=0, le=1,
+        description="Server-side p_win soft-gate Kelly shrink factor. "
+                    "1.0 = full kelly (p_win >= MIN_P_WIN). <1.0 = linearly "
+                    "shrunk in the soft band (0.50 <= p_win < MIN_P_WIN). "
+                    "0.0 = hard floor (p_win < 0.50, not published anyway)."
     )
 
     # === Hermes-assigned (added on ingest, not from upstream) ===
@@ -124,6 +209,10 @@ class NobleTraderHeartbeat(BaseModel):
         "ev_scale",
         "p_timesfm",
         "tail_risk_score",
+        "p_pattern",
+        "calibration_bias",
+        "p_win_kelly_shrink",
+        "p_markov_single_step",
         mode="before",
     )
     @classmethod
@@ -132,6 +221,80 @@ class NobleTraderHeartbeat(BaseModel):
         if v is None:
             return None
         return float(v)
+
+    @field_validator("markov_transition_matrix", mode="before")
+    @classmethod
+    def _coerce_transition_matrix(cls, v: object) -> dict[str, dict[str, float]] | None:
+        """Coerce JSON-stringified transition matrix (Redis sends bytes).
+
+        Backend sends a 3x3 dict-of-dicts keyed by {UP, DOWN, FLAT}. If
+        a stale payload arrives with the field as a JSON string (older
+        codec path), decode it here.
+        """
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            try:
+                return {
+                    str(k): {str(k2): float(v2) for k2, v2 in row.items()}
+                    for k, row in v.items()
+                }
+            except (TypeError, ValueError):
+                return None
+        if isinstance(v, str):
+            import json as _json
+            try:
+                decoded = _json.loads(v)
+                if isinstance(decoded, dict):
+                    return {
+                        str(k): {str(k2): float(v2) for k2, v2 in row.items()}
+                        for k, row in decoded.items()
+                    }
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    @field_validator("sources_used", mode="before")
+    @classmethod
+    def _coerce_sources_used(cls, v: object) -> list[str] | None:
+        """Coerce JSON-stringified list (Redis sends bytes) to list[str].
+
+        Backend sends sources_used as a JSON array in the agent_payload;
+        after json.loads() at parse_heartbeat() it's already a list. But
+        if a stale payload arrives with the field as a JSON string (older
+        codec path), decode it here.
+        """
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return [str(s) for s in v]
+        if isinstance(v, str):
+            import json as _json
+            try:
+                decoded = _json.loads(v)
+                if isinstance(decoded, list):
+                    return [str(s) for s in decoded]
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    @field_validator("weights_used", mode="before")
+    @classmethod
+    def _coerce_weights_used(cls, v: object) -> dict[str, float] | None:
+        """Coerce JSON-stringified dict (Redis sends bytes) to dict[str, float]."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return {str(k): float(val) for k, val in v.items()}
+        if isinstance(v, str):
+            import json as _json
+            try:
+                decoded = _json.loads(v)
+                if isinstance(decoded, dict):
+                    return {str(k): float(val) for k, val in decoded.items()}
+            except (ValueError, TypeError):
+                return None
+        return None
 
     @model_validator(mode="after")
     def _validate_regime_shift_consistency(self) -> NobleTraderHeartbeat:
@@ -199,6 +362,17 @@ class NobleTraderHeartbeat(BaseModel):
             "tail_risk_action": self.tail_risk_action,
             "kelly_f": self.kelly_f,
             "effective_kelly": self.effective_kelly,
+            # ── v5 EV source breakdown (Phase C) ───────────────────────
+            "p_pattern": self.p_pattern,
+            "sources_used": _json_dumps_or_none(self.sources_used),
+            "weights_used": _json_dumps_or_none(self.weights_used),
+            "calibration_bias": self.calibration_bias,
+            "calibration_status": self.calibration_status,
+            "p_win_kelly_shrink": self.p_win_kelly_shrink,
+            # ── HIGH #8 (2026-07-23): single-step Markov T ──────────────
+            "p_markov_single_step": self.p_markov_single_step,
+            "markov_transition_matrix": _json_dumps_or_none(self.markov_transition_matrix),
+            # ───────────────────────────────────────────────────────────
             "raw_payload": raw_payload,
             "accepted": accepted,
             "reject_reason": reject_reason,

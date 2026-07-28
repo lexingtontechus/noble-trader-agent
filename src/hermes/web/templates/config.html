@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, json_block %}
+{% from "components/ui.html" import card, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Config{% endblock %}
 
 {% block content %}
 
-{# Header card — config hash + environment + edit hints #}
+{{ page_header(
+    title="Configuration",
+    subtitle="Hash: <code class=\"text-primary\">" ~ config_hash ~ "</code> · Environment: <code class=\"text-primary\">" ~ environment ~ "</code> · secrets redacted"
+) }}
+
+{# Header card — edit hints #}
 {% call card(title="Loaded Configuration (secrets redacted)") %}
-<div class="text-xs opacity-50 mb-3 flex flex-wrap gap-x-4 gap-y-1">
-    <span>Hash: <code class="text-primary">{{ config_hash }}</code></span>
-    <span>Environment: <code class="text-primary">{{ environment }}</code></span>
-</div>
 <ul class="list-disc pl-5 space-y-1 text-sm opacity-70">
     <li>All credentials are shown as <code class="text-primary">secret:…</code> or <code class="text-primary">&lt;redacted:Nchars&gt;</code> — never the real value.</li>
     <li>Edit <code class="text-primary">config/default.yaml</code> for non-secret values; <code class="text-primary">.env</code> for secrets.</li>
@@ -20,8 +21,7 @@
 
 {# Curated, labelled sections — responsive 2-col grid of label+value rows #}
 {% for group in display_groups %}
-{% call card(title=group.title) %}
-<p class="text-xs opacity-60 mb-3">{{ group.description }}</p>
+{% call card(title=group.title, extra=group.description) %}
 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-0">
     {% for row in group.rows %}
     <div class="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 py-1.5 border-b border-base-300/40">

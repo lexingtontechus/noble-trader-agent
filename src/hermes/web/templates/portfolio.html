@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block %}
+{% from "components/ui.html" import card, status_badge, signal_badge, regime_badge, empty_state, stat_grid, timestamp, json_block, page_header %}
 
 {% block title %}Hermes Dashboard · Portfolio{% endblock %}
 
@@ -9,6 +9,12 @@
 
 {% block content %}
 
+{{ page_header(
+    title="Portfolio",
+    subtitle=(metrics.n_open_positions ~ " open positions" if metrics and metrics.get('n_open_positions') is not none else "Live account metrics") ~ " · equity / exposure / risk decisions",
+    refresh=10
+) }}
+
 {# Portfolio metrics #}
 {% call card(title="Portfolio Metrics") %}
 {% if metrics and metrics.equity_total is defined %}
@@ -16,16 +22,19 @@
     {"value": "${:.2f}".format(metrics.equity_total), "label": "Equity Total", "color": "primary"},
     {"value": "${:.2f}".format(metrics.cash_usd), "label": "Cash USD", "color": "neutral"},
     {"value": "${:.2f}".format(metrics.cash_usdc), "label": "Cash USDC", "color": "neutral"},
-    {"value": "{:.4f}×".format(metrics.leverage_gross), "label": "Gross Leverage", "color": "info"},
+    {"value": "{:.4f}×".format(metrics.leverage_gross), "label": "Gross Leverage", "color": "warning"},
     {"value": "{:.4f}×".format(metrics.leverage_net), "label": "Net Leverage", "color": "info"},
-    {"value": metrics.n_open_positions, "label": "Open Positions", "color": "secondary"},
+    {"value": metrics.n_open_positions, "label": "Open Positions", "color": "secondary"}
+], columns=6, size="text-xl") }}
+
+{{ stat_grid([
     {"value": "${:.2f}".format(metrics.gross_exposure_usd), "label": "Gross Exposure", "color": "info"},
     {"value": "${:.2f}".format(metrics.net_exposure_usd), "label": "Net Exposure", "color": "info"},
     {"value": "${:.2f}".format(metrics.long_exposure_usd), "label": "Long Exposure", "color": "success"},
     {"value": "${:.2f}".format(metrics.short_exposure_usd), "label": "Short Exposure", "color": "error"},
     {"value": "${:.2f}".format(metrics.realized_pnl + metrics.unrealized_pnl), "label": "Total PnL", "color": "success" if (metrics.realized_pnl + metrics.unrealized_pnl) >= 0 else "error"},
     {"value": "{:.2f}%".format(metrics.drawdown_pct * 100), "label": "Drawdown", "color": "error" if metrics.drawdown_pct * 100 > 5 else "warning"}
-]) }}
+], columns=6, size="text-xl") }}
 
 <div class="divider">Detailed Breakdown</div>
 <div class="overflow-x-auto">
@@ -66,7 +75,6 @@
 </div>
 {% else %}
 {{ empty_state(message="No portfolio snapshots yet.", hint="Run: platform risk --equity 100000") }}
-<p class="text-xs opacity-60 mt-2 text-center">Account snapshots will appear here every 60 seconds.</p>
 {% endif %}
 {% endcall %}
 
@@ -83,6 +91,35 @@
   }
 </script>
 {% endcall %}
+
+{# Allocation + Exposure side-by-side (UX-UNIFORMITY-2).
+   Two server-rendered matplotlib PNGs side-by-side, replacing the deprecated
+   dashboard's AllocationPie.tsx + ExposureBars.tsx React components. Uses
+   lg:grid-cols-2 to mirror the deprecated grid layout. #}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+{% call card(title="Portfolio Allocation (donut)", id="allocation-card") %}
+<img src="/api/charts/allocation.png"
+     alt="Portfolio allocation by venue / direction"
+     class="w-full rounded-box border border-base-300 bg-base-100"
+     loading="lazy">
+<div class="text-xs opacity-50 text-center mt-2">
+  Server-rendered PNG · cached 60s ·
+  <a href="/api/charts/allocation.png" target="_blank" class="link link-hover text-primary">open raw</a> ·
+  <a href="/api/portfolio/exposure" target="_blank" class="link link-hover text-primary">JSON</a>
+</div>
+{% endcall %}
+
+{% call card(title="Exposure Breakdown (bars)", id="exposure-bars-card") %}
+<img src="/api/charts/exposure_bars.png"
+     alt="Exposure breakdown horizontal bars"
+     class="w-full rounded-box border border-base-300 bg-base-100"
+     loading="lazy">
+<div class="text-xs opacity-50 text-center mt-2">
+  Server-rendered PNG · cached 60s ·
+  <a href="/api/charts/exposure_bars.png" target="_blank" class="link link-hover text-primary">open raw</a>
+</div>
+{% endcall %}
+</div>
 
 {# Exposure breakdown (live chart) #}
 {% call card(title="Exposure Breakdown by Venue (live chart)", id="exposure-card") %}

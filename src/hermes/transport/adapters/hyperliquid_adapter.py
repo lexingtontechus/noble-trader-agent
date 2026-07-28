@@ -136,8 +136,40 @@ class HyperliquidAdapter(VenueAdapter):
             log.error("hyperliquid_trades_error", error=str(e))
             raise
 
+    # ────────────────────────────────────────────────────────────
+    # L2 Order Book Stream  [SOFT-DEPRECATED — P3.5 / P7 removal]
+    # ────────────────────────────────────────────────────────────
+    # P3.5 (2026-07-21): The stream_order_book path is soft-deprecated.
+    # Hyperliquid L2 only covers crypto — same coverage gap as Alpaca L2.
+    # If we drop Alpaca L2 for consistency (which we did in P3.5), we
+    # MUST also drop HL L2 — otherwise we recreate the exact asymmetry
+    # we just eliminated.
+    #
+    # P3.5 replaces p_imbalance (L2-derived) with p_microstructure
+    # (L1-derived + TVDA TA composite), computed in the proxy:
+    #   noble-trader-proxy/src/proxy/microstructure/
+    #
+    # NOTE: stream_funding_rates() is RETAINED — it feeds p_funding
+    # (a separate EV component). Funding rates are crypto-only by
+    # definition (no equity/forex/commodity analog), so the asymmetry
+    # is structurally unavoidable, not an architectural choice.
+    #
+    # This method is PRESERVED for the P3.5 rollout window. Callers
+    # should migrate to reading p_microstructure from the proxy's
+    # /sse/alerts microstructure event stream.
+    #
+    # P7 REMOVAL (target: 2026-08-21): this method will be DELETED.
+    # stream_funding_rates stays — it remains the source for p_funding.
+    #
+    # See: P3.5 changelog in /home/z/my-project/worklog.md
+
     async def stream_order_book(self, symbols: list[str]) -> AsyncIterator[OrderBookL2]:
-        """Stream live L2 order book via Hyperliquid WebSocket."""
+        """Stream live L2 order book via Hyperliquid WebSocket.
+
+        [DEPRECATED P3.5] — see comment block above. Preserved for the
+        P3.5 rollout window; removed in P7. stream_funding_rates() is
+        NOT affected by this deprecation.
+        """
         if not self._configured:
             return
 
@@ -186,6 +218,13 @@ class HyperliquidAdapter(VenueAdapter):
         except Exception as e:
             log.error("hyperliquid_l2_error", error=str(e))
             raise
+
+    # ────────────────────────────────────────────────────────────
+    # Funding rate stream  [RETAINED — feeds p_funding]
+    # ────────────────────────────────────────────────────────────
+    # This path is NOT affected by the P3.5 L2 deprecation. It remains
+    # the source for the p_funding EV component, which is crypto-only
+    # by definition (no equity/forex/commodity analog exists).
 
     async def stream_funding_rates(self, symbols: list[str]) -> AsyncIterator[FundingRate]:
         """Poll funding rates periodically (Hyperliquid doesn't stream them)."""

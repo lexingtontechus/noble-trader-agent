@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, regime_strip, symbol_card, empty_state, refresh_note, page_header, kelly_legend %}
+
+{% block title %}Hermes Dashboard · Market{% endblock %}
+
+{% block meta %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% block content %}
+
+{# Regime strip — always at top of /market #}
+{{ regime_strip(strip_data) }}
+
+{# Uniform page header #}
+{{ page_header(
+    title="Market Overview",
+    subtitle=symbols_data | length ~ " active symbols · latest heartbeat per symbol · " ~ '<a href="/api/market/overview" target="_blank" class="link link-hover text-primary">JSON</a>',
+    refresh=30
+) }}
+
+{# Symbol grid — 1/2/3/4 columns responsive #}
+{% if symbols_data %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+  {% for s in symbols_data %}
+  {{ symbol_card(s) }}
+  {% endfor %}
+</div>
+{% else %}
+{% call card(title="No Active Symbols") %}
+{{ empty_state(
+  message="The local DuckDB `symbols` table has no active rows.",
+  hint="Run: platform symbols --sync  (or push symbols from upstream via the proxy)"
+) }}
+{% endcall %}
+{% endif %}
+
+{# Legend #}
+{% call card(title="Legend") %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+  <div>
+    <div class="font-semibold mb-1">Regime Colors</div>
+    <ul class="space-y-0.5">
+      <li><span class="badge badge-success badge-xs">bull / calm_trend</span> — favorable, full size</li>
+      <li><span class="badge badge-warning badge-xs">neutral / choppy / transition</span> — cautious, reduced size</li>
+      <li><span class="badge badge-error badge-xs">bear / risk_off / funding_stress</span> — defensive / blocked</li>
+      <li><span class="badge badge-ghost badge-xs">unknown</span> — no regime label</li>
+    </ul>
+  </div>
+  <div>
+    <div class="font-semibold mb-1">Brick Arrow</div>
+    <ul class="space-y-0.5">
+      <li><span class="text-success">▲</span> — last Markov state UP</li>
+      <li><span class="text-error">▼</span> — last Markov state DOWN</li>
+      <li><span class="text-base-content/40">—</span> — flat / unknown</li>
+    </ul>
+  </div>
+</div>
+<div class="divider my-2"></div>
+{{ kelly_legend() }}
+<div class="divider my-2"></div>
+<div>
+  <div class="font-semibold mb-1">Data Source</div>
+  <p>All data from local DuckDB (<code>./data/hermes.duckdb</code>).
+  Renko bricks + price charts on the detail page are rebuilt on-demand from
+  TDVA (TradingView Data API) candles, cached 60s.</p>
+</div>
+{% endcall %}
+
+{% endblock %}

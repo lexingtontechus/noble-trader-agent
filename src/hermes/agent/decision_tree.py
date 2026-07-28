@@ -102,6 +102,16 @@ class HermesDecisionTree:
         fading_brick_count: int = 2,          # 2+ adverse bricks = fading
         strong_conviction_threshold: float = 0.7,
         trail_stop_activation_pct: float = 0.01,  # start trailing at +1%
+        # ── v5 (Phase C): Markov-persistence adaptive thresholds ────
+        # When markov_persistence (T[current][target], single-step proxy)
+        # is high, the regime is strongly trending — widen TP and tolerate
+        # deeper pullbacks before trailing. When low (mean-reverting),
+        # take profit early and tighten trailing.
+        markov_persistence_high: float = 0.7,   # > this → trending
+        markov_persistence_low: float = 0.55,   # < this → mean-reverting
+        trending_tp_multiplier: float = 1.5,    # early_tp_pct × 1.5 in trending
+        mean_reverting_tp_multiplier: float = 0.7,  # early_tp_pct × 0.7 in MR
+        trending_fading_bricks_delta: int = 1,  # +1 adverse brick tolerance in trending
     ) -> None:
         self._sl_pct = stop_loss_pct
         self._tp_pct = take_profit_pct
@@ -109,6 +119,12 @@ class HermesDecisionTree:
         self._fading_bricks = fading_brick_count
         self._strong_conviction = strong_conviction_threshold
         self._trail_activation = trail_stop_activation_pct
+        # Markov adaptive thresholds
+        self._mk_high = markov_persistence_high
+        self._mk_low = markov_persistence_low
+        self._mk_trending_tp_mult = trending_tp_multiplier
+        self._mk_mr_tp_mult = mean_reverting_tp_multiplier
+        self._mk_trending_fading_delta = trending_fading_bricks_delta
         self._stats = {
             "decisions_evaluated": 0,
             "closes_sl": 0,
@@ -120,6 +136,28 @@ class HermesDecisionTree:
             "enters": 0,
             "skips": 0,
         }
+
+    def _adaptive_thresholds(self, signal: BlendedSignal | None) -> tuple[float, int]:
+        """Return (early_tp_pct, fading_bricks) adapted to Markov persistence.
+
+        - persistence > 0.7 (strong trending): widen TP, tolerate deeper pullbacks
+          → early_tp × 1.5, fading_bricks + 1
+        - persistence < 0.55 (mean-reverting): take profit early, tighter trailing
+          → early_tp × 0.7, fading_bricks unchanged
+        - else (neutral): use defaults unchanged
+
+        Phase C addition. Falls back to defaults when signal is None
+        or signal has no markov_persistence attribute (pre-Phase C
+        BlendedSignal rows in backtest replay).
+        """
+        if signal is None:
+            return self._early_tp_pct, self._fading_bricks
+        persistence = getattr(signal, "markov_persistence", 0.5)
+        if persistence > self._mk_high:
+            return self._early_tp_pct * self._mk_trending_tp_mult, self._fading_bricks + self._mk_trending_fading_delta
+        if persistence < self._mk_low:
+            return self._early_tp_pct * self._mk_mr_tp_mult, self._fading_bricks
+        return self._early_tp_pct, self._fading_bricks
 
     def evaluate_existing_position(
         self,
@@ -243,16 +281,23 @@ class HermesDecisionTree:
         #   1. Fading (pnl > 0 + adverse bricks) → trail stop
         #   2. Early profit (pnl >= 4.5%) → close
         #   3. No exit condition → hold
+        # ── v5 (Phase C): thresholds adapt to Markov persistence ──
+        # In a strong-trending regime (persistence > 0.7), we widen TP
+        # and tolerate one extra adverse brick before declaring "fading".
+        # In a mean-reverting regime (persistence < 0.55), we take
+        # profit earlier and keep the default fading tolerance.
+        adaptive_early_tp, adaptive_fading_bricks = self._adaptive_thresholds(signal)
+
         if same_direction:
             # Check fading FIRST (pnl > 0 + adverse bricks)
             # If the trend is fading, trail the stop instead of taking early profit
             # — the trend might resume, so we protect gains rather than exit
-            if pnl_pct > 0 and adverse_brick_count >= self._fading_bricks:
+            if pnl_pct > 0 and adverse_brick_count >= adaptive_fading_bricks:
                 self._stats["trails"] += 1
                 return AgentDecision(
                     symbol=position.symbol,
                     action=AgentAction.TRAIL_STOP,
-                    reason=f"pnl {pnl_pct:.2%} > 0 + {adverse_brick_count} adverse bricks (fading) → trail stop",
+                    reason=f"pnl {pnl_pct:.2%} > 0 + {adverse_brick_count} adverse bricks (fading, threshold={adaptive_fading_bricks}) → trail stop",
                     position_id=position.position_id,
                     signal_id=signal.signal_id,
                     signal_direction=signal.direction,
@@ -261,26 +306,31 @@ class HermesDecisionTree:
                     r_multiple=r_multiple,
                     detail={
                         "adverse_bricks": adverse_brick_count,
+                        "fading_threshold": adaptive_fading_bricks,
                         "trail_activation_pct": self._trail_activation,
                         "new_trailing_stop": self._compute_trailing_stop(position, price),
                     },
                 )
 
-            # Check early profit SECOND (pnl >= 4.5% + NOT fading)
-            # Trend is still strong (no adverse bricks) → take profit at higher threshold
-            if pnl_pct >= self._early_tp_pct:
+            # Check early profit SECOND (pnl >= early_tp + NOT fading)
+            # Trend is still strong (no adverse bricks) → take profit at adaptive threshold
+            if pnl_pct >= adaptive_early_tp:
                 self._stats["closes_early"] += 1
                 return AgentDecision(
                     symbol=position.symbol,
                     action=AgentAction.CLOSE_EARLY_PROFIT,
-                    reason=f"pnl {pnl_pct:.2%} >= early profit threshold {self._early_tp_pct:.2%} + same direction + not fading",
+                    reason=f"pnl {pnl_pct:.2%} >= early profit threshold {adaptive_early_tp:.2%} + same direction + not fading",
                     position_id=position.position_id,
                     signal_id=signal.signal_id,
                     signal_direction=signal.direction,
                     current_pnl_pct=pnl_pct,
                     current_pnl_usd=pnl_usd,
                     r_multiple=r_multiple,
-                    detail={"threshold_pct": self._early_tp_pct, "signal_id": signal.signal_id},
+                    detail={
+                        "threshold_pct": adaptive_early_tp,
+                        "base_threshold_pct": self._early_tp_pct,
+                        "signal_id": signal.signal_id,
+                    },
                 )
 
             # No exit signal → hold
@@ -301,7 +351,16 @@ class HermesDecisionTree:
         # === Step 5: Opposite direction ===
         if opposite_direction:
             # Check if signal is strong enough to flip
-            conviction = getattr(signal, "meta_regime_confidence", 0.5)
+            # ── v5 (Phase C): prefer p_win_agent (4-source logit-pool
+            # blend with local pattern_performance) over the legacy
+            # meta_regime_confidence. Falls back to meta_regime_confidence
+            # for backward compat with old BlendedSignal rows in DuckDB
+            # replay / backtest (pre-Phase C rows have p_win_agent=0.5
+            # default, which would incorrectly fail the threshold).
+            conviction = getattr(signal, "p_win_agent", None)
+            if conviction is None or conviction == 0.5:
+                # Backward-compat fallback
+                conviction = getattr(signal, "meta_regime_confidence", 0.5)
             regime_supports_flip = signal.meta_regime not in ("risk_off", "funding_stress")
 
             if conviction >= self._strong_conviction and regime_supports_flip:
@@ -417,3 +476,31 @@ class HermesDecisionTree:
 
     def get_stats(self) -> dict[str, int]:
         return self._stats.copy()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable dict of the 11 configured threshold
+        values + the live decision-counter stats.
+
+        MEDIUM-LOW-AGENT-REPO Fix #13 (2026-07-22): used by the
+        ``/api/agent/decision_tree`` route to surface the *actual*
+        config-driven thresholds (rather than the hardcoded dict that
+        ``hermes.web.status.get_decision_tree_definition`` returns) so
+        operators can verify a config edit propagated to the runtime
+        decision tree.
+
+        Keys mirror the ``__init__`` kwargs 1:1 (see lines 97-115).
+        """
+        return {
+            "stop_loss_pct": self._sl_pct,
+            "take_profit_pct": self._tp_pct,
+            "early_profit_pct": self._early_tp_pct,
+            "fading_brick_count": self._fading_bricks,
+            "strong_conviction_threshold": self._strong_conviction,
+            "trail_stop_activation_pct": self._trail_activation,
+            "markov_persistence_high": self._mk_high,
+            "markov_persistence_low": self._mk_low,
+            "trending_tp_multiplier": self._mk_trending_tp_mult,
+            "mean_reverting_tp_multiplier": self._mk_mr_tp_mult,
+            "trending_fading_bricks_delta": self._mk_trending_fading_delta,
+            "stats": dict(self._stats),
+        }

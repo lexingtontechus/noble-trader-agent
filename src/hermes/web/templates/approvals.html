@@ -1,16 +1,19 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, empty_state, status_badge %}
+{% from "components/ui.html" import card, empty_state, status_badge, signal_badge, timestamp, page_header %}
 
 {% block title %}Hermes Dashboard · Approvals{% endblock %}
 
+{% block meta %}<meta http-equiv="refresh" content="15">{% endblock %}
+
 {% block content %}
 
-{% call card(title="Pending Approvals") %}
-<p class="text-sm opacity-60 mb-3">
-  Tier-3 (large / new-strategy) trades are queued here for your approval. This is the
-  credential-free default — no Discord/Telegram required. Approve and the decision
-  re-publishes to the execution stream.
-</p>
+{{ page_header(
+    title="Pending Approvals",
+    subtitle=(pending | length) ~ " tier-3 trade(s) queued · credential-free default (no Discord/Telegram required)",
+    refresh=15
+) }}
+
+{% call card(title="Approval Queue") %}
 {% if pending %}
 <div class="overflow-x-auto">
   <table class="table table-zebra table-sm">
@@ -30,10 +33,10 @@
       <tr>
         <td class="font-mono text-xs">{{ p.decision_id }}</td>
         <td class="font-semibold">{{ p.symbol }}</td>
-        <td>{{ p.direction }}</td>
+        <td>{{ signal_badge(p.direction) }}</td>
         <td>${{ "%.0f" | format(p.requested_size_usd or 0) }}</td>
         <td>{{ p.autonomy_tier }}</td>
-        <td class="text-xs opacity-70">{{ p.created_at }}</td>
+        <td>{{ timestamp(p.created_at) }}</td>
         <td>
           <button class="btn btn-primary btn-xs approve-btn"
                   data-decision-id="{{ p.decision_id }}">Approve</button>

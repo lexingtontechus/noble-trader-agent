@@ -306,8 +306,54 @@ def deactivate_symbol(
     *,
     deactivated_by: str = "cli",
     rationale: str | None = None,
+    force: bool = False,
 ) -> Symbol:
-    """Soft-delete: set is_active = FALSE. Preserves historical rows."""
+    """Soft-delete: set is_active = FALSE. Preserves historical rows.
+
+    Refuses to deactivate if there are open positions for `symbol` in
+    trade_journal (rows WHERE closed_at IS NULL). This prevents an
+    operator from accidentally yanking a symbol out from underneath a
+    live trade — which would leave the position unable to receive
+    exit signals, stop-loss updates, or PnL attribution.
+
+    Pass `force=True` to override the guard (e.g. emergency delisting
+    where the operator has manually closed the position via the bridge
+    and needs to clean up the registry). `force=True` logs a loud
+    warning so the override is auditable.
+
+    Raises:
+        ValueError: if symbol not found, or if open positions exist
+                    and `force=False`.
+    """
+    # ── Open-position guard ────────────────────────────────────────────
+    # Check trade_journal for any row with this symbol AND closed_at IS NULL.
+    # An open position means the agent is actively managing a trade for this
+    # symbol; deactivating it would orphan the position.
+    if not force:
+        open_count = _count_open_positions(config, symbol)
+        if open_count > 0:
+            log.error(
+                "symbol_deactivate_blocked_open_positions",
+                symbol=symbol,
+                open_positions=open_count,
+                by=deactivated_by,
+            )
+            raise ValueError(
+                f"Cannot deactivate {symbol}: {open_count} open position(s) in "
+                f"trade_journal. Close the position(s) first, or pass force=True "
+                f"to override (audited)."
+            )
+    else:
+        open_count = _count_open_positions(config, symbol)
+        if open_count > 0:
+            log.warning(
+                "symbol_deactivate_force_override",
+                symbol=symbol,
+                open_positions=open_count,
+                by=deactivated_by,
+                note="Operator used force=True to deactivate despite open positions",
+            )
+
     now = datetime.now(timezone.utc)
     with _connect(config) as conn:
         result = conn.execute(
@@ -325,6 +371,23 @@ def deactivate_symbol(
             raise ValueError(f"Symbol not found: {symbol}")
     log.info("symbol_deactivated", symbol=symbol, by=deactivated_by)
     return get_symbol(config, symbol)  # type: ignore[return-value]
+
+
+def _count_open_positions(config: HermesConfig, symbol: str) -> int:
+    """Return the number of open positions for `symbol` in trade_journal.
+
+    "Open" = closed_at IS NULL. This is the canonical indicator that the
+    agent is still managing a live trade for this symbol.
+    """
+    with _connect(config) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM trade_journal
+            WHERE symbol = ? AND closed_at IS NULL
+            """,
+            [symbol],
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def activate_symbol(

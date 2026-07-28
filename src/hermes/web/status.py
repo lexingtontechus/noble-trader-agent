@@ -144,7 +144,7 @@ async def check_nt_redis(config: HermesConfig) -> dict[str, Any]:
         return {
             "name": "Noble Trader Redis (upstream)",
             "status": "not_configured",
-            "detail": "Set NOBLE_TRADER_REDIS_URL in .env",
+            "detail": "Set NOBLE_TRADER_PROXY_REDIS_URL in .env",
             "url": "",
             "channel": nt.get("channel", ""),
         }
@@ -1138,37 +1138,6 @@ def get_simulation_runs(config: HermesConfig, limit: int = 50) -> list[dict[str,
         return []
 
 
-def get_hypotheses(config: HermesConfig, limit: int = 50) -> list[dict[str, Any]]:
-    """Get hypotheses from DuckDB."""
-    try:
-        import duckdb
-
-        db_path = get_duckdb_path(config)
-        if not db_path.exists():
-            return []
-        with duckdb.connect(str(db_path), read_only=True) as conn:
-            try:
-                conn.execute("SELECT 1 FROM hermes_hypotheses LIMIT 1")
-            except Exception:
-                return []
-
-            result = conn.execute(
-                f"""
-                SELECT hypothesis_id, ts_created, hypothesis, rationale,
-                       status, confidence, promoted_at
-                FROM hermes_hypotheses
-                ORDER BY ts_created DESC
-                LIMIT {int(limit)}
-                """
-            ).fetchdf()
-            if result.empty:
-                return []
-            return result.to_dict("records")
-    except Exception as e:
-        log.warning("get_hypotheses_failed", error=str(e))
-        return []
-
-
 def get_trade_journal_entries(config: HermesConfig, limit: int = 50) -> list[dict[str, Any]]:
     """Get trade journal entries from DuckDB."""
     try:
@@ -1227,3 +1196,320 @@ def get_recent_market_data_stats(config: HermesConfig) -> dict[str, Any]:
     except Exception as e:
         log.warning("get_market_data_stats_failed", error=str(e))
         return {"parquet_exists": False, "total_files": 0}
+
+
+# ---------------------------------------------------------------------------
+# Market overview — feeds the /market dashboard + /api/market/overview JSON.
+#
+# Returns the LATEST heartbeat per active symbol (one row per symbol), plus
+# the asset_class + venue pulled from the local `symbols` registry. This is
+# the data backing the regime strip + symbol grid + per-symbol detail header.
+#
+# Caching: the route handler in app.py wraps this in a 10s in-memory TTL
+# cache (see _market_overview_cache). The function itself is pure + cheap
+# (one DuckDB QUALIFY query + one symbols-table lookup, both <50ms).
+# ---------------------------------------------------------------------------
+
+# Columns selected here drive the regime_strip + symbol_card macros in
+# components/ui.html and the /market/{symbol} detail page header. If you
+# add a column, also update the macro templates to display it.
+_MARKET_OVERVIEW_COLUMNS = """
+    symbol, ts_received, signal, regime, regime_conf, regime_shift,
+    entry_price, stop_loss, take_profit, brick_size,
+    kelly_f, effective_kelly, ev_per_dollar, p_win,
+    p_regime, p_markov, p_timesfm, p_imbalance, ev_scale,
+    markov_current_state, prev_regime, shifts_24h,
+    tail_risk_score, tail_risk_action,
+    p_pattern, sources_used, weights_used,
+    calibration_bias, calibration_status
+"""
+
+
+def get_market_overview(config: HermesConfig) -> list[dict[str, Any]]:
+    """Latest heartbeat per active symbol — the data backing /market.
+
+    Returns a list of dicts (one per symbol) with all heartbeat fields needed
+    by the dashboard. Symbols with no heartbeat yet are still included with
+    a `heartbeat=None` entry so the grid shows a "no data" placeholder.
+
+    The list is ordered: heartbeat-bearing symbols first (by symbol asc),
+    then symbol-registry-only symbols (by symbol asc).
+    """
+    try:
+        import duckdb
+
+        db_path = get_duckdb_path(config)
+        if not db_path.exists():
+            return []
+
+        # 1. Pull the active universe from the symbols registry.
+        from hermes.db.symbol_registry import list_active_symbols
+
+        active = list_active_symbols(config)
+        if not active:
+            return []
+
+        # 2. One DuckDB query: latest heartbeat per symbol via QUALIFY.
+        #    DuckDB supports list parameters via ANY(?), so we pass the
+        #    active symbols list as a single bind param.
+        rows: list[dict[str, Any]] = []
+        with duckdb.connect(str(db_path), read_only=True) as conn:
+            placeholders = ", ".join(["?"] * len(active))
+            result = conn.execute(
+                f"""
+                SELECT {_MARKET_OVERVIEW_COLUMNS.strip()}
+                FROM signal_heartbeats
+                WHERE symbol IN ({placeholders})
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY symbol ORDER BY ts_received DESC
+                ) = 1
+                ORDER BY symbol ASC
+                """,
+                active,
+            ).fetchdf()
+            if not result.empty:
+                rows = result.to_dict("records")
+
+        # 3. Decorate each row with asset_class + venue from the symbols
+        #    registry. Symbols with no heartbeat are appended as
+        #    {symbol, asset_class, venue, heartbeat=None} entries.
+        from hermes.db.symbol_registry import get_symbol
+
+        hb_by_symbol = {r["symbol"]: r for r in rows}
+        out: list[dict[str, Any]] = []
+        for sym in active:
+            row_meta = get_symbol(config, sym)
+            asset_class = getattr(row_meta, "asset_class", None) if row_meta else None
+            venue = getattr(row_meta, "venue", None) if row_meta else None
+            hb = hb_by_symbol.get(sym)
+            if hb is not None:
+                hb["asset_class"] = asset_class
+                hb["venue"] = venue
+                out.append(hb)
+            else:
+                out.append(
+                    {
+                        "symbol": sym,
+                        "asset_class": asset_class,
+                        "venue": venue,
+                        "ts_received": None,
+                        "signal": None,
+                        "regime": None,
+                        "regime_conf": None,
+                        "regime_shift": None,
+                        "entry_price": None,
+                        "stop_loss": None,
+                        "take_profit": None,
+                        "brick_size": None,
+                        "kelly_f": None,
+                        "effective_kelly": None,
+                        "ev_per_dollar": None,
+                        "p_win": None,
+                        "p_regime": None,
+                        "p_markov": None,
+                        "p_timesfm": None,
+                        "p_imbalance": None,
+                        "ev_scale": None,
+                        "markov_current_state": None,
+                        "prev_regime": None,
+                        "shifts_24h": None,
+                        "tail_risk_score": None,
+                        "tail_risk_action": None,
+                        "p_pattern": None,
+                        "sources_used": None,
+                        "weights_used": None,
+                        "calibration_bias": None,
+                        "calibration_status": None,
+                    }
+                )
+        return out
+    except Exception as e:
+        log.warning("get_market_overview_failed", error=str(e))
+        return []
+
+
+def get_symbol_detail(config: HermesConfig, symbol: str) -> dict[str, Any] | None:
+    """Full detail for one symbol: latest heartbeat + recent history + meta-regime.
+
+    Returns None if symbol is not in the registry. Returns a dict with keys:
+      symbol, asset_class, venue, is_active,
+      heartbeat (latest row dict or None),
+      history (list of last 100 heartbeat dicts, oldest first),
+      meta_regime (dict with state/confidence/sizing_multiplier/posterior_probs,
+                   computed live via MetaRegimeClassifier on the latest heartbeat)
+    """
+    try:
+        import duckdb
+
+        from hermes.db.symbol_registry import get_symbol
+
+        row_meta = get_symbol(config, symbol)
+        if row_meta is None:
+            return None
+
+        db_path = get_duckdb_path(config)
+        latest: dict[str, Any] | None = None
+        history: list[dict[str, Any]] = []
+
+        if db_path.exists():
+            with duckdb.connect(str(db_path), read_only=True) as conn:
+                df_latest = conn.execute(
+                    f"""
+                    SELECT {_MARKET_OVERVIEW_COLUMNS.strip()}
+                    FROM signal_heartbeats
+                    WHERE symbol = ?
+                    ORDER BY ts_received DESC
+                    LIMIT 1
+                    """,
+                    [symbol],
+                ).fetchdf()
+                if not df_latest.empty:
+                    latest = df_latest.iloc[0].to_dict()
+
+                df_hist = conn.execute(
+                    f"""
+                    SELECT {_MARKET_OVERVIEW_COLUMNS.strip()}
+                    FROM signal_heartbeats
+                    WHERE symbol = ?
+                    ORDER BY ts_received DESC
+                    LIMIT 100
+                    """,
+                    [symbol],
+                ).fetchdf()
+                if not df_hist.empty:
+                    history = list(reversed(df_hist.to_dict("records")))
+
+        # Compute meta-regime live on the latest heartbeat (sub-millisecond).
+        meta_regime: dict[str, Any] | None = None
+        if latest is not None:
+            try:
+                from hermes.signals.meta_regime import MetaRegimeClassifier
+
+                # The classifier accepts a NobleTraderHeartbeat-shaped object;
+                # build a minimal shim from the row dict.
+                classifier = MetaRegimeClassifier()
+
+                class _HbShim:
+                    """Minimal attribute shim so MetaRegimeClassifier.classify()
+                    can read the fields it needs without us reconstructing a
+                    full NobleTraderHeartbeat Pydantic model."""
+
+                shim = _HbShim()
+                for k, v in latest.items():
+                    setattr(shim, k, v)
+                shim.symbol = symbol
+
+                mr = classifier.classify(heartbeat=shim, symbol=symbol)
+                meta_regime = {
+                    "state": getattr(mr, "state", None),
+                    "confidence": getattr(mr, "confidence", None),
+                    "sizing_multiplier": getattr(mr, "sizing_multiplier", None),
+                    "entry_aggressiveness": getattr(mr, "entry_aggressiveness", None),
+                    "posterior_probs": getattr(mr, "posterior_probs", None),
+                    "reasons": getattr(mr, "reasons", None),
+                }
+            except Exception as e:
+                log.debug("meta_regime_classify_failed", symbol=symbol, error=str(e)[:120])
+                meta_regime = None
+
+        return {
+            "symbol": symbol,
+            "asset_class": getattr(row_meta, "asset_class", None),
+            "venue": getattr(row_meta, "venue", None),
+            "is_active": getattr(row_meta, "is_active", True),
+            "heartbeat": _enrich_heartbeat(latest, history),
+            "history": _enrich_history(history),
+            "meta_regime": meta_regime,
+        }
+    except Exception as e:
+        log.warning("get_symbol_detail_failed", symbol=symbol, error=str(e))
+        return None
+
+
+def _enrich_heartbeat(latest: dict[str, Any] | None,
+                      history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Attach UX-UNIFORMITY-2 delta/live fields to the latest heartbeat.
+
+    `is_live` = True if the heartbeat was received within the last 60s.
+    `kelly_delta` = current effective_kelly minus the previous heartbeat's
+    effective_kelly for the same symbol (history is oldest-first).
+    """
+    if latest is None:
+        return None
+    import datetime as _dt
+
+    hb = dict(latest)
+    try:
+        _tr = hb.get("ts_received")
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if _tr is not None:
+            _tr_aware = _tr.to_pydatetime().astimezone(_dt.timezone.utc) if hasattr(_tr, "to_pydatetime") else _tr
+            if _tr_aware.tzinfo is None:
+                _tr_aware = _tr_aware.replace(tzinfo=_dt.timezone.utc)
+            hb["is_live"] = 0 <= (now - _tr_aware).total_seconds() <= 60
+        else:
+            hb["is_live"] = False
+    except Exception:
+        hb["is_live"] = False
+
+    try:
+        cur = hb.get("effective_kelly")
+        # history is oldest-first; the last entry is the latest heartbeat
+        prev = None
+        if len(history) >= 2 and history[-1] is latest:
+            prev = history[-2].get("effective_kelly")
+        elif len(history) >= 2:
+            # Defensive: find latest's predecessor by ts_received
+            ts = hb.get("ts_received")
+            for i in range(len(history) - 1, -1, -1):
+                if history[i].get("ts_received") == ts and i > 0:
+                    prev = history[i - 1].get("effective_kelly")
+                    break
+        if prev is not None and cur is not None:
+            hb["kelly_delta"] = float(cur) - float(prev)
+        else:
+            hb["kelly_delta"] = None
+    except Exception:
+        hb["kelly_delta"] = None
+
+    return hb
+
+
+def _enrich_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach is_live + kelly_delta to every row in the heartbeat history
+    so the per-symbol Signals tab table can render delta arrows consistently."""
+    if not history:
+        return history
+    import datetime as _dt
+
+    out: list[dict[str, Any]] = []
+    now = _dt.datetime.now(_dt.timezone.utc)
+    prev_kelly: float | None = None
+    # history is oldest-first → straightforward walk
+    for h in history:
+        row = dict(h)
+        try:
+            _tr = row.get("ts_received")
+            if _tr is not None:
+                _tr_aware = _tr.to_pydatetime().astimezone(_dt.timezone.utc) if hasattr(_tr, "to_pydatetime") else _tr
+                if _tr_aware.tzinfo is None:
+                    _tr_aware = _tr_aware.replace(tzinfo=_dt.timezone.utc)
+                row["is_live"] = 0 <= (now - _tr_aware).total_seconds() <= 60
+            else:
+                row["is_live"] = False
+        except Exception:
+            row["is_live"] = False
+
+        try:
+            cur = row.get("effective_kelly")
+            if prev_kelly is not None and cur is not None:
+                row["kelly_delta"] = float(cur) - float(prev_kelly)
+            else:
+                row["kelly_delta"] = None
+            if cur is not None:
+                prev_kelly = float(cur)
+        except Exception:
+            row["kelly_delta"] = None
+
+        out.append(row)
+    return out

@@ -1,5 +1,8 @@
 # MT4/MT5 Bridge — Build Plan (a: relay + EA, b: MCP wiring)
 
+> ⚠️ **DEPRECATED for execution** (2026-07-27). Superseded by MetaApi —
+> see `DEPRECATED.md`. Kept for reference only.
+
 **Status:** Plan + drop-in code. Reviewed against `src/hermes/transport/redis_subscriber.py`
 and `config.yaml` (`mcp_servers`) — see "Verified facts" below.
 
@@ -9,7 +12,7 @@ and `config.yaml` (`mcp_servers`) — see "Verified facts" below.
 
 1. **Upstream channel = Redis STREAM, not pub/sub.** Hermes `ingest` (`HeartbeatSubscriber`)
   does `XREADGROUP` on `signal.raw.noble_trader` (key from `NOBLE_TRADER_REDIS_CHANNEL`),
-   consumer group `hermes-l0` (from `NOBLE_TRADER_REDIS_CONSUMER_GROUP`). Each entry's field
+   consumer group `noble-1` (from `NOBLE_TRADER_REDIS_CONSUMER_GROUP`). Each entry's field
    is read by `_extract_payload` which prefers a single field keyed `data`/`payload`/`heartbeat`/
    `message`, else the lone field, else re-serializes a flat map. **Writer → `XADD` with field
    `payload=<json>` is the canonical form.**

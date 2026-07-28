@@ -72,7 +72,11 @@ venues:
       reduce_only: true
       max_leverage: 5.0
   mt4_mt5:
-    enabled: true    # PRIMARY brokerage venue — EA/MT5 -> bridge_relay.py -> Hermes.
+    # DEPRECATED (2026-07-27): live execution moved to MetaApi (see
+    # scope/worklog/plan.md). This venue block is retained ONLY as a
+    # signal-source/attribution reference for the legacy EA relay. Do not
+    # build new execution on it.
+    enabled: false   # was the "PRIMARY brokerage venue"; now legacy/reference only
     asset_classes:
     - crypto
     - forex
@@ -221,9 +225,14 @@ upstream:
       # HTTP timeout for /quotes calls. The proxy responds from in-memory cache
       # (no Redis on request path), so this should be fast.
       timeout_sec: 5
-      # When true, the agent falls back to TVDA direct calls if the proxy is
-      # unreachable or returns 5xx. When false, the agent treats proxy
-      # unavailability as a hard failure (safer for paid-product gating).
+      # True-data fallback chain when the proxy is unreachable/5xx: use the
+      # MetaApi account's own market/historical data (per-account CPU credits)
+      # instead of TradingView direct. When false, proxy unavailability is a
+      # hard failure (safer for paid-product gating). Replaces the deprecated
+      # `fallback_to_tvda` (TVDA-direct was rate-limited + costly).
+      fallback_to_metaapi: true
+      # Deprecated alias — kept for back-compat. If set, it overrides
+      # fallback_to_metaapi only when fallback_to_metaapi is absent.
       fallback_to_tvda: false
       # Polling cadence per urgency tier (seconds). MUST match the proxy's
       # HOT/WARM/COLD TTLs so the agent doesn't poll faster than the proxy
@@ -278,6 +287,9 @@ entry:
   pullback_depth_brick_fraction: 0.5
   signal_expiry_minutes: 30
 execution:
+  mode: paper          # paper | live — live = MetaApi broker (requires METAAPI_* env vars)
+  metaapi:
+    demo: true         # use MetaApi DEMO account (overridable via METAAPI_DEMO env)
   default_method: limit_at_brick
   large_size_threshold_usd: 10000
   twap_n_bricks: 3

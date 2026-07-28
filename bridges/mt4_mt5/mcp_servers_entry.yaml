@@ -3,6 +3,6 @@
   mt5:
     command: bash
     args:
-      - C:/Users/aloys/AppData/Local/hermes/profiles/noble-agent/noble-trader-agent/repo/bridges/mt4_mt5/mt5_mcp_wrapper.sh
+      - C:/Users/aloys/AppData/Local/hermes/profiles/noble-agent/noble-trader-agent/bridges/mt4_mt5/mt5_mcp_wrapper.sh
     timeout: 120
     connect_timeout: 60

@@ -241,11 +241,33 @@ class AlpacaAdapter(VenueAdapter):
             raise
 
     # ────────────────────────────────────────────────────────────
-    # Live order book (best bid/ask)
+    # Live order book (best bid/ask)  [SOFT-DEPRECATED — P3.5 / P7 removal]
     # ────────────────────────────────────────────────────────────
+    # P3.5 (2026-07-21): The stream_order_book path is soft-deprecated.
+    # Alpaca L2 only covers crypto — no equities/forex/commodities L2.
+    # This created a structural bias in the EV engine: crypto symbols
+    # got the p_imbalance signal (4 EV components), non-crypto got 0
+    # (3 EV components).
+    #
+    # P3.5 replaces p_imbalance with p_microstructure (L1-derived +
+    # TVDA TA composite), computed in the proxy:
+    #   noble-trader-proxy/src/proxy/microstructure/
+    #
+    # This method is PRESERVED for the P3.5 rollout window. Callers
+    # should migrate to reading p_microstructure from the proxy's
+    # /sse/alerts microstructure event stream.
+    #
+    # P7 REMOVAL (target: 2026-08-21): this method + _stream_equity_quotes
+    # + _stream_crypto_quotes + _quote_to_book will be DELETED.
+    #
+    # See: P3.5 changelog in /home/z/my-project/worklog.md
 
     async def stream_order_book(self, symbols: list[str]) -> AsyncIterator[OrderBookL2]:
-        """Stream live quotes (best bid/ask) via Alpaca WebSocket."""
+        """Stream live quotes (best bid/ask) via Alpaca WebSocket.
+
+        [DEPRECATED P3.5] — see module docstring for migration path.
+        Preserved for the P3.5 rollout window; removed in P7.
+        """
         if not self._configured:
             return
 
