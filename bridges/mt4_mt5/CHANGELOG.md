@@ -1,7 +1,7 @@
 # MT4/MT5 Bridge — Changelog & Change Tracker
 
 > Living doc for the MT4/MT5 + TradingViewAPI integration. Update as items land.
-> Repo: `noble-trader-agent/repo`. Bridge files: `bridges/mt4_mt5/`.
+> Repo: `noble-trader-agent` (the cloned stack repo root). Bridge files: `bridges/mt4_mt5/`.
 
 ## 2026-07-15 — Session 2 (multi-tenant + TradingViewAPI price source)
 

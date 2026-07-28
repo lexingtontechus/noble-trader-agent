@@ -2,7 +2,7 @@
 
 **Objective** — Teach the Hermes agent to operate as a quant hedge fund manager with expert trading, data analysis, market research, portfolio & risk management, and PnL analysis skills.
 
-**Scope** — Python-only, event-driven, multi-venue (Alpaca for stocks/commodities, Hyperliquid for crypto; forex venue TBD), Redis-pubsub backbone, DuckDB local analytical store. Hermes's **core job is renko-bar-driven entry/execution optimization** — it does NOT replicate Noble Trader's strategy-level sweeps.
+**Scope** — Python-only, event-driven, multi-venue (MT4/MT5 via the EA bridge relay + **MetaAPI Cloud** SDK for direct execution — demo-verified 2026-07-28; Alpaca for stocks/commodities and Hyperliquid for crypto are **deprecated / `enabled: false`** and not the live venue), Redis-pubsub backbone, DuckDB local analytical store. Hermes's **core job is renko-bar-driven entry/execution optimization** — it does NOT replicate Noble Trader's strategy-level sweeps.
 
 **Upstream Signal Source** — Subscribes to the **Noble Trader** platform (FastAPI, v7.5.0) heartbeat channel over Redis. Noble Trader owns: strategy parameter optimization (weekly full sweep + 5min light sweeps for crypto/forex, 15min for stocks/commodities), Renko brick_size/sl_bricks/tp_bricks optimization, per-asset 4×4 HMM regime detection, EV Engine v4 (p_win blending), Kelly + Masaniello sizing, and signal generation (direction/entry/stop/TP). Historical heartbeats are persisted in Noble Trader's Supabase — Hermes pulls these for HMM cold-start, backtest replay, and calibration analysis.
 
@@ -58,7 +58,7 @@ Layered, event-driven. Every layer is a consumer/producer over Redis pub/sub cha
 ├─────────────────────────────────────────────────────────────────────┤
 │  L4  Signal Synthesis Layer (7-state meta-regime + BEV blending)    │
 ├─────────────────────────────────────────────────────────────────────┤
-│  L3  Execution & Order Routing (Alpaca + Hyperliquid adapters)      │
+│  L3  Execution & Order Routing (MT4/MT5 bridge + MetaAPI Cloud broker; Alpaca/Hyperliquid deprecated)      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  L2  Market Data & Active Price Monitor (L1/L2/OHLCV, funding, L2) │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -102,7 +102,7 @@ The **only** entry point for external trade signals. Subscribes to Noble Trader'
 - Backpressure → if downstream signal queue grows > 1000 messages, drop oldest non-actionable (signal="neutral") heartbeats first.
 
 ### 2.1 Market Data Layer (L2)
-- **Venue adapters**: `AlpacaAdapter` (stocks, commodities), `HyperliquidAdapter` (perps, spots)
+- **Venue adapters**: `MT4MT5Bridge` (live signal source + fills via EA relay), `MetaApiBroker` (`src/hermes/execution/brokers/metaapi_broker.py` — direct SDK execution, demo-verified 2026-07-28). Legacy `AlpacaAdapter` (stocks, commodities) + `HyperliquidAdapter` (perps, spots) are **deprecated / `enabled: false`**.
 - **Normalization**: unified `Tick`, `Bar`, `OrderBookL2`, `FundingRate`, `LiquidationEvent`, `Trade` schemas
 - **Channels**: `md.tick.{venue}.{symbol}`, `md.bar.{tf}.{symbol}`, `md.book.{symbol}`, `md.funding`
 - **Storage**: hot tier in Redis (rolling 24h), warm tier in Parquet (partitioned `venue/symbol/tf/date`) queried via DuckDB
@@ -348,6 +348,14 @@ Failing any check → result is rejected; the trial is logged in `param_optimiza
 
 #### 2.9.6 Promotion Pipeline
 
+> **Phase 1A v10 — superseded.** The shadow-mode → auto-promote → auto-rollback
+> pipeline below was the v3-era design. v10 removes `HypothesisTracker`, the
+> `hermes_hypotheses` table, the shadow→live promotion path, and the
+> underperformance auto-rollback. Config changes are now operator-driven via
+> `platform config set`. The promotion-pipeline narrative below is preserved
+> for historical context; it is **not** the current architecture. See
+> `LLM-INTEGRATION-STRATEGY.md` §7 for the v10 design.
+
 ```
 New entry/execution config discovered by optimizer
    ↓
@@ -472,7 +480,7 @@ upstream:
     redis:
       url:             "secret:noble_trader.redis_url"          # rediss:// for TLS
       channel:         "signal.raw.noble_trader"                # logical name, not secret
-      consumer_group:  "hermes-l0"                              # logical name, not secret
+      consumer_group:  "noble-1"                              # logical name, not secret
     supabase:
       url:             "secret:supabase.url"
       anon_key:        "secret:supabase.anon_key"               # anon/publishable key — safe to distribute (RLS-scoped, see §13.12)
@@ -1817,18 +1825,11 @@ CREATE TABLE circuit_breaker_events (
     payload              JSON
 );
 
--- Hermes hypotheses (learning loop)
-CREATE TABLE hermes_hypotheses (
-    hypothesis_id        VARCHAR PRIMARY KEY,
-    ts_created           TIMESTAMPTZ NOT NULL,
-    hypothesis           TEXT NOT NULL,              -- e.g., "Kelly weight too high in choppy regime on BTC"
-    rationale            TEXT,
-    proposed_change      JSON,                       -- config delta
-    backtest_result      JSON,                       -- sharpe, deflated_sharpe, etc.
-    status               VARCHAR NOT NULL,           -- proposed | backtested | shadow | live | rejected | retired
-    confidence           DOUBLE,
-    promoted_at          TIMESTAMPTZ
-);
+-- Hermes hypotheses (learning loop) — REMOVED in Phase 1A v10.
+-- The `hermes_hypotheses` table is dropped by migration 019.
+-- Hypothesis is now a per-signal TEXT column on `trade_postmortem`
+-- (1:1 with `trade_signals_blended`, keyed by `signal_id`).
+-- See `src/hermes/db/migrations/019_llm_postmortem.sql` for the v10 schema.
 
 -- Config history (every config version, for reproducibility)
 CREATE TABLE config_history (
@@ -1876,12 +1877,13 @@ SELECT venue, avg(slippage_bps) as avg_slip, count(*)
 FROM fills
 GROUP BY venue;
 
--- Hypothesis win rate
-SELECT h.hypothesis, h.status, count(*), avg(p.r_multiple)
-FROM hermes_hypotheses h
-JOIN trade_journal t ON h.hypothesis_id = ANY(t.hypothesis_ids)
-JOIN pnl_realized p ON t.trade_id = p.trade_id
-GROUP BY 1, 2;
+-- Per-signal LLM postmortem + hypothesis (Phase 1A v10)
+SELECT tp.signal_id, tp.hypothesis, tp.postmortem_llm, tp.postmortem_status,
+       tp.postmortem_generated_at
+FROM trade_postmortem tp
+JOIN trade_signals_blended tsb ON tp.signal_id = tsb.heartbeat_id
+ORDER BY tp.postmortem_generated_at DESC
+LIMIT 50;
 ```
 
 ### 6.5 Backup & Compaction
@@ -1898,6 +1900,35 @@ GROUP BY 1, 2;
 ---
 
 ## 7. Self-Learning Loop for Hermes
+
+> **Phase 1A v10 — superseded.** The closed loop below was the v3-era design.
+> v10 removes `SelfLearningLoop`, `HypothesisTracker`, the
+> `proposed → backtested → shadow → live` promotion pipeline, and the
+> underperformance auto-rollback. The v10 replacement is:
+>
+> - **Per-trade v1 postmortem** — `ExecutionEngine._write_v1_postmortem()` writes
+>   a deterministic postmortem with entry_thesis + lessons to `trade_journal`
+>   on every position close (preserved from v3).
+> - **Per-signal LLM postmortem** — `noble journal generate` (nightly cron)
+>   invokes the `trade_journal` skill via the constructor-injected
+>   `skill_invoker` callable and writes `postmortem_llm` + `hypothesis` to
+>   `trade_postmortem`. Retry via `noble journal backfill --retry-failed`.
+>   **Phase 1A cleanup pass (2026-07-23):** the redundant `AND
+>   tp.postmortem_status NOT IN ('reviewed', 'skipped')` clause was
+>   removed from `TradeJournal._select_pending()` — SQL three-valued
+>   logic was silently filtering NULL-status rows out of the nightly
+>   cron's selection set. Schema mismatch fix (migration 021) added
+>   `signal_id` + `exit_reason` columns to `pnl_realized` so the
+>   `_select_pending()` JOIN on `signal_id` resolves (previously a
+>   latent `Catalog Error`). See
+>   `changelog_2026-07-23_phase1a-cleanup-and-schema-fix.md`.
+> - **No auto-promotion.** Threshold-tuning recommendations from
+>   `DecisionBranchTracker.get_threshold_feedback()` are surfaced to the
+>   operator via the dashboard. Config changes are operator-driven via
+>   `platform config set`.
+>
+> The v3 narrative below is preserved for historical context; it is **not**
+> the current architecture. See `LLM-INTEGRATION-STRATEGY.md` for the v10 design.
 
 A closed loop running on schedule (daily EOD + on regime change):
 
@@ -2139,8 +2170,9 @@ trading_platform/
 **Goal**: Hermes reads DuckDB, generates hypotheses, writes journal entries, interacts with Sim Engine.
 
 - [ ] Hermes natural-language → DuckDB query layer (read-only)
-- [ ] Decision journal writer (every closed trade → `trade_journal` postmortem with `entry_thesis`, `postmortem`, `lessons`)
-- [ ] Hypothesis tracker (`hermes_hypotheses` lifecycle: proposed → backtested → shadow → live / rejected / retired)
+- [ ] Decision journal writer (every closed trade → `trade_journal` postmortem with `entry_thesis`, `postmortem`, `lessons`) — *delivered as inline `_write_v1_postmortem()` on `ExecutionEngine` (Phase 1A v10); the standalone `DecisionJournalWriter` class is removed*
+- [ ] Per-signal LLM postmortem pipeline (`noble journal generate` + `noble journal backfill` → `trade_postmortem` table; `TradeJournal` service with constructor-injected `skill_invoker` callable) — *delivered in Phase 1A v10*
+- ~~Hypothesis tracker (`hermes_hypotheses` lifecycle: proposed → backtested → shadow → live / rejected / retired)~~ — *removed in Phase 1A v10; hypothesis is now a per-signal TEXT column on `trade_postmortem`, no separate lifecycle*
 - [ ] Hermes → Sim Engine bridge (submit hypothesis via `agent.optimize.request`, receive verdict)
 - [ ] Counterfactual reasoning (Hermes asks "what if we'd sized 2×?")
 - [ ] Daily narrative generator (market commentary auto-drafted from DuckDB)
@@ -2249,8 +2281,8 @@ Selected from §11 based on priority:
 48. Immutable journal (hash-chained event log for tamper evidence)
 
 ### Hermes Agent Specific
-49. Decision journal (every recommendation with inputs, reasoning, decision, outcome) — *now in `trade_journal`*
-50. Hypothesis tracker (Hermes's market hypotheses scored over time) — *now in `hermes_hypotheses`*
+49. Decision journal (every recommendation with inputs, reasoning, decision, outcome) — *now in `trade_journal` (v1 deterministic, written inline by `ExecutionEngine._write_v1_postmortem()` in Phase 1A v10); LLM-augmented per-signal postmortem in `trade_postmortem`*
+50. ~~Hypothesis tracker (Hermes's market hypotheses scored over time)~~ — *removed in Phase 1A v10; hypothesis is now a per-signal TEXT column on `trade_postmortem` (no separate lifecycle, no `hermes_hypotheses` table)*
 51. Counterfactual engine (what if we didn't take this trade?)
 52. Meta-learning layer (which strategies work in which regimes)
 53. Human-in-the-loop approvals (size above threshold, novel strategy types)
@@ -2350,7 +2382,7 @@ SECRETS_ENV_FILE_PATH=./.env
 # Placeholder URLs — replace with actual values in .env
 NOBLE_TRADER_REDIS_URL=redis://<nt-redis-host>:<port>
 NOBLE_TRADER_REDIS_CHANNEL=signal.raw.noble_trader
-NOBLE_TRADER_REDIS_CONSUMER_GROUP=hermes-l0
+NOBLE_TRADER_REDIS_CONSUMER_GROUP=noble-1
 
 # === Noble Trader upstream (Supabase — historical sweeps + regime logs) ===
 # Placeholder URL — replace with actual Supabase project URL in .env

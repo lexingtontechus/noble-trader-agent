@@ -1,9 +1,12 @@
-# Hermes Trading Platform
+# Talaria
 
-> Entry/execution optimization layer for Noble Trader signals.
-> Hermes consumes Noble Trader's strategy signals and optimizes **when** to enter and **how** to execute — it does NOT replicate Noble Trader's strategy sweeps.
+> **Hermes decides. Talaria strikes.**
 
-**Status:** ✅ All 11 phases complete — 297 tests passing, 37 CLI commands, 13 FastAPI web pages (self-hosted Tailwind+DaisyUI, 7 themes, CSP-clean — no CDN), 9 DuckDB migrations, 24 tables. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService / DecisionJournalWriter wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine), and a DuckDB-backed Symbol Registry (runtime-mutable symbol universe with is_active lifecycle and live validation).
+**Talaria** (codename `noble-trader-agent`, Python package `src/hermes/`) is the execution-and-journaling codebase that the **Hermes** AI agent operates end-to-end. Hermes consumes Noble Trader's strategy signals from the FastAPI backend (via the `noble-trader-proxy` re-publish on `signal.proxy.noble_trader` — the **sole** signal-delivery layer; the agent does NOT fall back to `signal.raw.noble_trader`), optimizes **when** to enter and **how** to execute, and Talaria carries those decisions to brokers — the **live execution path is MetaTrader (MT4/MT5)**, reached two ways: (1) the **MT4/MT5 EA bridge relay** (EA/relay posts fills), and (2) the **MetaAPI Cloud broker** (`src/hermes/execution/brokers/metaapi_broker.py`) for direct SDK execution (demo-verified 2026-07-28: 0.10-lot XAUUSD BUY on the MetaAPI demo account). The legacy Alpaca (equities) and Hyperliquid (crypto) adapters are **deprecated / disabled** (`enabled: false` in `config/default.yaml`) and are NOT the live venue. Talaria does NOT replicate Noble Trader's strategy sweeps; it is the winged-execution arm that turns Hermes's verdicts into fills, journals them to DuckDB, and feeds every outcome back into the canonical BayesianAlpha prior for the next decision. The naming borrows from Greek mythology: Hermes is the messenger god who weighs the signal; Talaria are his winged sandals that carry the verdict to the market in milliseconds.
+
+**Status:** ✅ All 11 phases complete — 297 tests passing, 37 CLI commands, 13 FastAPI web pages (self-hosted Tailwind+DaisyUI, 7 themes, CSP-clean — no CDN), 21 DuckDB migrations, 24+ tables. Canonical for live trade journaling (DuckDB `trade_journal`), BayesianAlpha persistence (decay-weighted, floor/ceiling-clamped, thread-safe), and the 4-source P_win blend consumed from the Noble Trader backend's EV Engine v4. Enhanced with Advanced Circuit Breaker Manager (8 tiered categories, time-decay, rolling windows), Performance Attribution (decision-branch PnL attribution, A/B testing, signal window optimization), Component Wiring (DecisionBranchTracker / HermesDecisionTree / PnLService wired into ExecutionEngine; CircuitBreakerManager / DeadMansSwitch / AlertManager wired into PortfolioRiskEngine), Phase 1A v10 LLM postmortem pipeline (`trade_postmortem` table keyed by `signal_id`, `noble journal generate` + `noble journal backfill` CLI, `TradeJournal` service with constructor-injected `skill_invoker` callable), Phase 1A cleanup pass (SQL three-valued-logic bug fix in `TradeJournal._select_pending()` + 8-test smoke test, 2026-07-23), `pnl_realized` schema mismatch fix (migration 021 adds `signal_id` + `exit_reason` columns; threads through `RealizedPnL` model + `record_realized_pnl()` + orchestrator call site, 2026-07-23), and a DuckDB-backed Symbol Registry (runtime-mutable symbol universe with is_active lifecycle and live validation).
+
+**Recent (P5 / EV-BAYES-FIX):** The backend's `BayesianUpdater` is now formally deprecated — Talaria's `BayesianAlpha` is the canonical live-persistence path. The backend's `renko/trade_journal.py:TradeJournal.record()` is gated behind `assert_execution_enabled()` and only used for backtest replay — Talaria's DuckDB `trade_journal` table is the live source of truth. The backend's `EVEngine` now exposes a validated `set_weights()` / `temp_weights()` / `restore_default_weights()` public API; Talaria consumes the synthesized P_win unchanged but benefits from the orchestrator's safer soft-TimesFM-gate path.
 
 ---
 
@@ -73,7 +76,7 @@ PortfolioStateService (positions, cash USD+USDC, exposure, PnL, drawdown, handle
 
 Order schemas + OrderStateMachine (DRAFT→SUBMITTED→PARTIAL→FILLED, transition enforcement). SlippageModeler (square-root impact model, venue-specific fees). PaperTradingEngine (simulated fills for market/limit/post_only/TWAP/iceberg, async callbacks, cancel support). SmartOrderRouter (creates orders from RiskDecision + BlendedSignal, routes to correct order type). DuckDB schema v5 (orders, order_events, fills — 44 columns, 12 indexes). L3 Execution orchestrator (subscribes to risk.decision.*, fetches signal from DuckDB, executes via paper engine, registers positions in PortfolioStateService). CLI: `platform execute --paper`.
 
-> **Post-Phase-10 wiring:** `ExecutionEngine` now also wires `HermesDecisionTree` (evaluates existing positions on each new signal — checks SL/TP/early-profit/trail/flip/hold and closes if needed), `DecisionBranchTracker` (records `AgentAction` at entry on fill AND at exit on close), `PnLService` (records realized PnL with attribution on position close → `pnl_realized` table), and `DecisionJournalWriter` (writes postmortem with lessons on position close). `CircuitBreakerManager` is also optionally wired (via `cb_manager` constructor param) to feed `consecutive_losses`. See worklog → *Supplemental — Component Wiring*.
+> **Post-Phase-10 wiring:** `ExecutionEngine` now also wires `HermesDecisionTree` (evaluates existing positions on each new signal — checks SL/TP/early-profit/trail/flip/hold and closes if needed), `DecisionBranchTracker` (records `AgentAction` at entry on fill AND at exit on close), `PnLService` (records realized PnL with attribution on position close → `pnl_realized` table), and an inline `_write_v1_postmortem()` method that writes the v1 deterministic postmortem with lessons on position close (Phase 1A v10: the `DecisionJournalWriter` class is removed; the orchestrator writes directly to the existing `trade_journal` table). `CircuitBreakerManager` is also optionally wired (via `cb_manager` constructor param) to feed `consecutive_losses`. See worklog → *Supplemental — Component Wiring*.
 
 ---
 
@@ -108,7 +111,7 @@ Hermes Agent Decision Tree (validated — 3 bugs found + fixed during validation
   - Opposite direction: strong (conviction ≥ 0.7) → flip, not strong → hold with native stops
 - Signal present? NO → Native stops manage (pnl ≥ 2.5% → close, otherwise hold)
 
-HypothesisTracker (lifecycle: proposed → backtested → shadow → live / rejected). DecisionJournalWriter (postmortems with entry_thesis + lessons + hypothesis_ids). SelfLearningLoop (EOD analysis: observe → attribute → hypothesize → backtest → promote). CLI: `platform agent` (--eod, --list-hypotheses).
+Phase 1A v10: per-signal LLM postmortem pipeline. `TradeJournal` service (constructor-injected `skill_invoker` callable — the agent runtime passes its own inference router). `trade_postmortem` table (1:1 with `trade_signals_blended`, keyed by `signal_id`, columns: `postmortem_llm`, `hypothesis`, `postmortem_human`, `postmortem_status`, `prompt_tokens`, `completion_tokens`). CLI: `noble journal generate --date <YYYY-MM-DD>` + `noble journal backfill --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--retry-failed]`. No `HypothesisTracker`, no `SelfLearningLoop`, no `hermes_hypotheses` table, no `noble agent` command — all removed in v10. The orchestrator's v1 deterministic per-trade postmortem is preserved (inline `_write_v1_postmortem()` on `ExecutionEngine`, writes to the existing `trade_journal` table).
 
 **Decision tree validation tests (7 new):** proved native TP only fires without signal, 4.5% early profit IS reachable with signal, SL is hard override, trail fires before early profit when fading, all 11 branches reachable.
 
@@ -122,29 +125,34 @@ DeadMansSwitch (background monitor, auto-activates kill switch + flattens if no 
 **Post-Phase-10 enhancements:**
 - **Advanced Circuit Breaker Manager** (`src/hermes/portfolio/cb_manager.py`, 42 tests) — 8 tiered categories (portfolio_exposure, position_size, daily_loss, var, drawdown, funding_rate, consecutive_losses, trip_frequency), 7 configurable actions, time-decay via `cooldown_sec`, and `RollingWindowTracker` for consecutive-loss and trip-frequency windows. Config in `config/default.yaml` → `circuit_breakers.manager`.
 - **Performance Attribution** (`src/hermes/agent/attribution.py`, 16 tests) — `DecisionBranchTracker` (attributes PnL per `AgentAction` branch + regime × branch matrix + threshold tuning feedback), `ABTestFramework` (Diebold-Mariano + paired t-test for parallel hypothesis comparison), `SignalWindowOptimizer` (sweeps `signal_expiry_minutes` to maximize entry alpha).
-- **Component Wiring (Live Pipeline Integration)** — wires the two enhancements above (plus `HermesDecisionTree`, `DecisionJournalWriter`, `DeadMansSwitch`, `AlertManager`) into the live trading pipeline: `ExecutionEngine` (L3) now records entry/exit branches, evaluates existing positions via the decision tree, records realized PnL with attribution, and writes postmortems on every trade; `PortfolioRiskEngine` (L5) now runs the 8-category `CircuitBreakerManager` on every signal, feeds `heartbeat()` to `DeadMansSwitch`, and dispatches `AlertManager` alerts on CB trips / kill switch / DMS activation. Closes the attribution → feedback → optimization loop so `SelfLearningLoop` is fed by live data instead of being theoretical. Bug fix: `BreakerConfig.name` made optional (default=`''`) for YAML compatibility. Test count unchanged at 297 (wiring is additive). See `worklog.md` → *Supplemental — Component Wiring*.
+- **Component Wiring (Live Pipeline Integration)** — wires the two enhancements above (plus `HermesDecisionTree`, `PnLService`, `DeadMansSwitch`, `AlertManager`) into the live trading pipeline: `ExecutionEngine` (L3) now records entry/exit branches, evaluates existing positions via the decision tree, records realized PnL with attribution, and writes v1 deterministic postmortems on every trade (inline `_write_v1_postmortem()` method — Phase 1A v10: `DecisionJournalWriter` class removed); `PortfolioRiskEngine` (L5) now runs the 8-category `CircuitBreakerManager` on every signal, feeds `heartbeat()` to `DeadMansSwitch`, and dispatches `AlertManager` alerts on CB trips / kill switch / DMS activation. The v1 postmortem write closes the attribution → feedback loop so live data is journalled. Bug fix: `BreakerConfig.name` made optional (default=`''`) for YAML compatibility. Test count unchanged at 297 (wiring is additive). See `worklog.md` → *Supplemental — Component Wiring*.
 
 ---
 
-## What Hermes Does
+## What Talaria Does (operated by Hermes)
 
-- **Subscribes** to Noble Trader heartbeats via Redis (real-time trade signals)
+Talaria is the codebase; Hermes is the AI agent that operates it. The bullets below describe what the Talaria codebase does when Hermes drives it through a full trading cycle. The split is deliberate: Hermes owns the decision authority (the verdict), Talaria owns the execution fidelity (the strike). This separation lets you swap execution venues, brokers, or even orchestration policies without touching the decision logic, and swap decision logic (e.g. promoting a hypothesis out of shadow mode) without touching the execution code.
+
+- **Subscribes** to Noble Trader heartbeats via Redis (real-time trade signals from the FastAPI backend's sweep orchestrator)
 - **Pulls** historical Noble Trader data from Supabase (`nt_sweep_result`, `nt_regime_log`) for HMM cold-start and backtest replay
+- **Synthesizes** a 4-source blended P_win (markov / regime / pattern / timesfm) consumed from the backend's EV Engine v4, with calibration_bias shrink applied per-symbol per-regime
 - **Constructs renko bars** from venue-native tick data using Noble Trader's `brick_size`
 - **Optimizes entry timing** (when within the signal window to pull the trigger)
 - **Optimizes execution method** (market / limit / TWAP / post-only / iceberg)
 - **Applies portfolio-level risk overlay** via a 7-state meta-regime classifier
-- **Manages positions** post-entry via validated decision tree (SL/TP/trail/flip/hold)
+- **Manages positions** post-entry via the validated HermesDecisionTree (SL/TP/trail/flip/hold — 11 branches, all reachability-tested)
+- **Persists every fill** to DuckDB `trade_journal` — the canonical live trade journal (the backend's `renko/trade_journal.py` is gated behind `assert_execution_enabled()` and only used for backtest replay)
+- **Updates the canonical BayesianAlpha prior** after every closed trade (decay-weighted, floor/ceiling-clamped, thread-safe, DuckDB-persistent — supersedes the backend's deprecated `BayesianUpdater`)
 - **Learns** from every trade via simulation engine with 6 statistical rigor checks
 - **Self-improves** through hypothesis generation → backtest → shadow → promotion cycle
 
-**What Hermes does NOT do** (Noble Trader owns these):
+**What Talaria does NOT do** (Noble Trader backend owns these):
 - Strategy direction (buy/sell/neutral)
 - Renko brick_size optimization
 - Stop-loss / take-profit brick counts
 - Kelly fraction or Masaniello base sizing
 - Per-asset HMM regime detection
-- EV Engine / p_win blending
+- EV Engine / 4-source P_win blending (Talaria consumes the synthesized P_win, never re-blends)
 
 ---
 
@@ -156,9 +164,10 @@ DeadMansSwitch (background monitor, auto-activates kill switch + flattens if no 
    - **Memurai** (recommended, native Windows): https://www.memurai.com/get-memurai
    - **Docker Desktop** + `docker run -d -p 6379:6379 --name hermes-redis redis`
    - **WSL2** + `sudo apt install redis-server`
-4. **Paper trading credentials** (gather before setup):
-   - Alpaca paper keys: https://app.alpaca.markets/paper/dashboard/overview
-   - Hyperliquid: generate a **dedicated** trading wallet (never your main)
+4. **Live execution credentials** (gather before setup):
+   - **MetaAPI** (recommended live path): `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` in `.env.local` (git-ignored). Set `METAAPI_DEMO=true` for the demo account. Verified 2026-07-28: 0.10-lot XAUUSD BUY executed on the MetaAPI demo account via `src/hermes/execution/brokers/metaapi_broker.py`.
+   - **MT4/MT5 EA bridge** (alternative live path): `MT4_MT5_BRIDGE_TOKEN` (+ optional `MT4_MT5_SOURCE_ID` / `MT4_MT5_RELAY_URL`).
+   - **Deprecated / disabled:** Alpaca + Hyperliquid adapters are `enabled: false` in `config/default.yaml` — NOT the live venue. (Paper mode is still available for non-live testing: `platform execute --paper`.)
    - Noble Trader Redis URL + Supabase URL + anon/publishable key (RLS-scoped)
 
 ---
@@ -237,8 +246,8 @@ platform synthesize --symbols BTC/USD,SOL/USD,BTC-PERP
 # Terminal 5: L5 — Portfolio & Risk Engine
 platform risk --equity 100000
 
-# Terminal 6: L3 — Execution Engine (paper)
-platform execute --equity 100000 --paper
+# Terminal 6: L3 — Execution Engine (live via MetaAPI/MT4+5 by default; --paper for simulation)
+platform execute --equity 100000
 ```
 
 ---
@@ -273,7 +282,7 @@ platform symbols list
 platform symbols list --active-only
 
 # Add a new symbol (idempotent upsert; validates venue + asset_class)
-platform symbols add SOL/USD --venue alpaca --asset-class crypto --rationale "expanding spot book"
+platform symbols add SOL/USD --venue metaapi --asset-class crypto --rationale "expanding spot book"
 
 # Live-test that the venue can fetch a price for the symbol
 platform symbols validate SOL/USD
@@ -639,11 +648,11 @@ platform symbols sync      # Seed the symbols table from config/default.yaml.ini
 
 ---
 
-## DuckDB Schema (9 migrations, 24 tables)
+## DuckDB Schema (21 migrations, 24+ tables)
 
 | Migration | Tables added | Phase |
 |---|---|---|
-| v1 (base schema) | schema_version, config_history, signal_heartbeats, signal_heartbeats_quarantine, account_snapshots, trade_journal, risk_decisions, circuit_breaker_events, hermes_hypotheses, meta_regime_history, audit_log | 0 |
+| v1 (base schema) | schema_version, config_history, signal_heartbeats, signal_heartbeats_quarantine, account_snapshots, trade_journal, risk_decisions, circuit_breaker_events, meta_regime_history, audit_log | 0 |
 | v2 | nt_sweep_results_local, nt_regime_log_local | 1 |
 | v3 | price_monitor_events | 2 |
 | v4 | trade_signals_blended | 3 |
@@ -652,6 +661,18 @@ platform symbols sync      # Seed the symbols table from config/default.yaml.ini
 | v7 | backtest_runs | 7 |
 | v8 | simulation_runs, simulation_trades, param_optimizations | 8 |
 | v9 | symbols | 9 (Symbol Registry) |
+| v10 | symbols_exchange | 10 |
+| v11 | pattern_learning (+ ALTER pnl_realized ADD COLUMN) | Pattern Learning |
+| v12 | pattern_confidence | Pattern Confidence |
+| v13 | pending_decisions | Pending Decisions |
+| v14 | bayesian_alpha (+ ALTER pnl_realized ADD COLUMN) | Bayesian Alpha |
+| v15 | calibration_bias | Calibration Bias |
+| v16 | signal_heartbeats_v5_sources | EV v5 |
+| v17 | blended_signals_v5_ev | EV v5 |
+| v18 | markov_single_step | Markov single-step |
+| v19 | trade_postmortem (+ DROP trade_journal legacy LLM columns) | Phase 1A LLM postmortem |
+| v20 | signal_explanations | Phase 1B LLM signal explanations |
+| v21 | ALTER pnl_realized ADD COLUMN signal_id + exit_reason (+ idx_pnl_realized_signal) | Phase 1A cleanup (schema mismatch fix, 2026-07-23) |
 
 ---
 

@@ -43,6 +43,11 @@ class EnvFileBackend:
             log.warning("env_file_not_found", path=self._file_path)
         # override=True so .env values take precedence over any stale env vars
         load_dotenv(self._file_path, override=True)
+        # Also load .env.local (git-ignored; holds MetaAPI creds etc.) so it
+        # overrides .env without touching the committed .env.
+        _local = Path(self._file_path).parent / ".env.local"
+        if _local.exists():
+            load_dotenv(str(_local), override=True)
         log.info("secret_backend_initialized", backend="env_file", path=self._file_path)
 
     def get(self, key: str) -> str:

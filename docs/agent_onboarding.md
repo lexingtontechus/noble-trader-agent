@@ -129,19 +129,31 @@ platform init
 
 ### 2.3 Configure `.env`
 
-The agent fills in `.env` with paper-only credentials. There are 8 venue
-credentials and 4 `HERMES_*` auth vars. Without the auth vars the agent cannot
-log in to the dashboard or call the API programmatically.
+The agent fills in `.env` with credentials. There are 4 `HERMES_*` auth vars (required for dashboard/API login) and the **live execution** credentials:
+- **MetaAPI** (recommended live path): `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` in `.env.local` (git-ignored); `METAAPI_DEMO=true` for the demo account. Verified 2026-07-28: 0.10-lot XAUUSD BUY on the MetaAPI demo account.
+- **MT4/MT5 EA bridge** (alternative live path): `MT4_MT5_BRIDGE_TOKEN` (+ optional `MT4_MT5_SOURCE_ID` / `MT4_MT5_RELAY_URL`).
+- **Deprecated / disabled:** Alpaca + Hyperliquid adapters are `enabled: false` in `config/default.yaml` — NOT the live venue. (Paper mode still available: `platform execute --paper`.)
+
+> **Venue reality check (2026-07):** the **live execution venue is the MT4/MT5
+> bridge** (`config.default.yaml → mt4_mt5.enabled: true`). Alpaca + Hyperliquid
+> in config are **`enabled: false` (DEPRECATED)** — they are NOT the live path and
+> should not be wired up unless you deliberately re-enable them. The agent ingests
+> Noble Trader signals from the **proxy-forwarded** `signal.proxy.noble_trader`
+> stream (consumer group `noble-1`, consumer `noble-l0-worker`), falling back to
+> the backend `signal.raw.noble_trader` if the proxy is absent. The MT4/MT5 bridge
+> vars are `MT4_MT5_BRIDGE_TOKEN` (required) + optional `MT4_MT5_SOURCE_ID` /
+> `MT4_MT5_RELAY_URL` — see `user_onboarding_guide.md §2.3`.
 
 | Credential | Source | What it enables |
 |---|---|---|
-| `NOBLE_TRADER_REDIS_URL` | Noble Trader operator | Real-time heartbeat ingestion |
+| `NOBLE_TRADER_REDIS_URL` | Noble Trader operator | Real-time heartbeat ingestion (backend `signal.raw.noble_trader`; agent reads proxy `signal.proxy.noble_trader` w/ fallback) |
 | `SUPABASE_URL` | Your Supabase project | Historical heartbeat backfill |
 | `SUPABASE_ANON_KEY` | Supabase dashboard (Settings → API → anon public) | Read access to NT tables (subject to RLS) |
-| `ALPACA_API_KEY` | https://app.alpaca.markets/paper/dashboard/overview | Paper stock/commodity/crypto trading |
-| `ALPACA_API_SECRET` | Same as above | Paper stock/commodity/crypto trading |
-| `HYPERLIQUID_WALLET_ADDRESS` | Generate dedicated wallet | Paper crypto trading |
-| `HYPERLIQUID_PRIVATE_KEY` | Same wallet (NEVER main wallet) | Paper crypto trading |
+| `MT4_MT5_BRIDGE_TOKEN` | Your MT4/MT5 bridge relay | **LIVE** execution venue authentication (required) |
+| `ALPACA_API_KEY` | https://app.alpaca.markets/paper/dashboard/overview | **DEPRECATED** — only if you re-enable Alpaca (`config.alpaca.enabled=false`) |
+| `ALPACA_API_SECRET` | Same as above | **DEPRECATED** — only if you re-enable Alpaca |
+| `HYPERLIQUID_WALLET_ADDRESS` | Generate dedicated wallet | **DEPRECATED** — only if you re-enable Hyperliquid (`config.hyperliquid.enabled=false`) |
+| `HYPERLIQUID_PRIVATE_KEY` | Same wallet (NEVER main wallet) | **DEPRECATED** — only if you re-enable Hyperliquid |
 | `HERMES_REDIS_URL` | Local Redis instance | Internal pub/sub between layers |
 
 The 4 `HERMES_*` auth vars are mandatory. The auth model is a session cookie
@@ -642,11 +654,11 @@ channel and processes each heartbeat.
 > - **HermesDecisionTree** — on each new signal, evaluates existing positions for that symbol before placing a new order: checks SL / TP / early-profit / trail / flip / hold per the validated Phase 9 decision tree, and closes the position if the tree says to. Without this, positions would hold blindly between signals.
 > - **DecisionBranchTracker** — on fill, calls `record_entry(AgentAction)` to log the entry decision; on position close, calls `record_exit(AgentAction)` to log the exit decision. This is what feeds `analyze_branch_performance()` and `get_threshold_feedback()` with real trade data instead of empty results.
 > - **PnLService** — on position close, records realized PnL with full attribution (directional / timing / sizing / regime decomposition) to the `pnl_realized` DuckDB table.
-> - **DecisionJournalWriter** — on position close, writes a postmortem with entry thesis + lessons learned + hypothesis IDs. Was dead code before this wiring.
+> - **Inline v1 postmortem** — on position close, `ExecutionEngine._write_v1_postmortem()` writes the v1 deterministic postmortem with entry thesis + lessons learned to the existing `trade_journal` DuckDB table. (Phase 1A v10: the standalone `DecisionJournalWriter` class is removed; the orchestrator writes inline. The LLM-augmented per-signal postmortem is a separate concern handled by the `TradeJournal` service in `src/hermes/ops/trade_journal.py` — see §6.2.)
 >
 > A `_signal_map` / `_position_signals` dict pair tracks which signal created each position so **entry alpha** (bps better/worse than the NT-suggested entry) can be computed at close time and fed into `record_exit()`. `CircuitBreakerManager` is also optionally accepted (via the `cb_manager` constructor param) so the engine can record trade win/loss into the `consecutive_losses` rolling window.
 >
-> New stats exposed: `positions_closed`, `branch_attributions`, `postmortems_written`, `pnl_records`. New getters: `get_branch_tracker()`, `get_decision_tree()`, `get_pnl_service()`, `get_journal_writer()`.
+> New stats exposed: `positions_closed`, `branch_attributions`, `postmortems_written`, `pnl_records`. New getters: `get_branch_tracker()`, `get_decision_tree()`, `get_pnl_service()`.
 
 #### Step 7: Hermes Agent Manages Position
 
@@ -723,89 +735,76 @@ crontab -e
 Add:
 
 ```bash
-# EOD analysis — weekdays 16:30 PT
-30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --eod >> logs/eod.log 2>&1
-# Shadow promotion check — weekdays 16:35 PT
-35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-shadow-promotions >> logs/eod.log 2>&1
-# Underperformance check — weekdays 16:40 PT
-40 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-underperformance >> logs/eod.log 2>&1
+# Nightly LLM postmortem generation — weekdays 16:30 PT
+30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/noble journal generate --date $(date -d 'yesterday' +%Y-%m-%d) >> logs/journal.log 2>&1
+# Retry failed postmortems from the last 7 days — weekdays 16:35 PT
+35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/noble journal backfill --retry-failed --start $(date -d '7 days ago' +%Y-%m-%d) --end $(date -d 'yesterday' +%Y-%m-%d) >> logs/journal.log 2>&1
 ```
 
-The three commands run in sequence, 5 minutes apart, to ensure each completes
-before the next starts. All output is appended to `logs/eod.log`.
+The two commands run 5 minutes apart. The first generates LLM postmortems for
+yesterday's signals; the second retries any that failed (status
+`llm_unavailable`) over the last 7 days. All output is appended to
+`logs/journal.log`.
 
-### 6.2 What EOD Does
+### 6.2 What Journal Generate Does
 
-`platform agent --eod` calls `SelfLearningLoop.run_eod_analysis()` which
-executes these 5 steps:
+`noble journal generate --date <YYYY-MM-DD>` dispatches to
+`TradeJournal.generate_postmortem_for_day(date)` in
+`src/hermes/ops/trade_journal.py`. The service:
 
-1. **Observe**: pull all closed trades from `pnl_realized` for today
-2. **Attribute**: decompose PnL by meta-regime (win rate, total PnL, avg PnL per regime)
-3. **Postmortems**: write automated postmortems for each trade with lessons
-4. **Hypothesize**: generate improvement hypotheses from regime performance:
-   - Low win-rate regime (< 40%, 3+ trades) → propose reducing sizing multiplier
-   - High win-rate regime (> 65%, 3+ trades, positive PnL) → propose increasing sizing multiplier
-5. **Store hypotheses**: write to `hermes_hypotheses` table (status = `proposed`)
+1. **Selects signals** from `trade_signals_blended` JOIN `pnl_realized` LEFT
+   JOIN `trade_postmortem` WHERE `ts_emitted::DATE = date` AND
+   (`postmortem_status IS NULL` OR `postmortem_status = 'llm_unavailable'`)
+   AND `postmortem_status NOT IN ('reviewed', 'skipped')`.
+2. **Builds a payload** per signal: signal data + PnL attribution + existing
+   hypothesis (if any) + trader's human note (if any).
+3. **Invokes the trade_journal skill** via the constructor-injected
+   `skill_invoker` callable (the agent runtime passes its own inference
+   router; when the CLI is invoked outside the agent runtime, the command
+   raises a clear `RuntimeError` and prints next steps).
+4. **UPDATEs `trade_postmortem`** with the result: `postmortem_llm`,
+   `hypothesis` (only if existing is NULL — `COALESCE` preserves trader-set
+   theses), `postmortem_status='generated'`, `postmortem_generated_at`,
+   `prompt_tokens`, `completion_tokens`.
+5. **On failure** (skill raises, returns empty, or LLM unavailable): UPDATEs
+   `postmortem_status='llm_unavailable'`. The next `noble journal backfill
+   --retry-failed` run will retry.
 
-### 6.3 Shadow Promotion Check
+### 6.3 Backfill (Retry Failed Postmortems)
 
-`platform agent --check-shadow-promotions` runs at 16:35 PT, 5 minutes after
-EOD. For each hypothesis in `shadow` state, it checks whether the shadow
-config's live Sharpe ≥ 80% of its backtest Sharpe over the shadow window. If
-yes:
+`noble journal backfill --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--retry-failed]`
+selects signals in the date window whose `postmortem_status` is NULL (always)
+or `'llm_unavailable'` (only with `--retry-failed`). Rows in `'reviewed'` or
+`'skipped'` state are never touched (human-acked / human-dismissed). The
+`--force` flag (on `generate` only) re-selects `'generated'` rows but still
+protects `'reviewed'` / `'skipped'`.
 
-- **Tier 2 keys** (13 keys, e.g. `entry.brick_confirmation_count`,
-  `execution.limit_offset_bps`) — **auto-promoted** via
-  `platform config promote --hypothesis-id ID --change k=v`. The AutonomyGate
-  permits agent promotion of tier 2 keys. A notification is sent; no human
-  action required.
-- **Tier 3 keys** (8 keys, e.g. `circuit_breakers.volatility.vol_mult_threshold`,
-  `account.daily_loss_limit_pct`) — **blocked**. The hypothesis is marked
-  `awaiting_human`. The agent sends a notification asking a human to run
-  `platform config set <key> <value> --rationale "..." --author <human>`.
-- **Tier 4 keys** (9 keys, e.g. `account.max_gross_exposure_pct`,
-  `venues.*.enabled`, `autonomy.tier_*.max_notional_usd`) — **hard blocked**,
-  structural, human-only. Same `awaiting_human` flow.
+### 6.4 Status Semantics
 
-### 6.4 Underperformance Check
+| Status             | Meaning                                                  |
+|--------------------|----------------------------------------------------------|
+| NULL               | Never processed. Selected by `generate` + `backfill`.    |
+| `generated`        | Skill ran successfully. Re-selected only with `--force`. |
+| `llm_unavailable`  | Last attempt failed. Selected by `backfill --retry-failed`. |
+| `reviewed`         | Trader acked the postmortem. Never overwritten.          |
+| `skipped`          | Trader dismissed the postmortem. Never overwritten.      |
 
-`platform agent --check-underperformance` runs at 16:40 PT. For each config
-promotion with `source = 'hermes'` in `config_history` that has been live for
-≥ 14 days, the agent computes live Sharpe over the live window and compares it
-to the backtest Sharpe stored in the promotion's rationale.
+### 6.5 Removed in Phase 1A v10
 
-If **live Sharpe < 50% of backtest Sharpe**, the agent **auto-rolls back** to
-the previous config hash via `rollback_config()`. The rollback is itself
-written to `config_history` with
-`rationale = "auto-rollback: live Sharpe X < 50% of backtest Y over N days"`
-and `author = "hermes"`. A notification is sent.
+The following v3-era machinery has been **removed** and is no longer part of
+the cron schedule or the CLI:
 
-### 6.5 Hypothesis Lifecycle
-
-```
-proposed → backtested → shadow → live
-                    ↘ rejected
-                         ↗ retired
-```
-
-- **Propose**: EOD analysis generates hypothesis (e.g., "Reduce sizing in choppy_range")
-- **Backtest**: run through simulation engine with 6 rigor checks
-- **Shadow**: paper-trade in parallel at 10% of live size for 7 days
-- **Promote**: auto-promote if shadow Sharpe ≥ 80% of backtest Sharpe (tier 2
-  only — see §6.3)
-- **Reject**: if rigor checks fail or shadow underperforms
-- **Retire**: if promoted config underperforms in live for 14 days →
-  auto-rollback (see §6.4)
-
-Promotion is gated by `AutonomyGate.classify_config_change(key_path, caller)`:
-
-- `caller='hermes'` (used by `platform config promote`) — tier 2 allowed,
-  tier 3/4 blocked with exit 1
-- `caller='human'` (used by `platform config set`) — all tiers allowed, tier
-  3/4 prints a warning
-
-See [§7.4 Config Management Workflow](#74-config-management-workflow) for the
-per-key tier table and the exact CLI commands.
+- `platform agent --eod` / `--check-shadow-promotions` /
+  `--check-underperformance` — deleted (the `noble agent` command is gone).
+- `SelfLearningLoop` / `HypothesisTracker` / `DecisionJournalWriter` Python
+  classes — deleted. The orchestrator now writes v1 deterministic postmortems
+  inline; the `TradeJournal` service writes LLM postmortems.
+- `hermes_hypotheses` DuckDB table — dropped by migration 019. Hypothesis is
+  now a per-signal TEXT column on `trade_postmortem`.
+- Hypothesis lifecycle (`proposed → backtested → shadow → live / rejected /
+  retired`) — removed. There is no shadow promotion pipeline, no
+  underperformance auto-rollback, no `AutonomyGate` config-promotion flow.
+  Config changes are operator-driven via `platform config set`.
 
 ### 6.6 Optimization Sweep (Weekly Cron)
 
@@ -1229,10 +1228,11 @@ and defaults to all active symbols in the registry.
 - Verify the change was recorded: `platform config history --limit 1`
 - Verify the loaded config: `platform config show`
 
-### "Hypotheses not being generated"
-- Run `platform agent --eod` manually
-- Ensure there are closed trades in `pnl_realized` table
-- EOD analysis only generates hypotheses when it finds patterns (low win rate in a regime with 3+ trades)
+### "Postmortems not being generated"
+- Run `noble journal generate --date <YYYY-MM-DD>` manually
+- Ensure there are closed signals in `trade_signals_blended` JOIN `pnl_realized` for that date
+- Check `postmortem_status` column on `trade_postmortem` — if `llm_unavailable`, the skill_invoker raised; retry with `noble journal backfill --retry-failed --start <date> --end <date>`
+- If running outside the agent runtime, `skill_invoker` is None and the command raises a clear `RuntimeError` — the agent runtime must inject its inference router via the `TradeJournal(config, skill_invoker=...)` constructor kwarg
 
 ### "Optimization is slow"
 - Reduce `--n-trials` (default 200)
@@ -1263,12 +1263,10 @@ The complete cron schedule the agent installs on its host via `crontab -e`.
 **This schedule is NOT committed to the repository.** The agent owns it.
 
 ```bash
-# === EOD analysis — weekdays 16:30 PT ===
-30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --eod >> logs/eod.log 2>&1
-# === Shadow promotion check — weekdays 16:35 PT ===
-35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-shadow-promotions >> logs/eod.log 2>&1
-# === Underperformance check — weekdays 16:40 PT ===
-40 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/platform agent --check-underperformance >> logs/eod.log 2>&1
+# === Nightly LLM postmortem generation — weekdays 16:30 PT ===
+30 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/noble journal generate --date $(date -d 'yesterday' +%Y-%m-%d) >> logs/journal.log 2>&1
+# === Retry failed postmortems (last 7 days) — weekdays 16:35 PT ===
+35 16 * * 1-5 cd /path/to/noble-trader-agent && .venv/bin/noble journal backfill --retry-failed --start $(date -d '7 days ago' +%Y-%m-%d) --end $(date -d 'yesterday' +%Y-%m-%d) >> logs/journal.log 2>&1
 
 # === Weekly optimization — Saturday 02:00 PT ===
 0 2 * * 6 cd /path/to/noble-trader-agent && .venv/bin/platform optimize --days-back 90 --n-trials 200 >> logs/optimize.log 2>&1

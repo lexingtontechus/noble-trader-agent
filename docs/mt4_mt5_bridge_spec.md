@@ -29,7 +29,7 @@ entry/execution brain), extended to an external broker.
   prices / positions / fills                │       │                        │
         ▲                                   │  L5 risk gate → risk.decision │
         │  (future execution adapter)       │       ▼                        │
- Hermes execution → MT4/5 fill  ◄────────── │  L3 execute (paper now)       │
+ Hermes execution → MT4/5 fill  ◄────────── │  L3 execute (live: MT4/5 bridge ◄EA relay + MetaAPI Cloud SDK; paper via --paper)       │
  └──────────────────────┘                   └──────────────────────────────┘
 ```
 
@@ -132,7 +132,7 @@ Requires adding the URL to MT5 *Tools → Options → Expert Advisors → Allow 
 
 Reads EA output → validates against `NobleTraderHeartbeat` → **XADD** to the upstream
 Redis **STREAM** `signal.raw.noble_trader` (Hermes L0 already XREADs this with consumer
-group `hermes-l0` — see `src/hermes/transport/redis_subscriber.py`). No Hermes change.
+group `noble-1` — see `src/hermes/transport/redis_subscriber.py`). No Hermes change.
 
 ```python
 # mt5_heartbeat_bridge.py  (runs as its own process; not in repo venv)

@@ -87,19 +87,20 @@ redis-cli PUBLISH agent.command '{"action": "resume"}'
 4. Existing positions continue to be managed by the Active Price Monitor
 5. When NT comes back, the subscriber will resume automatically (consumer group)
 
-## Scenario 5: Venue API Down (Alpaca/Hyperliquid)
+## Scenario 5: Venue API Down (MT4/MT5 bridge + MetaAPI)
 
-**Symptoms**: "error" status for venue in health check, order failures.
+**Symptoms**: `"error"` status for the execution venue in health check, order failures, or `metaapi_broker` connection/sync failures.
 
 **Recovery**:
-1. Check venue status pages:
-   - Alpaca: https://status.alpaca.markets
-   - Hyperliquid: https://stats.uptimerobot.com/ (or check API directly)
-2. The circuit breaker will auto-activate on venue disconnect > 60s
-3. All open orders on the affected venue will be cancelled
-4. Existing positions are kept (but can't be closed until venue recovers)
-5. If the venue is down for an extended period, consider manual flatten:
+1. For **MetaAPI** (direct SDK execution): check the MetaAPI status page (https://status.metaapi.cloud) and the broker's MT4/MT5 server status; the `metaapi_broker` logs `waiting_for_broker_connect` / `waiting_for_synchronization` and will not submit while disconnected.
+2. For the **MT4/MT5 EA bridge relay**: check the relay process (`bridges/mt4_mt5/bridge_relay.py`) and the EA/MT5 `mt5-trading-mcp` connection.
+3. The circuit breaker will auto-activate on venue disconnect > 60s.
+4. All open orders on the affected venue will be cancelled.
+5. Existing positions are kept (but can't be closed until the venue recovers).
+6. If the venue is down for an extended period, consider manual flatten:
    `redis-cli PUBLISH agent.command '{"action": "flatten"}'`
+
+> **Deprecated venues:** the legacy Alpaca + Hyperliquid adapters are `enabled: false` and are not the live path — ignore their status pages for live trading.
 
 ## Scenario 6: Daily Loss Limit Hit
 
@@ -177,4 +178,4 @@ After any incident, complete this checklist:
 - [ ] Review `circuit_breaker_events` table for what triggered
 - [ ] Review `audit_log` table for timeline of events
 - [ ] Update this runbook if new scenario was discovered
-- [ ] Consider generating a hypothesis to prevent recurrence: `platform agent --eod`
+- [ ] Consider generating an LLM postmortem for the triggering signal: `noble journal generate --date <YYYY-MM-DD>` (Phase 1A v10 — the `platform agent --eod` hypothesis-generation flow is removed; hypothesis is now a per-signal TEXT column on `trade_postmortem`, not a separate lifecycle-managed row)

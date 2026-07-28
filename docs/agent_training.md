@@ -56,9 +56,9 @@
 - Distinguish spot vs derivatives (futures, perpetual swaps)
 
 **Content:**
-- Crypto: spot pairs on Alpaca (BTC/USD, SOL/USD) and perpetual swaps on Hyperliquid (BTC-PERP, ETH-PERP) — the platform's default asset class
-- Equities: common stock, ADRs, ETFs via the same Alpaca adapter (secondary asset class, still supported but not in the default `initial_symbols`)
-- Forex: major pairs, cross pairs (future venue)
+- Crypto / FX / commodities: executed live via **MetaAPI Cloud** (`src/hermes/execution/brokers/metaapi_broker.py`, demo-verified 2026-07-28 on XAUUSD) and the **MT4/MT5 EA bridge relay** — these are the live venues (`config.default.yaml → mt4_mt5.enabled: true`, MetaAPI via `execution.mode: live`).
+- Legacy adapters still in code (educational reference only, `enabled: false`): Alpaca spot pairs (BTC/USD, SOL/USD) for equities/ADRs/ETFs; Hyperliquid perpetual swaps (BTC-PERP, ETH-PERP). Not the live path.
+- Forex: major/cross pairs via MetaAPI/MT4+5 (live).
 - Perpetual swaps: funding rates, basis, liquidation mechanics
 - Leverage: how it amplifies gains/losses, margin requirements
 - Position sizing: fixed fractional, Kelly criterion (preview)
@@ -874,13 +874,13 @@
   - Autonomy tiers configured correctly
   - Position sizes start small (tier 1: $5k max)
 
-> **Live pipeline wiring update:** As of the post-Phase-10 *Component Wiring* supplement, the `ExecutionEngine` now **automatically** handles position management and attribution on every paper (and live) trade — you no longer have to run `platform agent` separately to get postmortems or branch attribution:
+> **Live pipeline wiring update:** As of the post-Phase-10 *Component Wiring* supplement, the `ExecutionEngine` now **automatically** handles position management and attribution on every paper (and live) trade — you no longer have to run a separate command to get postmortems or branch attribution:
 > - On each new signal, `HermesDecisionTree.evaluate_existing_positions()` runs inside the execution engine and closes any position the decision tree says to (SL/TP/early-profit/trail/flip/hold).
 > - On fill, `DecisionBranchTracker.record_entry()` logs the entry `AgentAction`.
-> - On position close, `PnLService.record_realized_pnl()` writes a `pnl_realized` row with full attribution, AND `DecisionJournalWriter.write_postmortem()` writes a postmortem with lessons, AND `DecisionBranchTracker.record_exit()` logs the exit `AgentAction`.
+> - On position close, `PnLService.record_realized_pnl()` writes a `pnl_realized` row with full attribution, AND `ExecutionEngine._write_v1_postmortem()` writes a v1 deterministic postmortem with lessons to the existing `trade_journal` table (Phase 1A v10: the standalone `DecisionJournalWriter` class is removed; the orchestrator writes inline), AND `DecisionBranchTracker.record_exit()` logs the exit `AgentAction`.
 > - A `_signal_map` / `_position_signals` pair tracks which signal created each position so entry alpha (bps vs NT-suggested entry) is computed and attached to the exit record.
 >
-> Implication for live-readiness: the pre-live checklist above is now backed by real data plumbing. After a paper run, `platform pnl` and `DecisionBranchTracker.analyze_branch_performance()` will return populated, evidence-backed results (not empty), and `trade_journal` will contain postmortems for every closed position. This is the data that feeds `SelfLearningLoop` hypothesis generation.
+> Implication for live-readiness: the pre-live checklist above is now backed by real data plumbing. After a paper run, `platform pnl` and `DecisionBranchTracker.analyze_branch_performance()` will return populated, evidence-backed results (not empty), and `trade_journal` will contain v1 deterministic postmortems for every closed position. Phase 1A v10 adds a parallel LLM-augmented postmortem pipeline: `noble journal generate` writes per-signal LLM postmortems + theses to `trade_postmortem` (separate table, separate grain — see `skills/trade_journal/SKILL.md`).
 
 **References:**
 - Hermes agent onboarding guide §6 (EOD Analysis & Self-Learning)
@@ -1355,19 +1355,19 @@ The "Attribute" step above originally decomposed PnL by {strategy, regime, asset
 
   Each recommendation includes `current` value, `issue`, `suggestion`, and `evidence` (n_trades + avg R). Feedback only fires when n_trades ≥ 5 per branch.
 
-This closes the **attribution → feedback → tuning** loop: instead of guessing at threshold changes, the agent generates evidence-backed recommendations that can be fed directly into a hypothesis proposal (`HypothesisTracker`), A/B tested (`ABTestFramework` — Diebold-Mariano + paired t-test), and promoted only if statistically significant. `SignalWindowOptimizer` applies the same data-driven approach to the `signal_expiry_minutes` parameter.
+This closes the **attribution → feedback → tuning** loop: instead of guessing at threshold changes, the agent generates evidence-backed recommendations that can be A/B tested (`ABTestFramework` — Diebold-Mariano + paired t-test) and adopted only if statistically significant. `SignalWindowOptimizer` applies the same data-driven approach to the `signal_expiry_minutes` parameter. (Phase 1A v10: the `HypothesisTracker` class and its `proposed → backtested → shadow → live` promotion pipeline are removed; threshold-tuning recommendations are now consumed by the operator via the dashboard, not auto-promoted into config. Config changes are operator-driven via `platform config set`.)
 
 **References:**
 - *Advances in Financial Machine Learning* — López de Prado, Chapter 11
 - *Metalearning* — https://en.wikipedia.org/wiki/Meta_learning_(computer_science)
-- Hermes source: `src/hermes/agent/learning.py` — SelfLearningLoop, HypothesisTracker
 - Hermes source: `src/hermes/agent/attribution.py` — DecisionBranchTracker, ABTestFramework, SignalWindowOptimizer
+- Hermes source: `src/hermes/ops/trade_journal.py` — TradeJournal service (Phase 1A v10 LLM postmortem pipeline)
 
 **Hermes Exercise:**
-- Run EOD analysis: `platform agent --eod`
-- List hypotheses: `platform agent --list-hypotheses`
-- Query hypotheses: `SELECT hypothesis_id, status, confidence, hypothesis FROM hermes_hypotheses ORDER BY ts_created DESC`
-- Review the hypothesis lifecycle in DuckDB
+- Generate LLM postmortems for yesterday's signals: `noble journal generate --date $(date -d 'yesterday' +%Y-%m-%d)`
+- Retry failed postmortems: `noble journal backfill --retry-failed --start $(date -d '7 days ago' +%Y-%m-%d) --end $(date -d 'yesterday' +%Y-%m-%d)`
+- Query recent postmortems: `SELECT signal_id, postmortem_status, hypothesis, postmortem_generated_at FROM trade_postmortem ORDER BY postmortem_generated_at DESC LIMIT 20`
+- Review the per-signal status semantics in `skills/trade_journal/SKILL.md` (NULL / generated / llm_unavailable / reviewed / skipped)
 - Read `src/hermes/agent/attribution.py` and trace how `get_threshold_feedback()` converts branch stats into tuning recommendations
 - Run `pytest tests/test_attribution.py -v` (16 tests covering branch stats, regime matrix, threshold feedback, A/B testing, signal window optimization)
 
@@ -1633,7 +1633,7 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
 
 **Content:**
 - Schema overview (9 migrations, 24 tables):
-  - v1: config_history, signal_heartbeats, account_snapshots, trade_journal, risk_decisions, circuit_breaker_events, hermes_hypotheses, meta_regime_history, audit_log, signal_heartbeats_quarantine, schema_version
+  - v1: config_history, signal_heartbeats, account_snapshots, trade_journal, risk_decisions, circuit_breaker_events, meta_regime_history, audit_log, signal_heartbeats_quarantine, schema_version
   - v2: nt_sweep_results_local, nt_regime_log_local (NT mirrors)
   - v3: price_monitor_events
   - v4: trade_signals_blended
@@ -1646,7 +1646,7 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
   - Sharpe by regime: `SELECT strategy_id, regime_at_close, AVG(r_multiple) FROM pnl_realized GROUP BY 1, 2`
   - Worst 10 trades: `SELECT t.symbol, t.entry_thesis, p.net_pnl FROM trade_journal t JOIN pnl_realized p ON t.trade_id = p.trade_id ORDER BY p.net_pnl ASC LIMIT 10`
   - Slippage by venue: `SELECT venue, AVG(slippage_bps) FROM fills GROUP BY venue`
-  - Hypothesis win rate: `SELECT h.hypothesis, h.status, AVG(p.r_multiple) FROM hermes_hypotheses h JOIN trade_journal t ON h.hypothesis_id = ANY(t.hypothesis_ids) JOIN pnl_realized p ON t.trade_id = p.trade_id GROUP BY 1, 2`
+  - Hypothesis + LLM postmortem by signal: `SELECT tp.signal_id, tp.hypothesis, tp.postmortem_llm, tp.postmortem_status FROM trade_postmortem tp JOIN trade_signals_blended tsb ON tp.signal_id = tsb.heartbeat_id ORDER BY tp.postmortem_generated_at DESC LIMIT 20` (Phase 1A v10 — `hermes_hypotheses` table is dropped; hypothesis is now a per-signal column on `trade_postmortem`)
 - DuckDB performance tips:
   - Use `read_only=True` for analytical queries (safe alongside writer)
   - DuckDB doesn't support partial indexes (WHERE on CREATE INDEX)
@@ -1719,7 +1719,7 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
   1. **Pre-market** (08:30 ET): `platform health` → verify all systems
   2. **Market open** (09:30 ET): start pipeline (ingest, monitor, synthesize, risk, execute)
   3. **During market**: monitor dashboard, watch for circuit breaker alerts
-  4. **EOD** (16:00 ET): `platform agent --eod` → postmortems + hypotheses
+  4. **EOD** (16:00 ET): `noble journal generate --date $(yesterday)` → per-signal LLM postmortems + theses to `trade_postmortem`
   5. **Post-market**: `platform pnl` → tear sheet, review performance
   6. **Weekly**: `platform optimize` → Bayesian sweep, `platform rigor` → statistical checks
   7. **Monthly**: retrain HMM, review hypotheses, rotate API keys, test DR
@@ -1753,10 +1753,10 @@ This closes the **attribution → feedback → tuning** loop: instead of guessin
 
 **Hermes Exercise:**
 - Complete a full day of paper trading using all 6 terminals
-- Run `platform agent --eod` and review the analysis
+- Run `noble journal generate --date $(date -d 'yesterday' +%Y-%m-%d)` and review the per-signal LLM postmortems in `trade_postmortem`
 - Run `platform pnl` and interpret every metric in the tear sheet
 - Run `platform rigor` and check if your strategy passes all 6 checks
-- Review all hypotheses: `platform agent --list-hypotheses`
+- Review recent postmortems: `SELECT signal_id, postmortem_status, hypothesis FROM trade_postmortem ORDER BY postmortem_generated_at DESC LIMIT 20`
 - Write a daily journal entry summarizing what you learned
 
 ---

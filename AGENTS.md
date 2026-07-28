@@ -10,11 +10,21 @@ task.** It reflects the actual, verified state of the repo as of 2026-07-11.
 
 A quant hedge-fund-style trading stack that consumes **Noble Trader (NT)** entry
 signals from a Redis Stream, runs them through a market monitor + optimizer, and
-places trades via the **MT4/MT5 bridge** (primary: an EA or `mt5_mcp` posts heartbeats
-to `bridge_relay.py` → `signal.raw.noble_trader`; Alpaca + Hyperliquid are **deprecated
-/ disabled** in `config/default.yaml`). Price data comes from the **TradingView API
-adapter** (WebSocket via JWT from `/api/token/generate`, REST fallback). It is driven by
-the Hermes-agent `noble-trader-quant-hf-manager` skill and kept alive by a watchdog cron.
+places trades via the **MT4/MT5 bridge** (the live execution path). The legacy
+Alpaca + Hyperliquid venue adapters are **deprecated / disabled** in
+`config/default.yaml` (`enabled: false`) — they are NOT the live path.
+Price data comes from the **TradingView API adapter** (WebSocket via JWT from
+`/api/token/generate`, REST fallback). It is driven by the Hermes-agent
+`noble-trader-quant-hf-manager` skill and kept alive by a watchdog cron.
+
+**Signal ingestion (current topology):** the FastAPI backend (LightningAI sweep
+orchestrator) qualifies signals and `XADD`s them to `signal.raw.noble_trader`.
+The `noble-trader-proxy` reads that stream (group `proxy`) and re-publishes each
+qualified signal to `signal.proxy.noble_trader`. The agent's `ingest` (L0) reads
+the proxy-forwarded stream with its **own** consumer group `noble-1` (consumer
+`noble-l0-worker`), and **falls back** to `signal.raw.noble_trader` if the proxy
+isn't deployed. An optional `bridges/mt4_mt5/bridge_relay.py` can also publish
+EA/MT5 heartbeats to `signal.raw.noble_trader` as a secondary producer.
 
 **Operating stance (from the user):**
 - The agent must **autonomously operate and self-manage** the stack: run the
@@ -37,22 +47,50 @@ the Hermes-agent `noble-trader-quant-hf-manager` skill and kept alive by a watch
 
 ---
 
-## 2. Architecture — the two ingestion paths (READ THIS)
+## 2. Architecture — signal flow (READ THIS)
 
-The stack has **two decoupled ingestion paths**. Do not conflate them.
+The backend qualifies signals and publishes them to **`signal.raw.noble_trader`**
+(the qualified signal stream). Downstream consumers read that stream via
+independent Redis consumer groups (fan-out):
+
+| Consumer | Group | Reads | Does |
+|---|---|---|---|
+| **noble-trader-proxy** | `proxy` (consumer `proxy-${HOSTNAME}`) | `signal.raw.noble_trader` | READ-ONLY. Updates in-memory `QuoteTracker`; serves `/quotes`, `/history`, `/api/ta`, `/sse/alerts` over HTTP. **Re-publishes each qualified signal** it reads onto `signal.proxy.noble_trader` (via its write-capable `REDIS_FANOUT_URL` / `pub_<32hex>` ACL user) so the agent can consume from the proxy. The proxy is the SOLE signal gateway. |
+| **noble-trader-agent (ingest / L0)** | `noble-1` (consumer `noble-l0-worker`) | `signal.proxy.noble_trader` (proxy-forwarded ONLY) | Validates, dedupes, persists to DuckDB `signal_heartbeats`, re-publishes internally on `signal.raw.hermes.{symbol}`. **Does NOT join the proxy's group** (own group = independent delivery). **No venue WebSocket — it never sees a live price tick.** Reads ONLY the proxy stream — never `signal.raw.noble_trader` directly. |
+
+**Topology:** `backend ──XADD──> signal.raw.noble_trader ──> [group: proxy] ──re-publish──> signal.proxy.noble_trader ──> [group: noble-1] ──> agent loops ──> mt4/5 bridge`.
+
+**Why the proxy is the hop (not a 2nd direct consumer):** the agent consumes
+the proxy's forwarded qualified stream, making the proxy the single ingestion
+gateway. The agent does **NOT** read `signal.raw.noble_trader` directly — that
+stream is the backend→proxy transport, not an agent endpoint. If the proxy is
+down, signal ingestion stops and `proxy_liveness` escalates CRITICAL. The proxy
+does NOT call into the agent; the agent pulls HTTP (`/quotes`, etc.) from the
+proxy and consumes its signal stream.
+
+**TWO INDEPENDENT PIPELINES — do not conflate them:**
+
+| Pipeline | Source → Agent | Transport | Agent consumer | Failure monitor |
+|---|---|---|---|---|
+| **SIGNAL** | Backend sweep → `signal.raw.noble_trader` → proxy → `signal.proxy.noble_trader` | Redis stream | `redis_subscriber.py` (waits) | **A-pipeline:** `proxy_liveness` CRITICAL if no `proxy_delivery_log` heartbeat >480s. **A-drought:** `signal_drought_watchdog` WARNING if agent gets no signal >4h (quiet markets possible). |
+| **PRICING** | TVDA (TradingView) → proxy `QuoteTracker` → `/sse/alerts` | SSE (30s heartbeat) | `sse_consumer.py` (MicrostructureSSEConsumer) | **B:** `pricing_sse_watchdog` **CRITICAL** if no SSE frame >90s. Pricing is unrelated to the backend generating signals. |
+
+**Where critical alerts go:** all three watchdogs raise via the existing
+`AlertManager` (`hermes/ops/alerting.py`) → Discord + Telegram (configured via
+the setup wizard / `notifications.*`). CRITICAL = pipeline/SSE down; WARNING =
+possible quiet-market signal drought (verify the CRITICAL pipeline monitor before
+assuming failure).
 
 | Process (loop) | Job | Data source |
 |---|---|---|
-| `ingest` | NT heartbeat bridge (L0) | Subscribes to `signal.raw.noble_trader` Redis **Stream** via `XREAD`/consumer group. Validates, dedupes, persists to DuckDB `signal_heartbeats`, re-publishes internally on `signal.raw.hermes.{symbol}`. **No venue WebSocket — it never sees a live price tick.** |
+| `ingest` | NT heartbeat bridge (L0) | Subscribes to the proxy-forwarded qualified stream `signal.proxy.noble_trader` ONLY (no fallback). Validates, dedupes, persists to DuckDB `signal_heartbeats`, re-publishes internally on `signal.raw.hermes.{symbol}`. **No venue WebSocket — it never sees a live price tick.** |
 | `monitor` | **Active market watcher (L2.8)** | Connects to the **TradingView API adapter** (`tradingview_adapter.py`): WebSocket (JWT-minted from `/api/token/generate`) when a symbol is in an active window, REST batch/quote fallback otherwise. Feeds ticks/order books through `PriceMonitor` (`monitor/orchestrator.py`): TickAggregator → IndicatorEngine (ATR/EMA/RSI) → AnomalyDetector → StopWatcher → CrossPriceMonitor → FundingWatcher. Emits `PriceMonitorEvent`s to DuckDB + internal Redis. **Runs 24/7 regardless of NT.** (Alpaca/Hyperliquid venue adapters exist but are `enabled: false` — they are NOT the live data source.) |
 
 **Between incoming NT signals, the `monitor` loop is what watches the market.**
 NT provides *timing*; `monitor` provides *market state*. `ingest` is just the NT
 bridge. They are separate processes (see §3).
 
-**Hard rule:** only read from `signal.raw.noble_trader` via `XREAD`/`XREADGROUP`.
-**Never** pull `trading:config:{symbol}` snapshots — explicitly excluded per user
-directive.
+**Hard rule:** only read from `signal.raw.noble_trader` / `signal.proxy.noble_trader` via `XREAD`/`XREADGROUP`. **Never** pull `trading:config:{symbol}` snapshots — explicitly excluded per user directive.
 
 ---
 
@@ -101,7 +139,7 @@ Plus **Redis** (local bus, required by 5/6 loops) launched detached + PID-guarde
   `/tmp/watchdog.log`), not a silent no-op.
 
 **Daily health check:** `/noble balance` + `/noble assets` (noble skill) for
-instant Alpaca+HL equity and held-asset/regime reads. The `risk` proc's
+instant MT4/MT5-bridge + MetaAPI equity and held-asset/regime reads. The `risk` proc's
 `[brokerage-sync] live equity=$...` ~60s heartbeat lines are **expected** health
 pings — acknowledge concisely; only alert if equity leaves the normal live band
 (≈$108k as of 2026-07).
@@ -209,7 +247,7 @@ restart/verify via its job id — do not recreate unless the config is wrong.
 
 ## 8. Environment / paths (verified)
 
-- Repo root: `C:/Users/aloys/AppData/Local/hermes/profiles/noble-agent/noble-trader-agent/repo`
+- Repo root: `noble-trader-agent` (the cloned stack repo root; clone target per profile `distribution.yaml` `default_path: noble-trader-agent`). Source lives under `src/hermes/`; the deployed runtime is a separate copy under the agent's Hermes profile data dir (e.g. `~/.hermes/profiles/noble-agent/noble-trader-agent/`).
 - Venv python: `repo/.venv/Scripts/python.exe` (pytest + detect-secrets installed
   via `uv pip install` — call it **directly**, do NOT use `uv run`, which hangs on
   exit under MSYS/Windows).
@@ -226,7 +264,7 @@ restart/verify via its job id — do not recreate unless the config is wrong.
 ## 9. Golden rules
 
 1. **Execute the codebase; don't write new logic** unless fixing a verified bug.
-2. **Live brokerage equity is truth** — anchor drawdown to real Alpaca+HL, not
+2. **Live brokerage equity is truth** — anchor drawdown to real **MT4/MT5 (bridge) or MetaAPI** equity, not
    static numbers.
 3. **Only `signal.raw.noble_trader` via XREAD** — never `trading:config:{symbol}`.
 4. **Single watchdog owner** — no manual loop launches.

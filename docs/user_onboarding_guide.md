@@ -108,7 +108,7 @@ If you prefer manual setup, copy `.env.example` → `.env` and fill the vars bel
 | --- | --- |
 | `NOBLE_TRADER_REDIS_URL` | `redis://<nt-redis-host>:<port>` (Upstash, RESP) |
 | `NOBLE_TRADER_REDIS_CHANNEL` | `signal.raw.noble_trader` |
-| `NOBLE_TRADER_REDIS_CONSUMER_GROUP` | `hermes-l0` |
+| `NOBLE_TRADER_REDIS_CONSUMER_GROUP` | `noble-1` |
 
 > This is the **only** legitimate signal source. NT pushes qualified heartbeats
 > there every ~5 min. `trading:config:{symbol}` hashes are a pull snapshot and are
@@ -172,7 +172,7 @@ snapshot**. This is the anchor the risk engine uses — **live brokerage equity 
 source of truth**, never a static figure.
 
 ```bash
-cd noble-trader-agent/repo
+cd noble-trader-agent                       # the cloned stack repo ROOT
 unset PYTHONPATH                       # repo venv must NOT inherit the global PYTHONPATH
 ./.venv/Scripts/python.exe -m hermes.app noble balance   # live equity across venues
 ./.venv/Scripts/python.exe -m hermes.app noble assets    # held assets + NT regime + renko

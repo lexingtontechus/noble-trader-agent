@@ -1,5 +1,13 @@
 # MT4/MT5 Bridge — Tracking README
 
+> **Live execution paths (2026-07-28):** the agent executes via **two** live
+> paths — (1) the **MT4/MT5 EA bridge relay** (this folder: EA/relay posts
+> fills, `bridge_relay.py` → `signal.raw.noble_trader`), and (2) the **MetaAPI
+> Cloud SDK broker** (`src/hermes/execution/brokers/metaapi_broker.py`,
+> demo-verified 2026-07-28: 0.10-lot XAUUSD BUY). The legacy Alpaca +
+> Hyperliquid adapters are the deprecated ones (`enabled: false`). This folder
+> is kept as a live signal-source + execution reference, not deprecated.
+
 This folder is the drop-in MT4/MT5 integration for the Noble Trader / Hermes stack.
 It does NOT modify the core repo today; the items below list what the *core repo*
 must change when we finalize.
