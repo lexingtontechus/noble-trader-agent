@@ -160,7 +160,8 @@ pings — acknowledge concisely; only alert if equity leaves the normal live ban
 | `NT weekly vacuum` (`413449a41a85`) | `0 4 * * 0` | DuckDB VACUUM maintenance. |
 | `NT monthly maintenance` (`58ddd9214691`) | `0 3 1 * *` | Monthly maintenance. |
 | `NT monthly metaregime retrain` (`967aa9773568`) | `30 3 1 * *` | Meta-regime retrain. |
-| `NT pre-market account snapshot` (`9bfecb2a51a2`) | `30 6 * * 1-5` | Pre-market account state snapshot. |
+|| `NT pre-market account snapshot` (`9bfecb2a51a2`) | `30 6 * * 1-5` | Pre-market account state snapshot. |
+|| `NT subscription validation` (`a1b2c3d4e5f6`) | `0 3 * * *` | Daily Redis credential & subscription validation via Supabase edge function. |
 
 All NT jobs use the `noble-trader-quant-hf-manager` skill. If a cron job dies,
 restart/verify via its job id — do not recreate unless the config is wrong.
