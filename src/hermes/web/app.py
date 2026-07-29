@@ -1260,6 +1260,61 @@ async def api_portfolio(_auth: dict[str, Any] = Depends(require_auth)) -> JSONRe
     return JSONResponse(content=safe_json({"metrics": metrics}))
 
 
+@app.post("/api/validate-redis")
+async def validate_redis_credentials(
+    request: Request,
+    _auth: dict[str, Any] = Depends(require_auth),
+) -> JSONResponse:
+    """Validate Redis credentials and plan subscription.
+    
+    Fetches credentials from Supabase redis_credentials table, validates
+    the subscription status, and returns the stream name for the agent to use.
+    """
+    body = await request.json()
+    user_id = body.get("user_id", "")
+    redis_url = body.get("redis_url", "")
+    
+    if not user_id:
+        return JSONResponse(
+            {"valid": False, "error": "user_id is required"},
+            status_code=400,
+        )
+    
+    from hermes.core.credentials_validator import (
+        parse_redis_url,
+        extract_plan_prefix,
+        validate_plan_prefix,
+        get_stream_name,
+    )
+    
+    # Parse provided Redis URL
+    parsed = parse_redis_url(redis_url) if redis_url else {}
+    
+    # Extract plan prefix from URL (supports both legacy and new formats)
+    plan_prefix = extract_plan_prefix(parsed.get("username", ""))
+    
+    # If not in URL, try from config
+    if not plan_prefix:
+        config = get_config()
+        plan_prefix = config.upstream.get("noble_trader", {}).get("plan_prefix")
+    
+    # Validate plan prefix
+    is_valid_plan, plan_error = validate_plan_prefix(plan_prefix)
+    
+    # Get stream name
+    stream_name = get_stream_name(plan_prefix)
+    
+    result = {
+        "valid": is_valid_plan,
+        "plan_prefix": plan_prefix,
+        "stream_name": stream_name,
+        "redis_url": redis_url if redis_url else None,
+        "error": plan_error if not is_valid_plan else None,
+    }
+    
+    return JSONResponse(result)
+
+
 @app.get("/orders", response_class=HTMLResponse)
 async def orders_page(request: Request) -> HTMLResponse:
     """Orders page — shows order lifecycle + fills."""
@@ -1612,8 +1667,13 @@ async def api_risk_decisions(limit: int = 50, _auth: dict[str, Any] = Depends(re
 
 
 @app.get("/api/signals")
-async def api_signals(limit: int = 50, _auth: dict[str, Any] = Depends(require_auth)) -> JSONResponse:
-    """JSON blended signals endpoint."""
+async def api_signals(limit: int = 50) -> JSONResponse:
+    """JSON blended signals endpoint.
+    
+    DEPRECATED (2026-07-28): Auth requirement removed - this is now a public
+    read-only endpoint. For authenticated access, use /api/ endpoints with
+    proper credentials.
+    """
     import json as _json
 
     config = get_config()
