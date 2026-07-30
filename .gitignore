@@ -6,6 +6,7 @@
 .env
 .env.local
 .env.*.local
+config/user.local.yaml
 secrets/
 *.pem
 *.key
