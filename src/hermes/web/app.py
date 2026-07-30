@@ -149,9 +149,16 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Templates
 # auto_reload=True ensures Jinja2 checks for template changes on each render
 # (development mode). In production, uvicorn --reload handles Python file changes.
+from jinja2 import Environment, FileSystemLoader
+
+_jinja_env = Environment(
+    loader=FileSystemLoader(str(TEMPLATES_DIR)),
+    auto_reload=True,
+    cache_size=0,
+)
 templates = Jinja2Templates(
     directory=str(TEMPLATES_DIR),
-    env_options={"auto_reload": True, "cache_size": 0},
+    env=_jinja_env,
 )
 
 # Global config + optional monitor reference
