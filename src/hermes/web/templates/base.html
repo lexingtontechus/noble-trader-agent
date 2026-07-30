@@ -10,6 +10,7 @@
          No CDN — survives the strict CSP (style-src 'self'). -->
     <link rel="stylesheet" href="/static/tailwind.bundle.css">
     <link rel="stylesheet" href="/static/uplot.min.css">
+    <link rel="shortcut icon" href="/static/favicon.ico">
 </head>
 <body class="min-h-screen bg-base-100 text-base-content">
 
@@ -27,7 +28,7 @@
                 </ul>
             </div>
             <a href="/" class="btn btn-ghost btn-sm text-lg font-bold {% if onboarding %}hidden{% endif %}">
-                Hermes
+                Talaria
                 <span class="badge badge-primary badge-xs ml-1">v{{ version }}</span>
             </a>
         </div>
@@ -62,7 +63,7 @@
     <!-- Footer -->
     <footer class="footer footer-center p-4 text-xs opacity-50 border-t border-base-300">
         <aside>
-            Hermes Trading Platform · v{{ version }} ·
+            Talaria Trading Platform · v{{ version }} ·
             <a href="/health" target="_blank" class="link link-hover">Health JSON</a> ·
             <a href="/api/status" target="_blank" class="link link-hover">API Status</a>
         </aside>
