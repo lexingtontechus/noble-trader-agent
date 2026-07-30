@@ -156,10 +156,7 @@ _jinja_env = Environment(
     auto_reload=True,
     cache_size=0,
 )
-templates = Jinja2Templates(
-    directory=str(TEMPLATES_DIR),
-    env=_jinja_env,
-)
+templates = Jinja2Templates(env=_jinja_env)
 
 # Global config + optional monitor reference
 _config: HermesConfig | None = None
