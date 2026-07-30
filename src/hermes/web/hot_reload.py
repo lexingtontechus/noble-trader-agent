@@ -155,26 +155,21 @@ class HotReload:
     @staticmethod
     def _clear_template_cache() -> None:
         """Clear Jinja2 template cache."""
-        import importlib
-
         try:
-            # Clear the cached template loader
-            from fastapi.templating import Jinja2Templates
+            # Clear the Jinja2Templates environment cache
+            # The templates object is a module-level singleton in app.py
+            from hermes.web.app import templates
 
-            # Force reload of Jinja2's internal cache
-            if hasattr(Jinja2Templates, "_template_cache"):
-                Jinja2Templates._template_cache.clear()
+            # Clear the Jinja2 environment's bytecode cache
+            env = templates.env
+            if hasattr(env, "cache"):
+                env.cache.clear()
 
-            # Also try to clear any module-level caches
-            import sys
+            # Also clear any bytecode cache
+            if hasattr(env, "bytecode_cache") and env.bytecode_cache:
+                env.bytecode_cache.clear()
 
-            for module_name in list(sys.modules.keys()):
-                if "template" in module_name.lower():
-                    try:
-                        importlib.reload(sys.modules[module_name])
-                    except Exception:
-                        pass
-
+            log.debug("hot_reload_cache_cleared")
         except Exception as e:
             log.debug("hot_reload_cache_clear_error", error=str(e))
 

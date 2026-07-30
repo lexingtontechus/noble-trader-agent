@@ -147,7 +147,12 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Templates
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# auto_reload=True ensures Jinja2 checks for template changes on each render
+# (development mode). In production, uvicorn --reload handles Python file changes.
+templates = Jinja2Templates(
+    directory=str(TEMPLATES_DIR),
+    env_options={"auto_reload": True, "cache_size": 0},
+)
 
 # Global config + optional monitor reference
 _config: HermesConfig | None = None
