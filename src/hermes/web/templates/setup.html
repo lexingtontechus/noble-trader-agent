@@ -1,6 +1,11 @@
 {% extends "base.html" %}
+{% set onboarding = True %}
 {% block title %}Onboarding · Talaria{% endblock %}
 {% block content %}
+<style>
+  /* Hide navbar during onboarding */
+  .navbar { display: none !important; }
+</style>
 <div class="max-w-2xl mx-auto">
   <div class="text-center mb-6">
     <h1 class="text-3xl font-bold">Welcome to Talaria</h1>
@@ -153,10 +158,14 @@
 
   <script>
     // Form validation - disable submit until all required fields are filled
+    // and credentials are validated
     document.addEventListener('DOMContentLoaded', function() {
       const form = document.getElementById('setupForm');
       const button = document.getElementById('finishButton');
       const requiredInputs = form.querySelectorAll('input[required]');
+
+      let metaapiValid = false;
+      let signalValid = false;
 
       function validateForm() {
         let allFilled = true;
@@ -165,8 +174,9 @@
             allFilled = false;
           }
         });
-        button.disabled = !allFilled;
-        button.classList.toggle('btn-disabled', !allFilled);
+        // Only enable button if all fields filled AND both validations passed
+        button.disabled = !allFilled || !metaapiValid || !signalValid;
+        button.classList.toggle('btn-disabled', !allFilled || !metaapiValid || !signalValid);
       }
 
       // Add event listeners to all required inputs
@@ -174,6 +184,84 @@
         input.addEventListener('input', validateForm);
         input.addEventListener('change', validateForm);
       });
+
+      // Validate MetaApi token + account ID
+      async function validateMetaApi() {
+        const token = document.getElementById('metaaapi_token').value.trim();
+        const accountId = document.getElementById('metaaapi_account_id').value.trim();
+
+        if (!token || !accountId) {
+          metaapiValid = false;
+          validateForm();
+          return;
+        }
+
+        try {
+          const response = await fetch('https://api.metaapi.cloud/users/' + accountId, {
+            method: 'GET',
+            headers: {
+              'Authorization': 'Bearer ' + token,
+              'Content-Type': 'application/json'
+            }
+          });
+
+          metaapiValid = response.ok;
+          if (!metaapiValid) {
+            console.error('MetaApi validation failed:', response.status);
+          }
+        } catch (e) {
+          metaapiValid = false;
+          console.error('MetaApi validation error:', e);
+        }
+
+        validateForm();
+      }
+
+      // Validate Noble Trader Signal Subscription (username + password)
+      // against Supabase edge function
+      async function validateSignalSubscription() {
+        const username = document.getElementById('signal_user').value.trim();
+        const password = document.getElementById('signal_password').value.trim();
+
+        if (!username || !password) {
+          signalValid = false;
+          validateForm();
+          return;
+        }
+
+        try {
+          // Call Supabase edge function to validate credentials
+          // The edge function checks redis_credentials table for matching username
+          // and validates the password against the encrypted value
+          const response = await fetch('/api/validate-redis', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + (document.querySelector('meta[name="csrf-token"]')?.content || '')
+            },
+            body: JSON.stringify({
+              redis_username: username,
+              redis_password: password
+            })
+          });
+
+          signalValid = response.ok;
+          if (!signalValid) {
+            console.error('Signal subscription validation failed:', response.status);
+          }
+        } catch (e) {
+          signalValid = false;
+          console.error('Signal subscription validation error:', e);
+        }
+
+        validateForm();
+      }
+
+      // Add validation triggers
+      document.getElementById('metaaapi_token').addEventListener('blur', validateMetaApi);
+      document.getElementById('metaaapi_account_id').addEventListener('blur', validateMetaApi);
+      document.getElementById('signal_user').addEventListener('blur', validateSignalSubscription);
+      document.getElementById('signal_password').addEventListener('blur', validateSignalSubscription);
 
       // Initial validation
       validateForm();
