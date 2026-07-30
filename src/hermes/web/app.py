@@ -478,16 +478,26 @@ async def index(request: Request) -> HTMLResponse:
 # ── Onboarding wizard ────────────────────────────────────────────────────────
 # First use of the web app routes here. After setup is complete the wizard is
 # hidden (root redirects to /portfolio and /setup redirects there too).
-_SETUP_REQUIRED_KEYS = (
+# Setup required keys — derived from system_endpoints.yaml
+# Deprecated keys (MT4_MT5_BRIDGE_TOKEN, NOBLE_TRADER_LICENSE_KEY) removed.
+# Upstream infra keys are loaded from config at import time so the wizard
+# always reflects the current codebase endpoints.
+_UPSTREAM_KEYS = (
     "NOBLE_TRADER_PROXY_REDIS_URL",
-    "TRADINGVIEW_API_KEY",
-    "MT4_MT5_BRIDGE_TOKEN",
-    "NOBLE_TRADER_LICENSE_KEY",
     "NOBLE_TRADER_QUOTE_PROXY_URL",
 )
+_TRADEVIEW_KEYS = (
+    "TRADINGVIEW_API_KEY",
+)
+_METAAPI_KEYS = (
+    "METAAPI_TOKEN",
+    "METAAPI_ACCOUNT_ID",
+)
+_SETUP_REQUIRED_KEYS = _UPSTREAM_KEYS + _TRADEVIEW_KEYS + _METAAPI_KEYS
+
 _PLACEHOLDER_VALUES = {"", "<nt-redis-host>", "redis://<nt-redis-host>:<port>",
                        "<publishable-anon-key>", "<paper-api-key>", "<0x-your-dedicated-trading-wallet>",
-                       "<license-key>", "<quote-proxy-url>"}
+                       "<quote-proxy-url>"}
 
 
 def _env_path() -> Path:
@@ -597,8 +607,8 @@ async def setup_submit(request: Request) -> HTMLResponse:
     # Optional fields (kept only if provided)
     for key in ("MT4_MT5_SOURCE_ID", "MT4_MT5_RELAY_URL",
                 "DISCORD_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                "GITHUB_TOKEN",
-                "HERMES_ADMIN_USERNAME"):
+                "GITHUB_TOKEN", "HERMES_ADMIN_USERNAME",
+                "METAAPI_TOKEN", "METAAPI_ACCOUNT_ID"):
         val = (form.get(key) or "").strip()
         if val:
             updates[key] = val

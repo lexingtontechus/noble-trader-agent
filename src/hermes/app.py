@@ -3508,6 +3508,59 @@ def load_test(ctx: click.Context, duration_sec: int, rate_per_sec: int) -> None:
         sys.exit(1)
 
 
+@cli.command(name="metaapi-demo")
+@click.option("--demo/--live", default=None, help="Switch MetaApi between DEMO (paper) and LIVE modes")
+@click.pass_context
+def metaapi_demo_cmd(ctx: click.Context, demo: bool | None) -> None:
+    """Toggle MetaApi DEMO/LIVE mode.
+
+    Controls whether the MetaApi broker uses its DEMO or LIVE
+    environment. DEMO mode (default) uses simulated money; LIVE mode
+    routes real orders to the broker.
+
+    This setting is persisted to .env as METAAPI_DEMO and also
+    updates the config for the current session.
+
+    Example:
+      platform metaapi-demo --demo      # Switch to paper (DEMO)
+      platform metaapi-demo --live      # Switch to live execution
+      platform metaapi-demo             # Toggle current value
+
+    Note: Changing this while the risk engine is running takes effect
+    on the next broker interaction. The active loop is NOT restarted.
+    """
+    import os
+    from hermes.core.config import load_config, save_config
+
+    config_path = ctx.obj.get("config_path")
+    config = load_config(config_path)
+    setup_logging(
+        level=config.log_level,
+        format=config.logging.get("format", "text"),
+        output=config.logging.get("output", "stdout"),
+        file_path=config.logging.get("file_path"),
+    )
+    # Resolve current value: explicit flag wins, otherwise toggle
+    current = os.getenv("METAAPI_DEMO", "true").lower() in ("1", "true", "yes")
+    new_value = not current if demo is None else demo
+    new_str = "true" if new_value else "false"
+    os.environ["METAAPI_DEMO"] = new_str
+    # Persist to .env
+    from hermes.web.app import _write_env
+    _write_env({"METAAPI_DEMO": new_str})
+    # Update config in-memory for this session
+    config.execution.metaapi.demo = new_value
+    save_config(config_path, config)
+    mode = "DEMO (paper)" if new_value else "LIVE"
+    click.echo(f"  MetaApi mode: {mode}")
+    click.echo(f"  METAAPI_DEMO={new_str} (persisted to .env)")
+    click.echo(f"  Current session updated in-memory")
+    click.echo("")
+    click.echo("  Note: The risk/execute loops continue running with the")
+    click.echo("  previous setting. Restart them (or wait for the watchdog")
+    click.echo("  to relaunch at next 5-min tick) to pick up the new mode.")
+
+
 # === Helpers ===
 
 
