@@ -28,7 +28,7 @@
     </div>
   </div>
 
-  <form method="post" action="/setup" class="space-y-5">
+  <form method="post" action="/setup" id="setupForm" class="space-y-5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <div class="card bg-base-200 shadow-lg">
@@ -37,34 +37,34 @@
 
         <label class="form-control w-full">
           <span class="label-text">Noble Trader Signal Subscription</span>
-          <input type="text" name="NOBLE_TRADER_SIGNAL_USER" placeholder="sub_<32hex> (from your subscription)"
+          <input type="text" name="NOBLE_TRADER_SIGNAL_USER" id="signal_user" placeholder="sub_<32hex> (from your subscription)"
                  class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_SIGNAL_USER', '') }}" required>
           <span class="label-text-alt opacity-50">Your proxy Redis username (format: <code>sub_</code> + 32 hex chars). Provided with your subscription.</span>
         </label>
 
         <label class="form-control w-full">
           <span class="label-text">Noble Trader Signal Password</span>
-          <input type="password" name="NOBLE_TRADER_SIGNAL_PASSWORD" placeholder="from your subscription"
+          <input type="password" name="NOBLE_TRADER_SIGNAL_PASSWORD" id="signal_password" placeholder="from your subscription"
                  class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_SIGNAL_PASSWORD', '') }}" required>
           <span class="label-text-alt opacity-50">Your proxy Redis password. Provided with your subscription.</span>
         </label>
 
         <label class="form-control w-full">
           <span class="label-text">MetaApi Token</span>
-          <input type="password" name="METAAPI_TOKEN" placeholder="your MetaApi token"
+          <input type="password" name="METAAPI_TOKEN" id="metaaapi_token" placeholder="your MetaApi token"
                  class="input input-bordered w-full" value="{{ existing.get('METAAPI_TOKEN', '') }}" required>
           <span class="label-text-alt opacity-50">Token from your broker (MetaApi) for live execution. Replaces MT4/MT5 bridge token.</span>
         </label>
 
         <label class="form-control w-full">
           <span class="label-text">MetaApi Account ID</span>
-          <input type="text" name="METAAPI_ACCOUNT_ID" placeholder="your MetaApi account ID"
+          <input type="text" name="METAAPI_ACCOUNT_ID" id="metaaapi_account_id" placeholder="your MetaApi account ID"
                  class="input input-bordered w-full" value="{{ existing.get('METAAPI_ACCOUNT_ID', '') }}" required>
           <span class="label-text-alt opacity-50">Your MetaApi account identifier for brokerage sync.</span>
         </label>
 
         <div class="card-actions justify-end mt-2">
-          <button type="submit" class="btn btn-primary">Finish setup →</button>
+          <button type="submit" id="finishButton" class="btn btn-primary" disabled>Finish setup →</button>
         </div>
       </div>
     </div>
@@ -150,6 +150,35 @@
 
 
   </form>
+
+  <script>
+    // Form validation - disable submit until all required fields are filled
+    document.addEventListener('DOMContentLoaded', function() {
+      const form = document.getElementById('setupForm');
+      const button = document.getElementById('finishButton');
+      const requiredInputs = form.querySelectorAll('input[required]');
+
+      function validateForm() {
+        let allFilled = true;
+        requiredInputs.forEach(input => {
+          if (!input.value.trim()) {
+            allFilled = false;
+          }
+        });
+        button.disabled = !allFilled;
+        button.classList.toggle('btn-disabled', !allFilled);
+      }
+
+      // Add event listeners to all required inputs
+      requiredInputs.forEach(input => {
+        input.addEventListener('input', validateForm);
+        input.addEventListener('change', validateForm);
+      });
+
+      // Initial validation
+      validateForm();
+    });
+  </script>
 
   <p class="text-center text-xs opacity-40 mt-6">
     After setup this wizard is hidden — your homepage becomes Portfolio. Re-run anytime via <code>noble userguide</code>.
