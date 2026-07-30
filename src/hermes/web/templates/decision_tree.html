@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, empty_state, page_header, decision_tree_viz %}
+
+{% block title %}Talaria Dashboard · Decision Tree{% endblock %}
+
+{% block content %}
+
+{{ page_header(
+    title="Hermes Agent Decision Tree",
+    subtitle="Interactive decision tree — click any branch node to expand / collapse"
+|) }}
+
+{% call card(title="Decision Tree", extra="click any branch node to expand / collapse · thresholds from HermesDecisionTree defaults") %}
+{% if decision_tree and decision_tree.root %}
+<div class="overflow-x-auto py-4">
+  {{ decision_tree_viz(decision_tree.root, depth=0) }}
+</div>
+{% if decision_tree.thresholds %}
+<div class="divider my-2"></div>
+<div class="text-xs opacity-60">
+  <span class="font-semibold">All thresholds (configurable in config/default.yaml):</span>
+  {% for k, v in decision_tree.thresholds.items() %}
+  <code class="ml-2">{{ k }}={{ v }}</code>
+  {% endfor %}
+</div>
+{% endif %}
+{% else %}
+{{ empty_state(message="Decision tree definition not available.", hint="Check /api/agent/decision_tree") }}
+{% endif %}
+{% endcall %}
+
+{% endblock %}

@@ -1448,10 +1448,11 @@ async def optimize_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/agent", response_class=HTMLResponse)
-async def agent_page(request: Request) -> HTMLResponse:
-    """Agent page — shows trade journal + decision tree.
+@app.get("/journal", response_class=HTMLResponse)
+async def journal_page(request: Request) -> HTMLResponse:
+    """Trade Journal page — shows trade journal + decision tree.
 
+    Renamed from /agent to /journal for clarity.
     Phase 1A v10: Hypotheses card removed (hermes_hypotheses table dropped;
     hypothesis is now a per-signal column on trade_postmortem, surfaced via
     `noble journal generate`). See LLM-INTEGRATION-STRATEGY.md §7.
@@ -1470,6 +1471,29 @@ async def agent_page(request: Request) -> HTMLResponse:
             "config_hash": get_config_hash(config),
             "environment": config.environment,
             "journal": journal,
+            "decision_tree": decision_tree,
+        },
+    )
+
+
+@app.get("/decision-tree", response_class=HTMLResponse)
+async def decision_tree_page(request: Request) -> HTMLResponse:
+    """Decision Tree page — standalone view of the Hermes decision tree.
+
+    Moved from /agent as a submenu item under Account.
+    """
+    config = get_config()
+    from hermes.web.status import get_decision_tree_definition
+
+    decision_tree = get_decision_tree_definition()
+
+    return templates.TemplateResponse(
+        request,
+        "decision_tree.html",
+        {
+            "version": __version__,
+            "config_hash": get_config_hash(config),
+            "environment": config.environment,
             "decision_tree": decision_tree,
         },
     )

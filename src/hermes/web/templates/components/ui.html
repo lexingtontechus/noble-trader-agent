@@ -387,15 +387,15 @@ Usage in templates:
      {{ decision_tree_viz(tree_root, depth=0) }}
    =========================================================================== #}
 {% macro decision_tree_viz(node, depth=0, branch_key=None) %}
-<div class="dtree-node flex flex-col items-center">
+<div class="dtree-node">
   {% set branches = node.branches if (node.branches is mapping) else {} %}
   {% set has_branches = branches | length > 0 %}
   {% set color_class = 'dtree-color-' ~ (node.color or 'neutral') %}
 
-  {% if has_branches and depth > 1 %}
-  {# Collapsed by default at depth > 1 (mirrors deprecated TreeNode.tsx:34) #}
+  {% if has_branches and depth > 0 %}
+  {# Collapsed by default at depth > 0 — user clicks to expand #}
   <details class="dtree-collapse">
-    <summary class="flex flex-col items-center">
+    <summary class="flex items-center">
       <span class="dtree-node-button has-branches {{ color_class }}">
         {% if node.icon %}<span class="text-base mr-1">{{ node.icon }}</span>{% endif %}
         <span class="font-semibold text-sm">{{ node.label }}</span>
@@ -412,9 +412,9 @@ Usage in templates:
       {% endif %}
     </summary>
     <div class="dtree-connector"></div>
-    <div class="dtree-branches">
+    <div class="dtree-branches-vertical">
       {% for bk, child in branches.items() %}
-      <div class="dtree-branch">
+      <div class="dtree-branch-vertical">
         <div class="dtree-branch-label">{{ bk }}</div>
         {{ decision_tree_viz(child, depth=depth+1, branch_key=bk) }}
       </div>
@@ -422,28 +422,30 @@ Usage in templates:
     </div>
   </details>
   {% else %}
-  {# Always-visible node (root, depth ≤ 1, or leaf) #}
-  <span class="dtree-node-button {{ color_class }}{% if has_branches %} has-branches{% endif %}">
-    {% if node.icon %}<span class="text-base mr-1">{{ node.icon }}</span>{% endif %}
-    <span class="font-semibold text-sm">{{ node.label }}</span>
-  </span>
-  {% if node.question %}<div class="text-xs opacity-70 mt-1">{{ node.question }}</div>{% endif %}
-  {% if node.thresholds and node.thresholds | length > 0 %}
-  <div class="text-xs font-mono opacity-60 mt-1">
-    {% for k, v in node.thresholds.items() %}<span class="mr-2">{{ k }}={{ v }}</span>{% endfor %}
-  </div>
-  {% endif %}
-  {% if has_branches %}
-  <div class="dtree-connector"></div>
-  <div class="dtree-branches">
-    {% for bk, child in branches.items() %}
-    <div class="dtree-branch">
-      <div class="dtree-branch-label">{{ bk }}</div>
-      {{ decision_tree_viz(child, depth=depth+1, branch_key=bk) }}
+  {# Always-visible node (root or leaf) #}
+  <div class="dtree-node-row">
+    <span class="dtree-node-button {{ color_class }}{% if has_branches %} has-branches{% endif %}">
+      {% if node.icon %}<span class="text-base mr-1">{{ node.icon }}</span>{% endif %}
+      <span class="font-semibold text-sm">{{ node.label }}</span>
+    </span>
+    {% if node.question %}<div class="text-xs opacity-70 mt-1">{{ node.question }}</div>{% endif %}
+    {% if node.thresholds and node.thresholds | length > 0 %}
+    <div class="text-xs font-mono opacity-60 mt-1">
+      {% for k, v in node.thresholds.items() %}<span class="mr-2">{{ k }}={{ v }}</span>{% endfor %}
     </div>
-    {% endfor %}
+    {% endif %}
+    {% if has_branches %}
+    <div class="dtree-connector-vertical"></div>
+    <div class="dtree-branches-vertical">
+      {% for bk, child in branches.items() %}
+      <div class="dtree-branch-vertical">
+        <div class="dtree-branch-label">{{ bk }}</div>
+        {{ decision_tree_viz(child, depth=depth+1, branch_key=bk) }}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
-  {% endif %}
   {% endif %}
 </div>
 {% endmacro %}

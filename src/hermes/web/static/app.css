@@ -97,17 +97,44 @@ pre { tab-size: 2; }
     margin: 0 auto;
 }
 
-/* Horizontal layout for sibling branches */
+/* Vertical layout for decision tree branches */
+.dtree-branches-vertical {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-left: 24px;
+}
+.dtree-branch-vertical {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* Vertical connector line */
+.dtree-connector-vertical {
+    width: 1px;
+    height: 12px;
+    background: oklch(var(--b3));
+    margin: 0 auto;
+}
+
+/* Node row for always-visible nodes */
+.dtree-node-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* Backward compatibility - keep old classes */
 .dtree-branches {
     display: flex;
-    gap: 16px;
-    justify-content: center;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
 }
 .dtree-branch {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
 }
 
 /* <details> disclosure triangle override — hide default marker, we draw our own */
