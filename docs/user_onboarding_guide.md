@@ -82,7 +82,7 @@ It is launched as part of the CLI workflow via:
 
 Flow (this is the **Hermes** step — after platform signup gave you the creds):
 1. On the **platform** site you subscribed and copied your **Noble Trader Redis URL**
-   + **TradingView API key** (and MT4/MT5 bridge token).
+   + **TradingView API key** (and MetaApi token + account ID).
 2. Run `platform setup`; open the printed URL and paste them into the Hermes wizard
    form. The wizard:
    - writes them to `.env` (the secrets backend),
@@ -114,17 +114,27 @@ If you prefer manual setup, copy `.env.example` → `.env` and fill the vars bel
 > there every ~5 min. `trading:config:{symbol}` hashes are a pull snapshot and are
 > **never** used to seed the optimizer.
 
-### 2.3 Brokerage — MT4/MT5 bridge (primary)
+### 2.3 Brokerage — MetaApi (primary)
 
-The user's brokerage is the **MT4/MT5 bridge**: an EA (or `mt5_mcp`) posts heartbeats
-to `bridge_relay.py` → `signal.raw.noble_trader`. Alpaca + Hyperliquid are **deprecated**
-(`enabled: false` in `config/default.yaml`) — kept only for reference/compat.
+The user's brokerage is the **MetaApi** broker. Live execution routes orders
+through the MetaApi cloud connector. The MT4/MT5 bridge is **deprecated**
+(see §6 of `config/default.yaml`).
 
-| Var | Value |
-| --- | --- |
-| `MT4_MT5_BRIDGE_TOKEN` | shared secret the EA/relay uses to authenticate |
-| `MT4_MT5_SOURCE_ID` | (optional) e.g. `mt4_plexytrade` — stamps source attribution |
-| `MT4_MT5_RELAY_URL` | (optional) `http://localhost:9100` — relay HTTP endpoint |
+| Var | Value | Notes |
+| --- | --- | --- |
+| `METAAPI_TOKEN` | MetaApi cloud token | Required for live execution |
+| `METAAPI_ACCOUNT_ID` | MetaApi account ID | Required for brokerage sync |
+| `METAAPI_DEMO` | `true` / `false` | `true` = paper (demo) mode, `false` = live |
+
+Toggle paper vs live mode at any time:
+```bash
+platform metaapi-demo --demo      # Switch to paper (DEMO)
+platform metaapi-demo --live      # Switch to live execution
+platform metaapi-demo             # Toggle current value
+```
+The setting is persisted to `.env` as `METAAPI_DEMO` and also updates the
+live config. Existing risk/execute loops pick up the new setting on their
+next broker interaction (or at the next watchdog relaunch).
 
 ### 2.4 Hermes infra (required)
 | Var | Value |
