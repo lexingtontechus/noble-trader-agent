@@ -2,5 +2,5 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Hermes Dashboard — supplemental styles (works with DaisyUI/Tailwind) */
+/* Talaria Dashboard — supplemental styles (works with DaisyUI/Tailwind) */
 @import "./app.css";

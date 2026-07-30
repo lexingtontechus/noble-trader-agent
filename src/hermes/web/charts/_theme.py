@@ -1,5 +1,5 @@
 """
-Dark-theme matplotlib helpers for the Hermes dashboard.
+Dark-theme matplotlib helpers for the Talaria dashboard.
 
 CRITICAL — backend selection:
     matplotlib's default backend depends on the OS:

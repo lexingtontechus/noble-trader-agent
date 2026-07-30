@@ -1,4 +1,4 @@
-// Hermes Dashboard — auto-refresh and small interactions
+// Talaria Dashboard — auto-refresh and small interactions
 
 // Auto-refresh the page every 10 seconds (status + heartbeats)
 // Only on pages that have the auto-refresh meta tag

@@ -1,5 +1,5 @@
 """
-Local-agent-rendered matplotlib chart package for the Hermes dashboard.
+Local-agent-rendered matplotlib chart package for the Talaria dashboard.
 
 All chart PNGs served from /api/charts/*.png are rendered here by the local
 hermes agent FastAPI process (NOT a remote cloud server). The matplotlib Agg

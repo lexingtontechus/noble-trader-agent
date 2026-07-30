@@ -1,4 +1,4 @@
-/* Hermes Dashboard — client-side charting.
+/* Talaria Dashboard — client-side charting.
  *
  * Self-hosted uPlot (vendored in static/uplot.iife.min.js). No CDN, works offline,
  * passes the strict CSP in app.py (script-src 'self').
