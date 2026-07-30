@@ -36,10 +36,17 @@
         <h2 class="card-title text-lg">Required — paste what you copied from your plan</h2>
 
         <label class="form-control w-full">
-          <span class="label-text">Noble Trader Redis URL</span>
-          <input type="text" name="NOBLE_TRADER_PROXY_REDIS_URL" placeholder="redis://&lt;nt-proxy-redis-host&gt;:&lt;port&gt;"
-                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_PROXY_REDIS_URL', '') }}" required>
-          <span class="label-text-alt opacity-50">From your subscription — the real-time signal stream. <a href="#" class="link link-primary text-xs">Learn more</a></span>
+          <span class="label-text">Noble Trader Signal Subscription</span>
+          <input type="text" name="NOBLE_TRADER_SIGNAL_USER" placeholder="sub_<32hex> (from your subscription)"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_SIGNAL_USER', '') }}" required>
+          <span class="label-text-alt opacity-50">Your proxy Redis username (format: <code>sub_</code> + 32 hex chars). Provided with your subscription.</span>
+        </label>
+
+        <label class="form-control w-full">
+          <span class="label-text">Noble Trader Signal Password</span>
+          <input type="password" name="NOBLE_TRADER_SIGNAL_PASSWORD" placeholder="from your subscription"
+                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_SIGNAL_PASSWORD', '') }}" required>
+          <span class="label-text-alt opacity-50">Your proxy Redis password. Provided with your subscription.</span>
         </label>
 
         <label class="form-control w-full">
@@ -54,26 +61,6 @@
           <input type="text" name="METAAPI_ACCOUNT_ID" placeholder="your MetaApi account ID"
                  class="input input-bordered w-full" value="{{ existing.get('METAAPI_ACCOUNT_ID', '') }}" required>
           <span class="label-text-alt opacity-50">Your MetaApi account identifier for brokerage sync.</span>
-        </label>
-
-        <label class="form-control w-full">
-          <span class="label-text">Noble Trader License Key</span>
-          <input type="password" name="NOBLE_TRADER_LICENSE_KEY" placeholder="pp_<32hex> or ss_<32hex>"
-                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_LICENSE_KEY', '') }}" required>
-          <span class="label-text-alt opacity-50">
-            Issued by your subscription. Format: <code>pp_</code> (Precision Pro) or <code>ss_</code> (Signal Scout)
-            followed by 32 hex chars. Authenticates against the quote proxy. Do NOT share — bound to your account.
-          </span>
-        </label>
-
-        <label class="form-control w-full">
-          <span class="label-text">Quote Proxy URL</span>
-          <input type="text" name="NOBLE_TRADER_QUOTE_PROXY_URL" placeholder="https://noble-trader-proxy.up.railway.app"
-                 class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_QUOTE_PROXY_URL', '') }}" required>
-          <span class="label-text-alt opacity-50">
-            The Railway-hosted noble-trader-proxy endpoint. Provides plan-filtered, license-gated quotes.
-            Same URL for all subscribers — the proxy routes by your license key.
-          </span>
         </label>
 
         <div class="card-actions justify-end mt-2">
