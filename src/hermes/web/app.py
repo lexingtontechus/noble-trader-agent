@@ -1168,62 +1168,12 @@ async def api_monitor_events(limit: int = 50, _auth: dict[str, Any] = Depends(re
     )
 
 
+# Deprecated - signals page removed, use /journal (Trade Journal) instead
 @app.get("/signals", response_class=HTMLResponse)
 async def signals_page(request: Request) -> HTMLResponse:
-    """Blended signals page — shows L4 output (entry/execution decisions)."""
-    config = get_config()
-    from hermes.web.status import get_recent_blended_signals
-
-    signals = get_recent_blended_signals(config, limit=100)
-
-    # UX-UNIFORMITY-2 (delta/live wiring): mirror the /heartbeats route's
-    # computation so the kelly_badge on this page can show the same delta
-    # arrow + live pulse. Signals are emitted only when entry conditions
-    # fire (much rarer than heartbeats), so:
-    #   - is_live = signal was emitted within last 60s (very fresh)
-    #   - kelly_delta = change in nt_effective_kelly vs prior signal for
-    #     the SAME symbol — answers "is sizing ramping up or down?"
-    now = datetime.datetime.now(datetime.timezone.utc)
-    _prior_kelly_sig: dict[str, float | None] = {}
-    # signals is DESC by ts_emitted — iterate oldest→newest to compute deltas
-    for s in reversed(signals):
-        sym = s.get("symbol")
-        cur = s.get("nt_effective_kelly")
-        prev = _prior_kelly_sig.get(sym)
-        try:
-            if prev is not None and cur is not None:
-                s["kelly_delta"] = float(cur) - float(prev)
-            else:
-                s["kelly_delta"] = None
-        except Exception:
-            s["kelly_delta"] = None
-        if cur is not None:
-            _prior_kelly_sig[sym] = cur
-
-        _te = s.get("ts_emitted")
-        try:
-            if _te is not None:
-                _te_aware = _te.to_pydatetime().astimezone(datetime.timezone.utc) if hasattr(_te, "to_pydatetime") else _te
-                if _te_aware.tzinfo is None:
-                    _te_aware = _te_aware.replace(tzinfo=datetime.timezone.utc)
-                s["is_live"] = 0 <= (now - _te_aware).total_seconds() <= 60
-            else:
-                s["is_live"] = False
-        except Exception:
-            s["is_live"] = False
-
-    return templates.TemplateResponse(
-        request,
-        "signals.html",
-        {
-            "version": __version__,
-            "config_hash": get_config_hash(config),
-            "environment": config.environment,
-            "signals": signals,
-            "strip_data": _build_regime_strip(config),
-            "show_regime_strip": True,
-        },
-    )
+    """Deprecated — redirects to /journal (Trade Journal)."""
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url="/journal", status_code=301)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)

@@ -8,7 +8,6 @@
 {% set path = request.url.path %}
 <li><a href="/portfolio" class="{% if path == '/portfolio' %}active{% endif %}">Portfolio</a></li>
 <li><a href="/market" class="{% if path.startswith('/market') %}active{% endif %}">Market</a></li>
-<li><a href="/signals" class="{% if path == '/signals' %}active{% endif %}">Signals</a></li>
 <li><a href="/heartbeats" class="{% if path == '/heartbeats' %}active{% endif %}">Heartbeats</a></li>
 <li><a href="/orders" class="{% if path == '/orders' %}active{% endif %}">Orders</a></li>
 <li><a href="/pnl" class="{% if path == '/pnl' %}active{% endif %}">PnL</a></li>
