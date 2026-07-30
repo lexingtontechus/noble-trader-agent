@@ -39,21 +39,21 @@
           <span class="label-text">Noble Trader Redis URL</span>
           <input type="text" name="NOBLE_TRADER_PROXY_REDIS_URL" placeholder="redis://&lt;nt-proxy-redis-host&gt;:&lt;port&gt;"
                  class="input input-bordered w-full" value="{{ existing.get('NOBLE_TRADER_PROXY_REDIS_URL', '') }}" required>
-          <span class="label-text-alt opacity-50">From your subscription — the real-time signal stream.</span>
+          <span class="label-text-alt opacity-50">From your subscription — the real-time signal stream. <a href="#" class="link link-primary text-xs">Learn more</a></span>
         </label>
 
         <label class="form-control w-full">
-          <span class="label-text">TradingView API Key (RapidAPI)</span>
-          <input type="password" name="TRADINGVIEW_API_KEY" placeholder="your RapidAPI key"
-                 class="input input-bordered w-full" value="{{ existing.get('TRADINGVIEW_API_KEY', '') }}" required>
-          <span class="label-text-alt opacity-50">Price data for crypto / forex / stocks / commodities.</span>
+          <span class="label-text">MetaApi Token</span>
+          <input type="password" name="METAAPI_TOKEN" placeholder="your MetaApi token"
+                 class="input input-bordered w-full" value="{{ existing.get('METAAPI_TOKEN', '') }}" required>
+          <span class="label-text-alt opacity-50">Token from your broker (MetaApi) for live execution. Replaces MT4/MT5 bridge token.</span>
         </label>
 
         <label class="form-control w-full">
-          <span class="label-text">MT4/MT5 Bridge Token</span>
-          <input type="password" name="MT4_MT5_BRIDGE_TOKEN" placeholder="shared secret from bridge_relay"
-                 class="input input-bordered w-full" value="{{ existing.get('MT4_MT5_BRIDGE_TOKEN', '') }}" required>
-          <span class="label-text-alt opacity-50">Your brokerage is the MT4/MT5 bridge (Alpaca/HL deprecated).</span>
+          <span class="label-text">MetaApi Account ID</span>
+          <input type="text" name="METAAPI_ACCOUNT_ID" placeholder="your MetaApi account ID"
+                 class="input input-bordered w-full" value="{{ existing.get('METAAPI_ACCOUNT_ID', '') }}" required>
+          <span class="label-text-alt opacity-50">Your MetaApi account identifier for brokerage sync.</span>
         </label>
 
         <label class="form-control w-full">
@@ -75,9 +75,14 @@
             Same URL for all subscribers — the proxy routes by your license key.
           </span>
         </label>
+
+        <div class="card-actions justify-end mt-2">
+          <button type="submit" class="btn btn-primary">Finish setup →</button>
+        </div>
       </div>
     </div>
 
+    {# Deprecated - notifications via Hermes agent message channels
     <div class="card bg-base-200 shadow-lg">
       <div class="card-body">
         <h2 class="card-title text-lg">Optional</h2>
@@ -140,22 +145,23 @@
         </label>
       </div>
     </div>
-
+    #}
+    {# Deprecated - internal auth secrets not required
     <div class="card bg-base-200 shadow-lg">
-      <div class="card-body">
-        <h2 class="card-title text-lg">Auto-generated (no need to edit)</h2>
-        <p class="opacity-60 text-sm">These session/auth secrets are generated for you and saved to <code>.env</code>.</p>
-        <ul class="text-sm opacity-80 space-y-1 mt-2">
-          <li>• HERMES_SESSION_SECRET: <code>{{ generated.get('HERMES_SESSION_SECRET', '')[:12] }}…</code></li>
-          <li>• HERMES_ADMIN_PASSWORD: <code>{{ generated.get('HERMES_ADMIN_PASSWORD', '')[:12] }}…</code></li>
-          <li>• HERMES_AGENT_TOKEN: <code>{{ generated.get('HERMES_AGENT_TOKEN', '')[:12] }}…</code></li>
-        </ul>
+        <div class="card-body">
+          <h2 class="card-title text-lg">Auto-generated (no need to edit)</h2>
+          <p class="opacity-60 text-sm">These session/auth secrets are generated for you and saved to <code>.env</code>.</p>
+          <ul class="text-sm opacity-80 space-y-1 mt-2">
+            <li>• HERMES_SESSION_SECRET: <code>{{ generated.get('HERMES_SESSION_SECRET', '')[:12] }}…</code></li>
+            <li>• HERMES_ADMIN_PASSWORD: <code>{{ generated.get('HERMES_ADMIN_PASSWORD', '')[:12] }}…</code></li>
+            <li>• HERMES_AGENT_TOKEN: <code>{{ generated.get('HERMES_AGENT_TOKEN', '')[:12] }}…</code></li>
+          </ul>
+
       </div>
     </div>
+    #}
 
-    <div class="card-actions justify-end">
-      <button type="submit" class="btn btn-primary">Finish setup →</button>
-    </div>
+
   </form>
 
   <p class="text-center text-xs opacity-40 mt-6">
