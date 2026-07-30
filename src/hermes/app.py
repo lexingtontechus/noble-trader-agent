@@ -1167,7 +1167,8 @@ def setup(ctx: click.Context, host: str, port: int, print_url: bool) -> None:
             click.echo("  Required (paste what you copied from your subscription):")
             click.echo("    • NOBLE_TRADER_REDIS_URL   — real-time signal stream")
             click.echo("    • TRADINGVIEW_API_KEY      — price data (RapidAPI)")
-            click.echo("    • MT4_MT5_BRIDGE_TOKEN     — your brokerage bridge secret")
+            click.echo("    • METAAPI_TOKEN            — MetaApi cloud token")
+            click.echo("    • METAAPI_ACCOUNT_ID       — MetaApi account ID")
             click.echo("  Optional: MT4_MT5_SOURCE_ID, MT4_MT5_RELAY_URL, Discord/Telegram webhook.")
             return
 
