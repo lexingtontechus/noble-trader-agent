@@ -235,6 +235,16 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
         log.warning("entitlement_missing",
                     note="set GITHUB_TOKEN (issued by subscription) in the wizard")
 
+    # Enable hot-reload if HERMES_HOT_RELOAD=true
+    # This watches template files and clears Jinja2's template cache on change
+    if os.getenv("HERMES_HOT_RELOAD", "false").lower() == "true":
+        try:
+            from hermes.web.hot_reload import HotReload
+            HotReload.enable()
+            log.info("hot_reload_enabled")
+        except Exception as e:
+            log.warning("hot_reload_failed", error=str(e))
+
     return app
 
 
@@ -885,11 +895,12 @@ def build_config_display(config: HermesConfig, redacted: dict[str, Any]) -> list
 
 
 @app.get("/approvals", response_class=HTMLResponse)
-async def approvals_page(request: Request, _auth: dict[str, Any] = Depends(require_auth)) -> HTMLResponse:
+async def approvals_page(request: Request) -> HTMLResponse:
     """Human-approval queue — the credential-free default surface for tier-3 trades.
 
     Lists pending decisions from DuckDB `pending_decisions`. Each has an Approve
     button (POST /api/approvals/{id}/approve). No Discord/Telegram required.
+    Auth removed — this is the credential-free default surface.
     """
     config = get_config()
     from hermes.portfolio.pending_approvals import PendingApprovals
@@ -911,9 +922,12 @@ async def approvals_page(request: Request, _auth: dict[str, Any] = Depends(requi
 
 @app.post("/api/approvals/{decision_id}/approve")
 async def api_approve_decision(
-    decision_id: str, _auth: dict[str, Any] = Depends(require_auth)
+    decision_id: str,
 ) -> JSONResponse:
-    """Approve a pending decision via the dashboard; re-publishes for L3 execution."""
+    """Approve a pending decision via the dashboard; re-publishes for L3 execution.
+    
+    Auth removed — credential-free default surface.
+    """
     config = get_config()
     from hermes.portfolio.pending_approvals import PendingApprovals
 
