@@ -1,0 +1,174 @@
+# System Endpoints — Codebase-defined infrastructure URLs and settings
+# These are system variables that change when infrastructure is updated
+# DO NOT edit these for tenant-specific needs — use config/user.local.yaml instead
+
+# Noble Trader Upstream — Signal ingestion
+# Updated when backend or proxy infrastructure changes
+upstream:
+  noble_trader:
+    redis:
+      # Stream names - updated if backend changes stream naming
+      channel: signal.raw.noble_trader
+      signal_source: proxy
+      proxy_channel: signal.proxy.noble_trader
+      consumer_group: noble-1
+      staleness_ms: 30000
+
+    # Noble Trader Proxy — Quote cache endpoint
+    # Updated when proxy is redeployed or migrated to new infrastructure
+    quote_proxy:
+      url: https://noble-trader-proxy-production.up.railway.app
+      timeout_sec: 5
+      fallback_to_metaapi: true
+      fallback_to_tvda: false
+      poll_intervals:
+        hot: 5      # symbol has a fresh signal (< 5s old)
+        warm: 15    # signal 5-15s old
+        cold: 60    # signal 15-60s old
+        stale: 300  # signal older than COLD_TTL — poll less aggressively
+
+    heartbeat:
+      signal_drought_alert_sec: 14400
+      proxy_heartbeat_timeout_sec: 480
+      sse_liveness_timeout_sec: 90
+      proxy_delivery_table: proxy_delivery_log
+      signal_cooldown_minutes: 60
+
+    supabase:
+      # Table names - updated if schema changes
+      url: secret:supabase.url
+      anon_key: secret:supabase.anon_key
+      sweep_result_table: nt_sweep_result
+      regime_log_table: nt_regime_log
+      backfill_on_startup: true
+      backfill_lookback_days: 365
+      nt_symbol_table: nt_symbol
+      nt_symbol_cache_ttl_sec: 300
+
+    license_key: secret:noble_trader.license_key
+
+# TradingView Data API — Price data source
+# Updated when RapidAPI plan changes or API host migrates
+tradingview:
+  base_url: https://tradingview-data1.p.rapidapi.com
+  api_host: tradingview-data1.p.rapidapi.com
+  ws_url_template: wss://ws.tradingviewapi.com/ws?token={token}
+  ws_plan: ultra
+  ws_mode: on_demand
+  ws_schedule: use_active_hours
+  rest_fallback_interval_sec: 60
+  active_ws_ttl_sec: 300
+
+# Venue API Hosts — External service endpoints
+# Updated when venue API endpoints change
+venues:
+  alpaca:
+    enabled: false   # DEPRECATED — brokerage is now the MT4/MT5 bridge
+    asset_classes:
+    - crypto
+    - equities
+    - commodities
+    credentials:
+      api_key: secret:alpaca.api_key
+      api_secret: secret:alpaca.api_secret
+      base_url: secret:alpaca.base_url
+      data_url: secret:alpaca.data_url
+    rate_limit_per_min: 200
+    data_modes:
+      live: true
+      historical: true
+    features:
+      forex: false
+      options: false
+      shorting: true
+      leverage: 4.0
+      crypto_24_7: true
+      crypto_pairs:
+      - BTC/USD
+      - SOL/USD
+      - ETH/USD
+      - LTC/USD
+      - BCH/USD
+
+  hyperliquid:
+    enabled: false   # DEPRECATED — brokerage is now the MT4/MT5 bridge
+    asset_classes:
+    - crypto
+    api_url: https://api.hyperliquid.xyz
+    credentials:
+      wallet_address: secret:hyperliquid.wallet_address
+      private_key: secret:hyperliquid.private_key
+      vault_address: secret:hyperliquid.vault_address
+    rate_limit_per_min: 1200
+    data_modes:
+      live: true
+      historical: true
+    features:
+      perps: true
+      spot: true
+      funding: true
+      post_only: true
+      reduce_only: true
+      max_leverage: 5.0
+
+  tradingview:
+    enabled: true
+    asset_classes:
+    - crypto
+    - forex
+    - equities
+    - commodities
+    api_url: https://tradingview-data1.p.rapidapi.com
+    api_host: tradingview-data1.p.rapidapi.com
+    credentials:
+      api_key: secret:tradingview.api_key
+    rate_limit_per_min: 300
+    data_modes:
+      live: true
+      historical: true
+    features:
+      venue_agnostic: true
+      source: tradingviewapi_com
+      use_websocket: true
+      poll_interval_sec: 5
+      max_retries: 3
+      ws_plan: ultra
+      ws_mode: on_demand
+      ws_schedule: use_active_hours
+      rest_fallback_interval_sec: 60
+      active_ws_ttl_sec: 300
+
+  mt4_mt5:
+    # DEPRECATED (2026-07-27): live execution moved to MetaApi
+    enabled: false
+    asset_classes:
+    - crypto
+    - forex
+    - equities
+    - commodities
+    credentials:
+      bridge_token: secret:mt4_mt5_bridge_token
+      source_id: secret:mt4_mt5_source_id
+      relay_url: secret:mt4_mt5_relay_url
+    rate_limit_per_min: 600
+    data_modes:
+      live: true
+      historical: true
+    features:
+      ea_signals: true
+      venue_agnostic: true
+      symbol_qualifier: true
+      supported_exchanges:
+      - COINBASE
+      - BINANCE
+      - MT4
+      - MT5
+
+# Infrastructure — Internal service endpoints
+# Updated when local infrastructure changes
+infrastructure:
+  hermes_redis:
+    default_url: redis://localhost:6379/1
+
+  duckdb:
+    default_path: ./data/hermes.duckdb

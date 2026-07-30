@@ -1,0 +1,66 @@
+# User Configuration Template
+# Copy this file to user.local.yaml and customize for your deployment
+# This file is git-ignored and contains tenant-specific overrides
+
+# ============================================================================
+# Portfolio Configuration
+# ============================================================================
+portfolio:
+  target_allocation:
+    crypto: 0.7
+    equities: 0.15
+    commodities: 0.0
+    forex: 0.15
+  rebalance_threshold_drift_pct: 0.1
+  rebalance_frequency: on_drift
+  rebalance_method: threshold
+  start_smart: true
+  initial_symbols:
+  - symbol: BTC/USD
+    venue: alpaca
+    asset_class: crypto
+  - symbol: BTC-PERP
+    venue: hyperliquid
+    asset_class: crypto
+  - symbol: ETH-PERP
+    venue: hyperliquid
+    asset_class: crypto
+
+# ============================================================================
+# Venue Enablement
+# ============================================================================
+# Set enabled: true for venues you want to use
+venues:
+  alpaca:
+    enabled: false
+  hyperliquid:
+    enabled: false
+  mt4_mt5:
+    enabled: true
+
+# ============================================================================
+# Execution Settings
+# ============================================================================
+execution:
+  mode: paper  # paper | live
+
+# ============================================================================
+# Notification Channels
+# ============================================================================
+# Enable notification channels and set webhook URLs in .env
+notifications:
+  discord:
+    enabled: false
+  telegram:
+    enabled: false
+
+# ============================================================================
+# Active Hours
+# ============================================================================
+# Timezone determines when stock sessions are active
+active_hours:
+  timezone: America/Los_Angeles
+  start: 09:30
+  end: '16:00'
+  crypto_24_7: true
+  degrade_outside_hours: true

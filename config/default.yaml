@@ -115,14 +115,14 @@ venues:
     features:
       venue_agnostic: true
       source: tradingviewapi_com
-      api_url: https://tradingview-data1.p.rapidapi.com
-      api_host: tradingview-data1.p.rapidapi.com
+      # URL configuration moved to config/system_endpoints.yaml
+      # api_url, api_host, ws_url are resolved from system config
       # Real-time streaming (Ultra/Mega plans). When true the adapter opens a
       # single persistent WebSocket (wss://ws.tradingviewapi.com/ws?token=KEY)
       # and pushes quotes — zero REST budget burned. Falls back to REST polling
       # if the WS is unavailable or the plan has no WS entitlement.
       use_websocket: true
-      ws_url: wss://ws.tradingviewapi.com/ws?token={token}
+      # ws_url configured via system_endpoints.yaml
       poll_interval_sec: 5
       max_retries: 3
       # --- WS plan + scheduling (signal-gated by default; no user setup needed) ---
@@ -217,31 +217,13 @@ upstream:
     # in Supabase; the proxy validates it via the license-validate Edge Function.
     license_key: secret:noble_trader.license_key
     # noble-trader-proxy — read-only quote cache deployed on Railway.
+    # URL and all settings moved to config/system_endpoints.yaml
     # The agent polls /quotes for cached signal snapshots instead of (or in
     # addition to) calling TVDA directly. This decouples the agent from
     # TradingView API rate limits and gives plan-filtered access.
-    quote_proxy:
-      url: https://noble-trader-proxy-production.up.railway.app
-      # HTTP timeout for /quotes calls. The proxy responds from in-memory cache
-      # (no Redis on request path), so this should be fast.
-      timeout_sec: 5
-      # True-data fallback chain when the proxy is unreachable/5xx: use the
-      # MetaApi account's own market/historical data (per-account CPU credits)
-      # instead of TradingView direct. When false, proxy unavailability is a
-      # hard failure (safer for paid-product gating). Replaces the deprecated
-      # `fallback_to_tvda` (TVDA-direct was rate-limited + costly).
-      fallback_to_metaapi: true
-      # Deprecated alias — kept for back-compat. If set, it overrides
-      # fallback_to_metaapi only when fallback_to_metaapi is absent.
-      fallback_to_tvda: false
-      # Polling cadence per urgency tier (seconds). MUST match the proxy's
-      # HOT/WARM/COLD TTLs so the agent doesn't poll faster than the proxy
-      # can refresh. Mismatches cause redundant calls.
-      poll_intervals:
-        hot: 5      # symbol has a fresh signal (< 5s old)
-        warm: 15    # signal 5-15s old
-        cold: 60    # signal 15-60s old
-        stale: 300  # signal older than COLD_TTL — poll less aggressively
+    # Note: timeout_sec, fallback_to_metaapi, poll_intervals are also in
+    # system_endpoints.yaml — updating system_endpoints.yaml is the
+    # canonical way to change these values when proxy infrastructure changes.
 data_sources:
   policy: venue_native_only
   prohibited_sources:

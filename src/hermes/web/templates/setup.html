@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Onboarding · Hermes{% endblock %}
+{% block title %}Onboarding · Talaria{% endblock %}
 {% block content %}
 <div class="max-w-2xl mx-auto">
   <div class="text-center mb-6">
-    <h1 class="text-3xl font-bold">Welcome to Hermes</h1>
+    <h1 class="text-3xl font-bold">Welcome to Talaria</h1>
+        <h2 class="text-3xl font-bold">By Noble Trader</h2>
     <p class="opacity-60 mt-2">A few details and your account is live — constrained to <span class="badge badge-info badge-sm">cold-start</span> until it earns its way out.</p>
   </div>
 
@@ -12,6 +13,20 @@
     <span>{{ error }}</span>
   </div>
   {% endif %}
+
+  <div class="card bg-base-200 shadow-lg">
+    <div class="card-body">
+      <h2 class="card-title text-lg">Cold-start Guardrails (AUTOMATIC)</h2>
+      <p class="opacity-60 text-sm">Your new account is constrained until it earns its way out
+        (≥{{ cold_start.get('exit_after_n_trades', 20) }} closed trades <b>and</b> positive expectancy).</p>
+      <ul class="text-sm opacity-80 space-y-1 mt-2">
+        <li>• Max <b>${{ "{:,}".format(cold_start.get('tier1_max_notional', 100)) }}</b> notional per trade</li>
+        <li>• Max <b>{{ "{:.1f}".format(cold_start.get('tier1_max_position_pct', 0.002) * 100) }}%</b> of equity per position</li>
+        <li>• ≤ <b>{{ cold_start.get('max_new_positions', 3) }}</b> concurrent new positions</li>
+        <li>• ≤ <b>{{ "{:.0f}".format(cold_start.get('max_new_exposure_pct', 0.05) * 100) }}%</b> total new exposure</li>
+      </ul>
+    </div>
+  </div>
 
   <form method="post" action="/setup" class="space-y-5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -134,20 +149,6 @@
           <li>• HERMES_SESSION_SECRET: <code>{{ generated.get('HERMES_SESSION_SECRET', '')[:12] }}…</code></li>
           <li>• HERMES_ADMIN_PASSWORD: <code>{{ generated.get('HERMES_ADMIN_PASSWORD', '')[:12] }}…</code></li>
           <li>• HERMES_AGENT_TOKEN: <code>{{ generated.get('HERMES_AGENT_TOKEN', '')[:12] }}…</code></li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="card bg-base-200 shadow-lg">
-      <div class="card-body">
-        <h2 class="card-title text-lg">Cold-start guardrails (automatic)</h2>
-        <p class="opacity-60 text-sm">Your new account is constrained until it earns its way out
-          (≥{{ cold_start.get('exit_after_n_trades', 20) }} closed trades <b>and</b> positive expectancy).</p>
-        <ul class="text-sm opacity-80 space-y-1 mt-2">
-          <li>• Max <b>${{ "{:,}".format(cold_start.get('tier1_max_notional', 100)) }}</b> notional per trade</li>
-          <li>• Max <b>{{ "{:.1f}".format(cold_start.get('tier1_max_position_pct', 0.002) * 100) }}%</b> of equity per position</li>
-          <li>• ≤ <b>{{ cold_start.get('max_new_positions', 3) }}</b> concurrent new positions</li>
-          <li>• ≤ <b>{{ "{:.0f}".format(cold_start.get('max_new_exposure_pct', 0.05) * 100) }}%</b> total new exposure</li>
         </ul>
       </div>
     </div>

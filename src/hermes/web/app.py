@@ -109,26 +109,26 @@ def safe_json(payload: Any) -> Any:
 async def security_headers_middleware(request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
-    
+
     # Prevent clickjacking
     response.headers["X-Frame-Options"] = "DENY"
-    
+
     # Prevent MIME type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
-    
+
     # Enable XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    
+
     # Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    
+
     # Content Security Policy
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
-    
+
     # Strict Transport Security (HSTS) - only for HTTPS
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-    
+
     return response
 
 # Paths
@@ -184,7 +184,7 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
     # SessionMiddleware must be added BEFORE any route that uses request.session.
     # Max age defaults to 24h; can be overridden via config.
     max_age = auth_cfg.get("session_max_age_sec", 86400) if isinstance(auth_cfg, dict) else 86400
-    
+
     # Validate session secret is configured
     if not session_secret or session_secret == "dev-only-secret-change-me":
         raise RuntimeError(
@@ -192,7 +192,7 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
             "Set it in .env or config/default.yaml → auth.session_secret. "
             "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
         )
-    
+
     app.add_middleware(
         SessionMiddleware,
         secret_key=session_secret,
@@ -200,20 +200,20 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
         same_site="strict",     # cookie only sent on same-site requests
         https_only=True,        # Always require HTTPS for session cookies in production
     )
-    
+
     # Add security headers middleware
     app.add_middleware(
         BaseHTTPMiddleware,
         dispatch=security_headers_middleware
     )
-    
+
     # Add rate limiting middleware
     # Rate limits are enforced per-endpoint with venue-specific limits from config
     app.add_middleware(
         RateLimitMiddleware,
         config=config
     )
-    
+
     # CSRF protection middleware - disabled for debugging
     # Tokens are required for all state-changing requests (POST, PUT, DELETE, PATCH)
     # Tokens are validated against the session and must match
@@ -258,7 +258,7 @@ def _get_auth_settings() -> dict[str, Any]:
     auth_cfg = getattr(cfg, "auth", {}) or {}
     if not isinstance(auth_cfg, dict):
         auth_cfg = {}
-    
+
     # Extract credentials from config or secrets
     admin_username = (
         auth_cfg.get("admin_username")
@@ -273,7 +273,7 @@ def _get_auth_settings() -> dict[str, Any]:
         or get_secret_or_none("hermes.agent_token")
         or ""
     )
-    
+
     # Validate required credentials
     if not admin_username:
         raise RuntimeError(
@@ -286,19 +286,19 @@ def _get_auth_settings() -> dict[str, Any]:
             "Set it in .env or config/default.yaml → auth.admin_password. "
             "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
         )
-    
+
     # Validate password strength
     if len(admin_password) < 8:
         raise RuntimeError(
             f"HERMES_ADMIN_PASSWORD must be at least 8 characters (got {len(admin_password)})"
         )
-    
+
     # Prevent default credentials
     if admin_username.lower() == "admin" and admin_password == "change-me":
         raise RuntimeError(
             "Default credentials detected. Please set unique HERMES_ADMIN_USERNAME and HERMES_ADMIN_PASSWORD"
         )
-    
+
     return {
         "enabled": auth_cfg.get("enabled", True),
         "admin_username": admin_username,
@@ -357,7 +357,7 @@ async def auth_login(request: Request) -> JSONResponse:
     try:
         # Try to get the request ID for logging
         request_id = getattr(request.state, 'request_id', 'no-id')
-        
+
         settings = _get_auth_settings()
         try:
             body = await request.json()
@@ -366,7 +366,7 @@ async def auth_login(request: Request) -> JSONResponse:
 
         username = body.get("username", "")
         password = body.get("password", "")
-        
+
         if not username or not password:
             return JSONResponse({"error": "username and password are required"}, status_code=400)
 
@@ -375,15 +375,15 @@ async def auth_login(request: Request) -> JSONResponse:
 
         # Constant-time comparison on username to prevent enumeration
         user_ok = hmac.compare_digest(username, settings["admin_username"])
-        
+
         # Log username check
         log.debug("auth_username_check", request_id=request_id, user_ok=user_ok, expected_username=settings["admin_username"][:3] + "*" * (len(settings["admin_username"]) - 3) if len(settings["admin_username"]) > 3 else "***")
-        
+
         # Verify password against hash using proper password verification
         from hermes.security.password_utils import verify_password
         pass_ok = verify_password(password, settings["admin_password"]) if settings["admin_password"] else False
-        
-                
+
+
         # Log password check (without revealing password)
         log.debug("auth_password_check", request_id=request_id, pass_ok=pass_ok, has_password=len(password) > 0)
 
@@ -397,7 +397,7 @@ async def auth_login(request: Request) -> JSONResponse:
         request.session["user"] = {"username": username, "role": "admin"}
         log.info("auth_login_ok", request_id=request_id, username=username[:3] + "*" * (len(username) - 3) if len(username) > 3 else "***", ip=request.client.host if request.client else "?")
         return JSONResponse({"ok": True, "user": {"username": username, "role": "admin"}})
-        
+
     except Exception as e:
         # Log the error for debugging
         log.error("auth_login_error", error=str(e), exc_info=True)
@@ -1266,44 +1266,44 @@ async def validate_redis_credentials(
     _auth: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
     """Validate Redis credentials and plan subscription.
-    
+
     Fetches credentials from Supabase redis_credentials table, validates
     the subscription status, and returns the stream name for the agent to use.
     """
     body = await request.json()
     user_id = body.get("user_id", "")
     redis_url = body.get("redis_url", "")
-    
+
     if not user_id:
         return JSONResponse(
             {"valid": False, "error": "user_id is required"},
             status_code=400,
         )
-    
+
     from hermes.core.credentials_validator import (
         parse_redis_url,
         extract_plan_prefix,
         validate_plan_prefix,
         get_stream_name,
     )
-    
+
     # Parse provided Redis URL
     parsed = parse_redis_url(redis_url) if redis_url else {}
-    
+
     # Extract plan prefix from URL (supports both legacy and new formats)
     plan_prefix = extract_plan_prefix(parsed.get("username", ""))
-    
+
     # If not in URL, try from config
     if not plan_prefix:
         config = get_config()
         plan_prefix = config.upstream.get("noble_trader", {}).get("plan_prefix")
-    
+
     # Validate plan prefix
     is_valid_plan, plan_error = validate_plan_prefix(plan_prefix)
-    
+
     # Get stream name
     stream_name = get_stream_name(plan_prefix)
-    
+
     result = {
         "valid": is_valid_plan,
         "plan_prefix": plan_prefix,
@@ -1311,7 +1311,7 @@ async def validate_redis_credentials(
         "redis_url": redis_url if redis_url else None,
         "error": plan_error if not is_valid_plan else None,
     }
-    
+
     return JSONResponse(result)
 
 
@@ -1669,7 +1669,7 @@ async def api_risk_decisions(limit: int = 50, _auth: dict[str, Any] = Depends(re
 @app.get("/api/signals")
 async def api_signals(limit: int = 50) -> JSONResponse:
     """JSON blended signals endpoint.
-    
+
     DEPRECATED (2026-07-28): Auth requirement removed - this is now a public
     read-only endpoint. For authenticated access, use /api/ endpoints with
     proper credentials.
@@ -1857,17 +1857,17 @@ async def get_csrf_token_endpoint(
     _auth: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
     """Get a fresh CSRF token for form submissions.
-    
+
     Returns a new CSRF token that should be included in POST/PUT/DELETE requests.
     The token is tied to the current session and expires after 1 hour.
     """
     from hermes.web.csrf import get_csrf_token as csrf_generate
-    
+
     # Get session ID from request
     session_id = _get_session_id(request)
     if not session_id:
         return JSONResponse({"error": "No session found"}, status_code=401)
-    
+
     token = csrf_generate(session_id)
     return JSONResponse({"csrf_token": token})
 
