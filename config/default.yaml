@@ -11,18 +11,23 @@ portfolio:
   rebalance_method: threshold
   start_smart: true
   # Initial symbols — start SMALL. These seed the symbols table (db/symbol_registry).
-  # Keep this list aligned with the venues' crypto_pairs below (alpaca.crypto_pairs
-  # and hyperliquid perps). Add symbols here as you graduate them from shadow mode.
+  # Bootstrap symbols — aligned with TradingView (TDVA) data feed.
+  # Alpaca and Hyperliquid venues are DEPRECATED (enabled: false).
+  # Symbol format follows TradingView convention (e.g. BTCUSD, USDJPY, XAUUSD).
+  # Add symbols here as you graduate them from shadow mode.
   initial_symbols:
-  - symbol: BTC/USD
-    venue: alpaca
+  - symbol: BTCUSD
+    venue: tradingview
     asset_class: crypto
-  - symbol: BTC-PERP
-    venue: hyperliquid
+  - symbol: ETHUSD
+    venue: tradingview
     asset_class: crypto
-  - symbol: ETH-PERP
-    venue: hyperliquid
-    asset_class: crypto
+  - symbol: USDJPY
+    venue: tradingview
+    asset_class: forex
+  - symbol: XAUUSD
+    venue: tradingview
+    asset_class: commodities
 venues:
   alpaca:
     enabled: false   # DEPRECATED — brokerage is now the MT4/MT5 bridge (see mt4_mt5). Kept for reference/compat.
