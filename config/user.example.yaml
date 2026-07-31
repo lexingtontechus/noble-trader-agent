@@ -1,11 +1,25 @@
 # User Configuration Template
 # Copy this file to user.local.yaml and customize for your deployment
-# This file is git-ignored and contains tenant-specific overrides
+# This file is git-ignored and contains tenant-specific overrides only.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# Configuration Separation (see worklog_user_vs_system_vars.md):
+#   - System endpoints (URLs, infrastructure) → config/system_endpoints.yaml
+#   - System defaults (venues, execution, notifications, risk) → config/default.yaml
+#   - User secrets (API keys, tokens) → .env / .env.local
+#   - User overrides (portfolio allocation, active hours) → config/user.local.yaml
+# ───────────────────────────────────────────────────────────────────────────
+#
+# The onboarding wizard (platform setup) can auto-generate this file from your
+# portfolio preferences. You can also edit it manually — changes require a
+# restart to take effect (config loads at startup).
 
 # ============================================================================
-# Portfolio Configuration
+# Portfolio Configuration (tenant-specific)
 # ============================================================================
 portfolio:
+  # Target asset allocation — adjust to your risk preferences.
+  # These override the defaults in config/default.yaml.
   target_allocation:
     crypto: 0.7
     equities: 0.15
@@ -15,49 +29,12 @@ portfolio:
   rebalance_frequency: on_drift
   rebalance_method: threshold
   start_smart: true
-  initial_symbols:
-  - symbol: BTC/USD
-    venue: alpaca
-    asset_class: crypto
-  - symbol: BTC-PERP
-    venue: hyperliquid
-    asset_class: crypto
-  - symbol: ETH-PERP
-    venue: hyperliquid
-    asset_class: crypto
 
 # ============================================================================
-# Venue Enablement
+# Active Hours (tenant-specific — your locale/timezone)
 # ============================================================================
-# Set enabled: true for venues you want to use
-venues:
-  alpaca:
-    enabled: false
-  hyperliquid:
-    enabled: false
-  mt4_mt5:
-    enabled: true
-
-# ============================================================================
-# Execution Settings
-# ============================================================================
-execution:
-  mode: paper  # paper | live
-
-# ============================================================================
-# Notification Channels
-# ============================================================================
-# Enable notification channels and set webhook URLs in .env
-notifications:
-  discord:
-    enabled: false
-  telegram:
-    enabled: false
-
-# ============================================================================
-# Active Hours
-# ============================================================================
-# Timezone determines when stock sessions are active
+# Determines when stock sessions are active and drives TradingView WS windows.
+# All schedule math (autonomy, TradingView WS) binds to THIS timezone.
 active_hours:
   timezone: America/Los_Angeles
   start: 09:30

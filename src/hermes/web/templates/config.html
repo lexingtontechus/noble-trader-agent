@@ -14,7 +14,8 @@
 {% call card(title="Loaded Configuration (secrets redacted)") %}
 <ul class="list-disc pl-5 space-y-1 text-sm opacity-70">
     <li>All credentials are shown as <code class="text-primary">secret:…</code> or <code class="text-primary">&lt;redacted:Nchars&gt;</code> — never the real value.</li>
-    <li>Edit <code class="text-primary">config/user.local.yaml</code> for account/trade parameters; <code class="text-primary">config/system_endpoints.yaml</code> for system endpoints.</li>
+    <li>Edit <code class="text-primary">config/user.local.yaml</code> for account/trade parameters</li>
+    <li>Edit <code class="text-primary">config/system_endpoints.yaml</code> for system endpoints.</li>
     <li>Edit <code class="text-primary">.env</code> or <code class="text-primary">.env.local</code> for secrets (API keys, tokens).</li>
     <li>Changes to user.local.yaml require a restart (config loads at startup). System endpoints are live-reloaded.</li>
     <li>The raw JSON is collapsed at the bottom for debugging.</li>

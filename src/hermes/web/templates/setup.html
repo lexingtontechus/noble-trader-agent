@@ -153,6 +153,59 @@
     </div>
     #}
 
+    {# Portfolio preferences — auto-generates config/user.local.yaml #}
+    <div class="card bg-base-200 shadow-lg">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Portfolio Preferences (optional)</h2>
+        <p class="opacity-60 text-sm">These override the defaults in <code>config/default.yaml</code> and are saved to your git-ignored <code>config/user.local.yaml</code>. Skip to use system defaults.</p>
+
+        <div class="divider">Target Asset Allocation</div>
+        <p class="opacity-50 text-xs mb-2">How much of your portfolio to allocate to each asset class (must sum to 1.0).</p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <label class="form-control w-full">
+            <span class="label-text">Crypto</span>
+            <input type="number" step="0.01" name="target_allocation_crypto" placeholder="0.7"
+                   class="input input-bordered w-full" value="{{ existing.get('target_allocation_crypto', '0.7') }}">
+          </label>
+          <label class="form-control w-full">
+            <span class="label-text">Equities</span>
+            <input type="number" step="0.01" name="target_allocation_equities" placeholder="0.15"
+                   class="input input-bordered w-full" value="{{ existing.get('target_allocation_equities', '0.15') }}">
+          </label>
+          <label class="form-control w-full">
+            <span class="label-text">Commodities</span>
+            <input type="number" step="0.01" name="target_allocation_commodities" placeholder="0.0"
+                   class="input input-bordered w-full" value="{{ existing.get('target_allocation_commodities', '0.0') }}">
+          </label>
+          <label class="form-control w-full">
+            <span class="label-text">Forex</span>
+            <input type="number" step="0.01" name="target_allocation_forex" placeholder="0.15"
+                   class="input input-bordered w-full" value="{{ existing.get('target_allocation_forex', '0.15') }}">
+          </label>
+        </div>
+
+        <div class="divider">Active Hours</div>
+        <p class="opacity-50 text-xs mb-2">Your local timezone determines when stock sessions are active and drives TradingView WS windows.</p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label class="form-control w-full">
+            <span class="label-text">Timezone</span>
+            <input type="text" name="active_hours_timezone" placeholder="America/Los_Angeles"
+                   class="input input-bordered w-full" value="{{ existing.get('active_hours_timezone', 'America/Los_Angeles') }}">
+            <span class="label-text-alt opacity-50">IANA timezone identifier</span>
+          </label>
+          <label class="form-control w-full">
+            <span class="label-text">Session Start</span>
+            <input type="time" name="active_hours_start" placeholder="09:30"
+                   class="input input-bordered w-full" value="{{ existing.get('active_hours_start', '09:30') }}">
+          </label>
+          <label class="form-control w-full">
+            <span class="label-text">Session End</span>
+            <input type="time" name="active_hours_end" placeholder="16:00"
+                   class="input input-bordered w-full" value="{{ existing.get('active_hours_end', '16:00') }}">
+          </label>
+        </div>
+      </div>
+    </div>
 
   </form>
 
