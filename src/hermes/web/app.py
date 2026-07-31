@@ -1448,7 +1448,7 @@ async def journal_page(request: Request) -> HTMLResponse:
 
     return templates.TemplateResponse(
         request,
-        "agent.html",
+        "journal.html",
         {
             "version": __version__,
             "config_hash": get_config_hash(config),
