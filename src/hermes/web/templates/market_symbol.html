@@ -26,7 +26,7 @@
   <div class="flex items-center gap-3 flex-wrap">
     <h1 class="text-2xl font-bold font-mono">{{ symbol }}</h1>
     {% if detail.asset_class %}<span class="badge badge-ghost">{{ detail.asset_class }}</span>{% endif %}
-    {% if detail.venue %}<span class="badge badge-ghost">{{ detail.venue }}</span>{% endif %}
+    
     {% if detail.heartbeat %}
       {{ brick_arrow(detail.heartbeat.markov_current_state) }}
       {% if detail.heartbeat.regime %}
