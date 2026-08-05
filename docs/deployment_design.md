@@ -29,6 +29,17 @@ command with the token). This replaces the old "repo + profile link" distributio
 The wheel is the distributed artifact; proprietary source is not handed to tenants as
 a clone. Tenant config stays in `.env` / local DuckDB, never in the package.
 
+> **Runtime note — deployed copy vs repo source.** When installed, the agent runs
+> from the **deployed runtime** (e.g. `~/.hermes/profiles/noble-agent/noble-trader-agent/repo`),
+> which is a *separate copy* from the development repo checkout. Editing source in the
+> repo only affects the running stack after the changed files are copied into the
+> deployed runtime (and the relevant loop restarted). The Noble Trader Hermes plugin
+> auto-starts the stack via an `on_session_start` hook that launches `scripts/watchdog.sh`
+> from the deployed runtime, so the running agent always reflects the deployed copy, not
+> the dev repo. After any source change, re-deploy the plugin
+> (`scripts/deploy_desktop_plugin.py --all`) AND sync the deployed runtime before relying
+> on the live stack. See `AGENTS.md` §3 and §8.
+
 ## 3. Entitlement verification (built)
 
 `src/hermes/core/entitlement.py` — two functions:

@@ -165,7 +165,14 @@ Talaria is the codebase; Hermes is the AI agent that operates it. The bullets be
    - **Docker Desktop** + `docker run -d -p 6379:6379 --name hermes-redis redis`
    - **WSL2** + `sudo apt install redis-server`
 4. **Live execution credentials** (gather before setup):
-   - **MetaAPI** (recommended live path): `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` in `.env.local` (git-ignored). Set `METAAPI_DEMO=true` for the demo account. Verified 2026-07-28: 0.10-lot XAUUSD BUY executed on the MetaAPI demo account via `src/hermes/execution/brokers/metaapi_broker.py`.
+   - **MetaAPI** (recommended live path): the wizard collects **two** pairs —
+     `METAAPI_TOKEN_DEMO` + `METAAPI_ACCOUNT_ID_DEMO` (demo/paper) and
+     `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` (live). The active pair is selected by
+     `NT_MODE` (`demo` | `live`, default `demo`); after ≥20 closed trades with
+     positive PnL the account auto-graduates DEMO → LIVE. The legacy `METAAPI_DEMO`
+     var is still synced for backward compatibility. Verified 2026-07-28:
+     0.10-lot XAUUSD BUY executed on the MetaAPI demo account via
+     `src/hermes/execution/brokers/metaapi_broker.py`.
    - **MT4/MT5 EA bridge** (alternative live path): `MT4_MT5_BRIDGE_TOKEN` (+ optional `MT4_MT5_SOURCE_ID` / `MT4_MT5_RELAY_URL`).
    - **Deprecated / disabled:** Alpaca + Hyperliquid adapters are `enabled: false` in `config/default.yaml` — NOT the live venue. (Paper mode is still available for non-live testing: `platform execute --paper`.)
    - Noble Trader Redis URL + Supabase URL + anon/publishable key (RLS-scoped)

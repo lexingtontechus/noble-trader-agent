@@ -21,10 +21,10 @@ portfolio:
   # Target asset allocation — adjust to your risk preferences.
   # These override the defaults in config/default.yaml.
   target_allocation:
-    crypto: 0.7
-    equities: 0.15
-    commodities: 0.0
-    forex: 0.15
+    crypto: 0.15
+    equities: 0.30
+    commodities: 0.30
+    forex: 0.25
   rebalance_threshold_drift_pct: 0.1
   rebalance_frequency: on_drift
   rebalance_method: threshold

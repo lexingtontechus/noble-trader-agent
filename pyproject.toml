@@ -68,6 +68,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hermes"]
 
+# Include the Hermes desktop plugin (dashboard) and Python plugin manifests
+# so the noble-trader-desktop plugin ships in the pip package and can be
+# deployed to ~/.hermes/desktop-plugins/ on install.
+[tool.hatch.build.targets.wheel.force-include]
+".hermes/plugins" = "hermes_trading_platform/.hermes/plugins"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

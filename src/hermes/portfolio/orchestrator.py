@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -245,18 +246,35 @@ class PortfolioRiskEngine:
         return True
 
     def _check_cold_start_exit(self) -> None:
-        """GA exit: leave cold-start when count + positive expectancy both met."""
+        """GA exit: leave cold-start when count + positive expectancy both met.
+
+        On exit, also promote the account from DEMO to LIVE automatically:
+        flip NT_MODE to "live" (persisted to .env) so the MetaApi broker uses
+        the live credential pair (METAAPI_TOKEN / METAAPI_ACCOUNT_ID) on its
+        next connect. This is the seamless demo→live graduation — no manual
+        re-onboarding, no human approval required (the user explicitly asked
+        for automatic progression once 20+ trades with positive PnL are done).
+        """
         if not self._autonomy_gate.is_cold_start():
             return
         closed = self._state._stats.get("positions_closed", 0)
         expectancy = self._state._realized_pnl  # cumulative realized PnL
         if closed >= self._cold_exit_n and expectancy > (self._cold_exit_exp_bps / 10000.0):
             self._autonomy_gate.set_cold_start_state(False)
+            # Auto graduate DEMO -> LIVE.
+            try:
+                from hermes.web.app import _write_env
+                _write_env({"NT_MODE": "live", "METAAPI_DEMO": "false"})
+                os.environ["NT_MODE"] = "live"
+                os.environ["METAAPI_DEMO"] = "false"
+            except Exception as exc:  # non-fatal: broker re-resolves on next connect anyway
+                log.warning("cold_start_exit_nt_mode_persist_failed", error=str(exc))
             log.info(
                 "cold_start_exited",
                 closed_trades=closed,
                 realized_pnl=round(expectancy, 2),
                 exit_min_expectancy_bps=self._cold_exit_exp_bps,
+                nt_mode="live",
             )
 
     async def evaluate_signal(

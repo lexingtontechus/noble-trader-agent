@@ -194,7 +194,19 @@ upstream:
       # Used for documentation/consistency; the authoritative value lives in the
       # backend. Per-(symbol,direction) min spacing between published signals.
       signal_cooldown_minutes: 60
-    # Plan prefix for the proxy's /sse/alerts X-Plan-Prefix header.
+    # Noble Trader Proxy — Quote cache endpoint (public SSE/HTTP, no broker creds).
+    # URL is paste-in during onboarding as NOBLE_TRADER_QUOTE_PROXY_URL.
+    # Auth is via the X-Plan-Prefix header (derived from the Redis username),
+    # NOT a separate credential. See sse_consumer.py:137 and charts/_data.py:67.
+    quote_proxy:
+      url: secret:noble_trader.quote_proxy_url
+      timeout_sec: 5
+      fallback_to_tvda: true
+      poll_intervals:
+        hot: 5
+        warm: 15
+        cold: 60
+        stale: 300
     # pp=Precision Pro (set via env NOBLE_TRADER_PLAN_PREFIX; the agent's proxy
     # Redis uses the Railway `default` admin user, which has no <prefix>-sub-<hex>
     # form to derive it). Leave blank placeholder; env wins at runtime.
@@ -377,17 +389,17 @@ circuit_breakers:
       enabled: true
       description: Absolute $ daily loss
       tiers:
-      - threshold: 5000
+      - threshold: 1000
         action: reduce_50pct
-        label: $5k daily loss
+        label: $1k daily loss
         cooldown_sec: 0
-      - threshold: 10000
+      - threshold: 2500
         action: block_entries
-        label: $10k daily loss
+        label: $2.5k daily loss
         cooldown_sec: 14400
-      - threshold: 15000
+      - threshold: 5000
         action: halt_all
-        label: $15k daily loss (critical)
+        label: $5k daily loss (critical)
         cooldown_sec: 86400
     var:
       enabled: true

@@ -20,7 +20,7 @@ Architecture:
     - Per-symbol MicrostructureSnapshot stored in dict with TTL
       (default 10 min — proxy emits every 5 min; 2x window is safe)
     - Reconnect with exponential backoff (1s → 60s)
-    - Plan prefix sourced from the agent's NOBLE_TRADER_REDIS_URL username
+    - Plan prefix sourced from the agent's NOBLE_TRADER_PROXY_REDIS_URL username
       (stamped at provisioning as "<prefix>-sub-<hex>"; ps=Signal Scout,
       pp=Precision Pro). Sent to the proxy as the X-Plan-Prefix header —
       no license key, no Edge Function call.
@@ -123,10 +123,8 @@ class MicrostructureSSEConsumer:
             redis_url = redis_cfg.get("url", "") or ""
             if redis_url.startswith("secret:"):
                 # secret:noble_trader.proxy_redis_url -> NOBLE_TRADER_PROXY_REDIS_URL
-                # (legacy secret:noble_trader.redis_url -> NOBLE_TRADER_REDIS_URL)
                 redis_url = (
                     os.getenv("NOBLE_TRADER_PROXY_REDIS_URL")
-                    or os.getenv("NOBLE_TRADER_REDIS_URL", "")
                     or redis_url[7:]
                 )
                 if redis_url.startswith("secret:"):
@@ -168,7 +166,7 @@ class MicrostructureSSEConsumer:
             log.warning(
                 "sse_consumer_no_plan_prefix",
                 note="Microstructure SSE consumer will not start — plan prefix not resolved "
-                     "from NOBLE_TRADER_REDIS_URL. p_microstructure will be unavailable; "
+                     "from NOBLE_TRADER_PROXY_REDIS_URL. p_microstructure will be unavailable; "
                      "MetaRegimeClassifier will run without microstructure input "
                      "(degraded but functional).",
             )

@@ -123,6 +123,14 @@ the child is the actual worker):
   (configured in the wizard / `config.default.yaml → notifications.*`). Hermes owns
   delivery — the external dashboard is visual only.
 
+- **Hermes-native plugin is now the PRIMARY surface (web dashboard soft-deprecated).**
+  The Noble Trader Hermes plugin (`plugins/noble-trader/`) surfaces Dashboard,
+  Setup, Portfolio, and Status tabs. The plugin frontend (`desktop/plugin.js`)
+  calls the agent web app directly at `http://127.0.0.1:8080/api/plugin/*`
+  (auth-exempt, CORS-enabled routes in `src/hermes/web/app.py`). No `ctx.rest()` —
+  that routes through the headless `hermes serve` backend which doesn't have
+  our routes, causing 404s and gateway crashes. See `docs/noble-trader-plugin.md`.
+
 Plus **Redis** (local bus, required by 5/6 loops) launched detached + PID-guarded.
 
 **Watchdog hardening facts (do not regress):**
@@ -137,6 +145,14 @@ Plus **Redis** (local bus, required by 5/6 loops) launched detached + PID-guarde
   `terminal(background=true)`**, that was the original source of 2× duplicates.
 - Every launch is verified 4s later; a no-show logs a hard **`FAIL`** (visible in
   `/tmp/watchdog.log`), not a silent no-op.
+- **Auto-start via Hermes plugin:** the Noble Trader Hermes plugin
+  (`plugins/noble-trader/__init__.py`) registers an **`on_session_start`** hook
+  that **detaches and launches `scripts/watchdog.sh`** when the Hermes agent
+  session starts. So the dashboard + all loops come up automatically when Hermes
+  starts — no manual launch needed. The hook is fire-and-forget and the watchdog
+  is idempotent (single-instance lock + name-based liveness), so the 5-min cron
+  (`noble-stack-watchdog`) and the hook can both fire safely. The 5-min cron
+  remains the backstop supervisor.
 
 **Daily health check:** `/noble balance` + `/noble assets` (noble skill) for
 instant MT4/MT5-bridge + MetaAPI equity and held-asset/regime reads. The `risk` proc's
@@ -243,6 +259,17 @@ restart/verify via its job id — do not recreate unless the config is wrong.
   enforces from the next run. To rotate a secret intentionally: delete
   `.secrets.baseline` and let it regenerate.
 - **Run the gate manually:** `bash scripts/security_gate.sh` (pytest 25 + scan).
+- **Repo → deployed-runtime sync:** the watchdog (and `platform` commands) run
+  the agent from the **deployed runtime**
+  (`~/.hermes/profiles/noble-agent/noble-trader-agent/repo`), **not** this repo
+  checkout. Editing `src/` here does NOT affect the running agent until you copy
+  the changed files into the deployed runtime (e.g. `src/hermes/web/app.py`,
+  `src/hermes/execution/brokers/metaapi_broker.py`,
+  `src/hermes/portfolio/orchestrator.py`) and restart the relevant loop. The
+  Noble Trader Hermes plugin (`plugins/noble-trader/`) deploys to
+  `~/.hermes/{plugins,desktop-plugins}/noble-trader/` via
+  `scripts/deploy_desktop_plugin.py --all`. After any source change, re-deploy
+  AND sync the deployed runtime before relying on the running stack.
 
 ---
 

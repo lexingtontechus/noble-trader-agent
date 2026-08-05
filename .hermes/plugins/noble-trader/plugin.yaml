@@ -1,0 +1,11 @@
+name: noble-trader-desktop
+version: "1.0.0"
+description: "Talaria - The Noble Trader desktop plugin surfaces onboarding, portfolio, and signal data inside the Hermes desktop app."
+author: "Lexington Tech"
+requires_env: []
+provides_tools:
+  - noble_balance
+  - noble_assets
+  - noble_status
+hooks:
+  - on_session_start

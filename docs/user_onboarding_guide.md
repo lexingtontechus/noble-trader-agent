@@ -22,7 +22,7 @@ website is only the subscription + credential-copy frontend.
    **Noble Trader Redis URL**, **TradingView API key**, and **MT4/MT5 bridge token** —
    the credentials Hermes needs. This flow lives on the external site (not in this repo).
 2. **Hermes onboarding (first-run wizard).** You paste those copied credentials into
-   Hermes's `/setup` wizard. Hermes writes them to `.env`, auto-generates auth secrets,
+   Hermes's **native Setup tab** (Noble Trader plugin). Hermes writes them to `.env`, auto-generates auth secrets,
    auto-migrates its local DuckDB, and drops you into **cold-start**. This is the
    agent's first-run setup and is documented below.
 
@@ -72,19 +72,30 @@ and itself on small size.
 
 ### 2.0 First-run wizard (recommended path)
 
-The fastest way to onboard is the **web wizard** at `GET /setup` (daisyUI-styled).
-It is launched as part of the CLI workflow via:
+There are **two ways** to run the wizard — both write to `.env`, auto-generate
+the three auth secrets, auto-migrate DuckDB, and drop you into cold-start:
+
+1. **In the Hermes desktop app (recommended).** The **Noble Trader plugin's
+   Setup tab** is a **native form** — no browser redirect. It collects the Noble
+   Trader signal Redis URL + TradingView API key, plus **MetaApi demo AND live**
+   token/account pairs, lets you pick **DEMO (paper)** vs **LIVE** mode, validates
+   the credentials live, and submits to the agent backend. The plugin auto-starts
+   the stack (see §6) so the backend is up when you submit.
+2. **`platform setup` (CLI pointer, deprecated browser path).** The standalone
+   `http://127.0.0.1:8080/setup` web wizard is retired — `GET /setup` now returns
+   `410 Gone` and `platform setup` prints a notice directing you to the native
+   Setup tab. Run it only to see the credential checklist:
 
 ```bash
-./.venv/Scripts/python.exe -m hermes.app setup            # serves wizard at http://127.0.0.1:8080/setup
-./.venv/Scripts/python.exe -m hermes.app setup --print-url  # headless: prints URL + checklist only
+./.venv/Scripts/python.exe -m hermes.app setup            # prints native-setup notice + checklist
 ```
 
 Flow (this is the **Hermes** step — after platform signup gave you the creds):
 1. On the **platform** site you subscribed and copied your **Noble Trader Redis URL**
-   + **TradingView API key** (and MetaApi token + account ID).
-2. Run `platform setup`; open the printed URL and paste them into the Hermes wizard
-   form. The wizard:
+   + **TradingView API key** (and MetaApi token + account ID — **both** a demo and
+   a live pair; see §2.3).
+2. Open the Noble Trader plugin **Setup tab** (the native form); paste them
+   into the form. The wizard:
    - writes them to `.env` (the secrets backend),
    - **auto-generates** the three auth secrets (`HERMES_SESSION_SECRET`,
      `HERMES_ADMIN_PASSWORD`, `HERMES_AGENT_TOKEN`),
@@ -114,27 +125,42 @@ If you prefer manual setup, copy `.env.example` → `.env` and fill the vars bel
 > there every ~5 min. `trading:config:{symbol}` hashes are a pull snapshot and are
 > **never** used to seed the optimizer.
 
-### 2.3 Brokerage — MetaApi (primary)
+### 2.3 Brokerage — MetaApi (primary, dual-mode)
 
 The user's brokerage is the **MetaApi** broker. Live execution routes orders
 through the MetaApi cloud connector. The MT4/MT5 bridge is **deprecated**
 (see §6 of `config/default.yaml`).
 
+The wizard now collects **two** MetaApi credential pairs — a **demo** pair (used
+during cold-start / DEMO mode) and a **live** pair (captured up front so
+demo→live graduation is seamless):
+
 | Var | Value | Notes |
 | --- | --- | --- |
-| `METAAPI_TOKEN` | MetaApi cloud token | Required for live execution |
-| `METAAPI_ACCOUNT_ID` | MetaApi account ID | Required for brokerage sync |
-| `METAAPI_DEMO` | `true` / `false` | `true` = paper (demo) mode, `false` = live |
+| `METAAPI_TOKEN_DEMO` | MetaApi cloud token (demo account) | Required — used in DEMO mode / cold-start |
+| `METAAPI_ACCOUNT_ID_DEMO` | MetaApi demo account ID | Required |
+| `METAAPI_TOKEN` | MetaApi cloud token (live account) | Required — engaged automatically after graduation |
+| `METAAPI_ACCOUNT_ID` | MetaApi live account ID | Required |
 
-Toggle paper vs live mode at any time:
+The active pair is selected by **`NT_MODE`** (`demo` | `live`, default `demo`),
+resolved at runtime via `resolve_metaapi_credentials(mode)`. The legacy
+`METAAPI_DEMO` (`true`/`false`) var is still **synced** by the wizard for
+backward compatibility but is no longer the primary switch — prefer `NT_MODE`.
+
+**Automatic demo→live graduation:** during cold-start you trade on the demo
+pair. Once the account has **≥ 20 closed trades with positive realized PnL**,
+the portfolio orchestrator flips `NT_MODE` to `live` in `.env` automatically —
+no re-onboarding, no manual toggle. You can still switch modes manually:
+
 ```bash
 platform metaapi-demo --demo      # Switch to paper (DEMO)
 platform metaapi-demo --live      # Switch to live execution
 platform metaapi-demo             # Toggle current value
 ```
-The setting is persisted to `.env` as `METAAPI_DEMO` and also updates the
-live config. Existing risk/execute loops pick up the new setting on their
-next broker interaction (or at the next watchdog relaunch).
+
+The setting is persisted to `.env` as `NT_MODE` (and `METAAPI_DEMO` is kept in
+sync). Existing risk/execute loops pick up the new setting on their next broker
+interaction (or at the next watchdog relaunch).
 
 ### 2.4 Hermes infra (required)
 | Var | Value |
@@ -263,8 +289,9 @@ queue. Nothing else changes — the same L4→L5→L3 pipeline, the same guardra
 | File a bug report | `noble bug --description "..." [--repo owner/name] [--dry-run]` |
 | Check entitlement | `noble entitlement` (proves Git/pkg token authenticates) |
 | User-initiated trade | `noble trade --symbol X --side BUY --equity N` |
-| First-run wizard | `platform setup` (serves the daisyUI wizard at http://127.0.0.1:8080/setup) |
-| Wizard URL only (headless) | `platform setup --print-url` |
+| First-run wizard | Noble Trader plugin **Setup tab** (native form, recommended). The legacy `platform setup` CLI now prints a notice pointing here; `GET /setup` returns 410. |
+| Wizard checklist (headless) | `platform setup` (prints the credential checklist, no browser server) |
+| Stack auto-start | The Noble Trader Hermes plugin auto-launches the watchdog on session start (see AGENTS.md §3). If tabs show "Agent not reachable", wait ~10s after Hermes launch, then Retry. |
 | This guide | `noble userguide` |
 | Config audit | `noble config --audit` |
 | Request config change | `noble config --set 'KEY=VALUE' --why '<reason>'` |

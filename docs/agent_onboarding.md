@@ -130,7 +130,13 @@ platform init
 ### 2.3 Configure `.env`
 
 The agent fills in `.env` with credentials. There are 4 `HERMES_*` auth vars (required for dashboard/API login) and the **live execution** credentials:
-- **MetaAPI** (recommended live path): `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` in `.env.local` (git-ignored); `METAAPI_DEMO=true` for the demo account. Verified 2026-07-28: 0.10-lot XAUUSD BUY on the MetaAPI demo account.
+- **MetaAPI** (recommended live path): the wizard collects **two** pairs —
+  `METAAPI_TOKEN_DEMO` + `METAAPI_ACCOUNT_ID_DEMO` (demo/paper) and
+  `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` (live). The active pair is selected by
+  `NT_MODE` (`demo` | `live`, default `demo`); after ≥20 closed trades with
+  positive PnL the account auto-graduates DEMO → LIVE. The legacy `METAAPI_DEMO`
+  var is still synced for backward compatibility. Verified 2026-07-28: 0.10-lot
+  XAUUSD BUY on the MetaAPI demo account.
 - **MT4/MT5 EA bridge** (DEPRECATED — MetaApi has replaced it): `MT4_MT5_BRIDGE_TOKEN` (+ optional `MT4_MT5_SOURCE_ID` / `MT4_MT5_RELAY_URL`).
 - **Deprecated / disabled:** Alpaca + Hyperliquid adapters are `enabled: false` in `config/default.yaml` — NOT the live venue. (Paper mode still available: `platform execute --paper`.)
 
@@ -147,7 +153,10 @@ The agent fills in `.env` with credentials. There are 4 `HERMES_*` auth vars (re
 | `SUPABASE_URL` | Your Supabase project | Historical heartbeat backfill |
 | `SUPABASE_ANON_KEY` | Supabase dashboard (Settings → API → anon public) | Read access to NT tables (subject to RLS) |
 | `MT4_MT5_BRIDGE_TOKEN` | ⚠️ **DEPRECATED** — MetaApi has replaced the MT4/MT5 bridge |
+| `METAAPI_TOKEN_DEMO` | MetaApi demo cloud token | **DEMO** (paper) mode authentication (required) |
+| `METAAPI_ACCOUNT_ID_DEMO` | MetaApi demo account ID | Required for demo brokerage sync |
 | `METAAPI_TOKEN` | Your MetaApi cloud token | **LIVE** execution venue authentication (required) |
+| `METAAPI_ACCOUNT_ID` | MetaApi live account ID | Required for live brokerage sync |
 | `ALPACA_API_SECRET` | Same as above | **DEPRECATED** — only if you re-enable Alpaca |
 | `HYPERLIQUID_WALLET_ADDRESS` | Generate dedicated wallet | **DEPRECATED** — only if you re-enable Hyperliquid (`config.hyperliquid.enabled=false`) |
 | `HYPERLIQUID_PRIVATE_KEY` | Same wallet (NEVER main wallet) | **DEPRECATED** — only if you re-enable Hyperliquid |

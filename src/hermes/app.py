@@ -160,11 +160,10 @@ def init(ctx: click.Context) -> None:
 
         if not is_setup_complete():
             click.echo("")
-            click.echo("⚠ Setup incomplete — run the onboarding wizard to paste your")
+            click.echo("  ⚠ Setup incomplete — run the onboarding wizard to paste your")
             click.echo("  subscription credentials (Noble Trader Redis URL + TradingView API key")
-            click.echo("  + MT4/MT5 bridge token). It writes .env, auto-migrates, and enters cold-start:")
-            click.echo("    platform setup          # serves the daisyUI wizard at http://127.0.0.1:8080/setup")
-            click.echo("    platform setup --print-url   # just print the URL + checklist (headless)")
+            click.echo("  + MetaApi demo/live creds). The wizard runs natively in the Hermes app:")
+            click.echo("    platform setup          # points to the plugin Setup tab")
     except Exception:
         pass  # setup check must never block init
 
@@ -1051,7 +1050,7 @@ def ingest(ctx: click.Context, dry_run: bool) -> None:
         click.echo(f"  ERROR: {e}", err=True)
         if "not configured" in str(e):
             click.echo(
-                "  Fill in NOBLE_TRADER_REDIS_URL and HERMES_REDIS_URL in .env",
+                "  Fill in NOBLE_TRADER_PROXY_REDIS_URL and HERMES_REDIS_URL in .env",
                 err=True,
             )
         sys.exit(1)
@@ -1125,88 +1124,54 @@ def dashboard(ctx: click.Context, host: str, port: int, reload: bool) -> None:
 
 
 @cli.command(name="setup")
-@click.option("--host", default="127.0.0.1", help="Bind host for the setup web server.")
-@click.option("--port", default=8080, type=int, help="Bind port for the setup web server.")
 @click.option(
-    "--print-url", is_flag=True, default=False,
-    help="Do not serve — just print the wizard URL + a readiness checklist.",
+    "--host",
+    default="127.0.0.1",
+    help="Bind host (deprecated — the wizard no longer serves a web server).",
+)
+@click.option(
+    "--port",
+    default=8080,
+    type=int,
+    help="Bind port (deprecated — the wizard no longer serves a web server).",
 )
 @click.pass_context
-def setup(ctx: click.Context, host: str, port: int, print_url: bool) -> None:
-    """First-run onboarding wizard (daisyUI).
+def setup(ctx: click.Context, host: str, port: int) -> None:
+    """First-run onboarding — now NATIVE inside the Hermes desktop app.
 
-    Launches the local web dashboard and opens the onboarding wizard at
-    `/setup`. Paste the credentials you copied from the subscription website
-    (Noble Trader Redis URL + TradingView API key + MT4/MT5 bridge token);
-    the wizard writes them to `.env`, auto-generates the auth secrets,
-    auto-migrates the local DuckDB, and drops you into cold-start.
+    The onboarding wizard no longer runs as a standalone browser server. It runs
+    NATIVELY inside the Hermes desktop app: open the Noble Trader plugin and use
+    the **Setup tab** to configure credentials (it posts to the agent's POST
+    /setup endpoint same-origin). This command is retained only as a pointer.
 
-    The wizard is daisyUI-styled (extends base.html). This command is the
-    CLI entry point into that workflow — run it after `platform init` if
-    setup is incomplete, or any time you want to (re)configure credentials.
-
-    Use `--print-url` on a headless box: it prints the URL + a checklist
-    without serving, so you can open it from another machine.
+    The legacy `GET /setup` web route returns 410 Gone with the same notice.
     """
     from hermes.web.app import is_setup_complete
 
     config_path = ctx.obj.get("config_path")
     config = load_config(config_path)
 
+    click.echo("=" * 60)
+    click.echo("  Noble Trader onboarding is now native to the Hermes app")
+    click.echo("=" * 60)
+    click.echo("")
+    click.echo("  ➤ Open the Hermes desktop app.")
+    click.echo("  ➤ Open the 'Noble Trader' plugin (sidebar).")
+    click.echo("  ➤ Use the Setup tab to enter credentials — no browser needed.")
+    click.echo("")
     if is_setup_complete():
-        click.echo("✓ Setup already complete (required credentials present in .env).")
-        click.echo("  Re-running the wizard will overwrite only the fields you change.")
-        if print_url:
-            click.echo(f"  Wizard URL: http://{host}:{port}/setup")
-            return
+        click.echo("  ✓ Setup already complete (required credentials present in .env).")
     else:
-        click.echo("⚠ Setup incomplete — the wizard will collect the required credentials.")
-        if print_url:
-            click.echo(f"  Wizard URL: http://{host}:{port}/setup")
-            click.echo("")
-            click.echo("  Required (paste what you copied from your subscription):")
-            click.echo("    • NOBLE_TRADER_REDIS_URL   — real-time signal stream")
-            click.echo("    • TRADINGVIEW_API_KEY      — price data (RapidAPI)")
-            click.echo("    • METAAPI_TOKEN            — MetaApi cloud token")
-            click.echo("    • METAAPI_ACCOUNT_ID       — MetaApi account ID")
-            click.echo("  Optional: MT4_MT5_SOURCE_ID, MT4_MT5_RELAY_URL, Discord/Telegram webhook.")
-            return
-
-    if print_url:
-        click.echo(f"  Wizard URL: http://{host}:{port}/setup")
-        return
-
-    import uvicorn
-
-    setup_logging(
-        level=config.log_level,
-        format=config.logging.get("format", "json"),
-        output=config.logging.get("output", "stdout"),
-        file_path=config.logging.get("file_path"),
-    )
-
-    from hermes.web.app import create_app
-
-    app = create_app(config)
-
+        click.echo("  ⚠ Setup incomplete — the Setup tab will collect the required credentials:")
+        click.echo("      • NOBLE_TRADER_PROXY_REDIS_URL  — signal stream Redis URL (with creds)")
+        click.echo("      • NOBLE_TRADER_QUOTE_PROXY_URL   — public SSE endpoint (no separate creds)")
+        click.echo("      • TRADINGVIEW_API_KEY            — price data (RapidAPI)")
+        click.echo("      • METAAPI_TOKEN_DEMO / METAAPI_ACCOUNT_ID_DEMO  — demo (paper)")
+        click.echo("      • METAAPI_TOKEN      / METAAPI_ACCOUNT_ID      — live")
+        click.echo("  Optional: Discord/Telegram webhook for trade approvals.")
     click.echo("")
-    click.echo("=" * 50)
-    click.echo("  Hermes Setup Wizard starting...")
-    click.echo(f"  URL: http://{host}:{port}/setup")
-    click.echo(f"  Environment: {config.environment}")
-    click.echo("=" * 50)
+    click.echo("  (The old `platform setup` browser server is retired.)")
     click.echo("")
-    click.echo("  Open the URL above and paste the credentials from your subscription.")
-    click.echo("  Press Ctrl+C to stop (the wizard stays available until setup completes).")
-    click.echo("")
-
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        reload=False,
-        log_level="info",
-    )
 
 
 @cli.command()

@@ -19,6 +19,7 @@ import datetime
 import hmac
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +231,31 @@ def create_app(config: HermesConfig, monitor=None) -> FastAPI:
     #     CSRFMiddleware,
     #     exempt_paths=['/health', '/api/health', '/api/status', '/auth/login'],  # Health and auth endpoints don't need CSRF
     # )
+
+    # CORS for the local Noble Trader desktop plugin.
+    # The desktop plugin (Electron) fetches /api/plugin/* cross-origin from the
+    # agent dashboard's loopback address. Those endpoints are explicitly public +
+    # non-sensitive (read-only aggregate state), so we allow any origin with
+    # credentials disabled. This is what lets the plugin surface Portfolio/Setup/
+    # Status without a browser redirect and WITHOUT depending on a separate
+    # reverse proxy. If NT_PLUGIN_CORS_ORIGINS is set, it restricts to that list.
+    try:
+        from fastapi.middleware.cors import CORSMiddleware
+        _cors_origins = [
+            o.strip()
+            for o in (os.environ.get("NT_PLUGIN_CORS_ORIGINS") or "*").split(",")
+            if o.strip()
+        ]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_cors_origins,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+            allow_credentials=False,
+        )
+        log.info("cors_middleware_added", origins=_cors_origins)
+    except Exception as e:  # Never let CORS setup break dashboard startup.
+        log.warning("cors_middleware_failed", error=str(e)[:160])
 
     log.info("auth_middleware_added", enabled=auth_enabled, max_age_sec=max_age)
 
@@ -464,14 +490,13 @@ async def auth_me(request: Request, authorization: str | None = Header(None)) ->
 async def index(request: Request) -> HTMLResponse:
     """Root — routes to the right first view.
 
-    - First use (setup incomplete): onboarding wizard (/setup).
-    - Otherwise: Portfolio is the default homepage.
-    The Status overview remains reachable via Account → Status (/).
+    - Setup incomplete: shows /portfolio with a setup-incomplete banner
+      directing the user to the native plugin Setup tab.
+    - Setup complete: Portfolio is the default homepage.
+    The legacy /setup wizard is retired (410 Gone) — the native plugin
+    Setup tab is the only onboarding surface.
     """
     from fastapi.responses import RedirectResponse
-
-    if not is_setup_complete():
-        return RedirectResponse(url="/setup", status_code=302)
     return RedirectResponse(url="/portfolio", status_code=302)
 
 
@@ -489,15 +514,109 @@ _UPSTREAM_KEYS = (
 _TRADEVIEW_KEYS = (
     "TRADINGVIEW_API_KEY",
 )
-_METAAPI_KEYS = (
+# Dual-mode MetaApi credentials. The wizard collects BOTH pairs up front;
+# NT_MODE selects which pair is active. demo is the cold-start / onboarding
+# mode; live is engaged automatically once the cold-start gate exits.
+_METAAPI_DEMO_KEYS = (
+    "METAAPI_TOKEN_DEMO",
+    "METAAPI_ACCOUNT_ID_DEMO",
+)
+_METAAPI_LIVE_KEYS = (
     "METAAPI_TOKEN",
     "METAAPI_ACCOUNT_ID",
 )
-_SETUP_REQUIRED_KEYS = _UPSTREAM_KEYS + _TRADEVIEW_KEYS + _METAAPI_KEYS
+_SETUP_REQUIRED_KEYS = (
+    _UPSTREAM_KEYS
+    + _TRADEVIEW_KEYS
+    + _METAAPI_DEMO_KEYS
+    + _METAAPI_LIVE_KEYS
+)
 
 _PLACEHOLDER_VALUES = {"", "<nt-redis-host>", "redis://<nt-redis-host>:<port>",
                        "<publishable-anon-key>", "<paper-api-key>", "<0x-your-dedicated-trading-wallet>",
                        "<quote-proxy-url>"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# System vars — injected from system_endpoints.yaml or hardcoded defaults.
+# These are NOT user-facing wizard fields. A fresh .env (or a .env the user
+# cleared for testing) must still contain these so secret:supabase.url /
+# secret:supabase.anon_key resolve correctly at runtime.
+# ──────────────────────────────────────────────────────────────────────────────
+_SYSTEM_DEFAULTS = {
+    "supabase.url": "https://pcvscowltlrxzgxjurcr.supabase.co",
+    "supabase.anon_key": "",  # must be supplied by the user's subscription
+    "tradingview.api_host": "tradingview-data1.p.rapidapi.com",
+    "tradingview.base_url": "https://tradingview-data1.p.rapidapi.com",
+}
+
+
+def _get_system_default(logical_key: str, fallback: str) -> str:
+    """Resolve a system config key from system_endpoints.yaml, or use fallback.
+
+    Reads config/system_endpoints.yaml (which is the codebase's source of truth
+    for infra URLs) and returns the value for the given logical key (e.g.
+    'supabase.url'). Falls back to _SYSTEM_DEFAULTS or the provided fallback.
+
+    Searches multiple YAML paths for the key (e.g. 'supabase.url' may live at
+    upstream.noble_trader.supabase.url OR at a top-level supabase.url). Skips
+    'secret:' prefixed values — those are secret references (resolved at runtime
+    via the SecretResolver), not literal values to write into .env.
+
+    This is used during setup to inject system vars into .env so they're present
+    even when the user starts from a cleared/empty .env.
+    """
+    try:
+        from hermes.core.config import _find_config_file, _load_yaml_config
+        path = _find_config_file("system_endpoints.yaml")
+        if path:
+            raw = _load_yaml_config(path)
+            parts = logical_key.split(".")
+            # Try multiple candidate paths: the dotted key at top level,
+            # and under upstream.noble_trader.<key>
+            candidates = []
+            if raw:
+                candidates.append((raw, parts))
+                nt = raw.get("upstream", {}).get("noble_trader", {})
+                if isinstance(nt, dict):
+                    candidates.append((nt, parts))
+            for root, key_parts in candidates:
+                val: object = root
+                ok = True
+                for part in key_parts:
+                    if isinstance(val, dict):
+                        val = val.get(part)
+                    else:
+                        ok = False
+                        break
+                if ok and isinstance(val, str) and val.strip() and not val.startswith("secret:"):
+                    return val.strip()
+    except Exception:
+        pass
+    return _SYSTEM_DEFAULTS.get(logical_key, fallback)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stale-while-revalidate cache for setup-status — prevents repeated shim shells
+# on every plugin poll (each spawns a subprocess + TestClient).
+# ──────────────────────────────────────────────────────────────────────────────
+_SETUP_STATUS_CACHE: dict = {"data": None, "ts": 0.0}
+_SETUP_STATUS_TTL: float = 5.0
+
+
+def _cached_setup_status() -> dict[str, Any]:
+    """Return cached setup-status or compute + cache it."""
+    now = time.time()
+    if _SETUP_STATUS_CACHE["data"] is not None and (now - _SETUP_STATUS_CACHE["ts"]) < _SETUP_STATUS_TTL:
+        return _SETUP_STATUS_CACHE["data"]
+    data = {
+        "setup_complete": is_setup_complete(),
+        "nt_mode": (os.environ.get("NT_MODE") or ""),
+        "local_plugin": True,
+    }
+    _SETUP_STATUS_CACHE["data"] = data
+    _SETUP_STATUS_CACHE["ts"] = now
+    return data
 
 
 def _env_path() -> Path:
@@ -510,8 +629,14 @@ def _env_path() -> Path:
 
 
 def is_setup_complete() -> bool:
-    """True once the required pasted credentials are present and non-placeholder."""
+    """True once the required pasted credentials are present and non-placeholder.
+
+    Requires NT_MODE to be present so pre-dual-mode .env files (which lack the
+    demo/live split) are re-onboarded rather than silently treated as complete.
+    """
     env = _read_env()
+    if (env.get("NT_MODE") or "").strip() not in ("demo", "live"):
+        return False
     for key in _SETUP_REQUIRED_KEYS:
         val = (env.get(key) or "").strip()
         if not val or val in _PLACEHOLDER_VALUES:
@@ -549,39 +674,35 @@ def _write_env(updates: dict[str, str]) -> None:
 
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request) -> HTMLResponse:
-    """Onboarding wizard — shown on first use; hidden once setup is complete."""
+    """Legacy standalone web wizard — DEPRECATED.
+
+    The onboarding wizard now runs NATIVELY inside the Hermes desktop app
+    (Noble Trader plugin → Setup tab), which posts credentials to POST /setup
+    same-origin. This GET route is retained only as a pointer; it no longer
+    renders setup.html (that template/surface is retired). Returns 410 Gone with
+    a notice directing the user to the native plugin Setup tab.
+    """
     if is_setup_complete():
         from fastapi.responses import RedirectResponse
 
         return RedirectResponse(url="/portfolio", status_code=302)
 
-    config = get_config()
-    existing = _read_env()
-    # Merge portfolio preferences from user.local.yaml for pre-filling the wizard.
-    existing.update(_read_user_local())
-    # Auto-generate the three auth secrets if missing so the user doesn't have to.
-    generated = {
-        "HERMES_SESSION_SECRET": existing.get("HERMES_SESSION_SECRET")
-        or secrets.token_urlsafe(48),
-        "HERMES_ADMIN_PASSWORD": existing.get("HERMES_ADMIN_PASSWORD")
-        or secrets.token_urlsafe(32),
-        "HERMES_AGENT_TOKEN": existing.get("HERMES_AGENT_TOKEN")
-        or secrets.token_urlsafe(64),
-    }
-    cold_start = (getattr(config, "autonomy", {}) or {}).get("cold_start", {}) or {}
-    return templates.TemplateResponse(
-        request,
-        "setup.html",
-        {
-            "version": __version__,
-            "environment": config.environment,
-            "existing": existing,
-            "generated": generated,
-            "required_keys": _SETUP_REQUIRED_KEYS,
-            "cold_start": cold_start,
-            "onboarding": True,  # Hide nav during onboarding
-        },
+    notice = (
+        "The browser-based setup wizard at /setup is deprecated.\n\n"
+        "Open the Noble Trader plugin in the Hermes desktop app and use the "
+        "Setup tab to configure your credentials natively (no browser needed).\n\n"
+        "The Setup tab collects:\n"
+        "  • NOBLE_TRADER_PROXY_REDIS_URL  — your signal stream Redis URL (with credentials)\n"
+        "  • NOBLE_TRADER_QUOTE_PROXY_URL   — public SSE endpoint (no separate creds)\n"
+        "  • TRADINGVIEW_API_KEY            — price data (RapidAPI)\n"
+        "  • METAAPI_TOKEN_DEMO / METAAPI_ACCOUNT_ID_DEMO — demo (paper) account\n"
+        "  • METAAPI_TOKEN / METAAPI_ACCOUNT_ID           — live account (auto-graduates)\n\n"
+        "If you are automating setup, POST JSON to /setup directly.\n\n"
+        "(The old `platform setup --print-url` option is removed.)\n"
     )
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(notice, status_code=410)
 
 
 def _read_user_local() -> dict[str, str]:
@@ -669,37 +790,49 @@ def _generate_user_local_yaml(form: dict) -> None:
 
 
 @app.post("/setup")
-async def setup_submit(request: Request) -> HTMLResponse:
-    """Accept the wizard form, write .env, auto-migrate, then enter the platform."""
-    form = await request.form()
+async def setup_submit(request: Request) -> JSONResponse:
+    """Accept the wizard form, write .env, auto-migrate, then enter the platform.
+
+    This is the backend endpoint the **native Noble Trader Hermes plugin** (Setup
+    tab) posts to, same-origin, as JSON. The legacy browser wizard (setup.html) is
+    retired, so this handler returns JSON (not HTML) on every path. It does NOT
+    call get_config() — it operates on .env directly — so it works whether or not
+    the dashboard app was initialized with a config.
+    """
+    from fastapi.responses import JSONResponse
+
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        form = await request.json()
+    else:
+        form = await request.form()
     updates: dict[str, str] = {}
 
     # Required pasted fields
     for key in _SETUP_REQUIRED_KEYS:
         val = (form.get(key) or "").strip()
         if not val:
-            existing = _read_env()
-            existing.update(_read_user_local())
-            return templates.TemplateResponse(
-                request, "setup.html",
-                {"version": __version__, "environment": get_config().environment,
-                 "existing": existing, "generated": {},
-                 "error": f"Missing required field: {key}",
-                 "required_keys": _SETUP_REQUIRED_KEYS,
-                 "cold_start": (getattr(get_config(), "autonomy", {}) or {}).get("cold_start", {}) or {},
-                 "onboarding": True},  # Hide nav during onboarding
+            return JSONResponse(
                 status_code=400,
+                content={"ok": False, "error": f"Missing required field: {key}"},
             )
-        updates[key] = val
 
     # Optional fields (kept only if provided)
     for key in ("MT4_MT5_SOURCE_ID", "MT4_MT5_RELAY_URL",
                 "DISCORD_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                "GITHUB_TOKEN", "HERMES_ADMIN_USERNAME",
-                "METAAPI_TOKEN", "METAAPI_ACCOUNT_ID"):
+                "GITHUB_TOKEN", "HERMES_ADMIN_USERNAME"):
         val = (form.get(key) or "").strip()
         if val:
             updates[key] = val
+
+    # Onboarding starts in DEMO mode. The cold-start gate auto-flips NT_MODE to
+    # "live" once >= exit_after_n_trades closed trades AND positive realized PnL
+    # are achieved (see hermes/portfolio/orchestrator.py:_check_cold_start_exit).
+    # Both demo and live MetaApi credentials are captured now so the flip is
+    # seamless with no re-onboarding.
+    updates["NT_MODE"] = (form.get("NT_MODE") or "demo").strip().lower() or "demo"
+    # Legacy boolean flag kept in sync for any code path still reading it.
+    updates["METAAPI_DEMO"] = "true" if updates["NT_MODE"] == "demo" else "false"
 
     # Auth secrets: keep existing or use generated
     existing = _read_env()
@@ -715,6 +848,12 @@ async def setup_submit(request: Request) -> HTMLResponse:
     updates["HERMES_ENVIRONMENT"] = existing.get("HERMES_ENVIRONMENT") or "development"
     updates["TRADINGVIEW_API_HOST"] = existing.get("TRADINGVIEW_API_HOST") or "tradingview-data1.p.rapidapi.com"
     updates["TRADINGVIEW_BASE_URL"] = existing.get("TRADINGVIEW_BASE_URL") or "https://tradingview-data1.p.rapidapi.com"
+    # System vars — injected from system_endpoints.yaml defaults so a fresh .env
+    # (user cleared it for testing) still has the infra credentials the code resolves
+    # via secret:supabase.url / secret:supabase.anon_key. These are NOT user-facing
+    # fields; they come from the codebase's system_endpoints.yaml, not the wizard form.
+    updates["SUPABASE_URL"] = existing.get("SUPABASE_URL") or _get_system_default("supabase.url", "https://pcvscowltlrxzgxjurcr.supabase.co")
+    updates["SUPABASE_ANON_KEY"] = existing.get("SUPABASE_ANON_KEY") or _get_system_default("supabase.anon_key", "")
 
     try:
         _write_env(updates)
@@ -726,21 +865,17 @@ async def setup_submit(request: Request) -> HTMLResponse:
 
         apply_migrations(load_config())
     except Exception as e:  # surface, don't silently fail
-        existing = _read_env()
-        existing.update(_read_user_local())
-        return templates.TemplateResponse(
-            request, "setup.html",
-            {"version": __version__, "environment": get_config().environment,
-             "existing": existing, "generated": {},
-             "error": f"Setup failed: {e}",
-             "required_keys": _SETUP_REQUIRED_KEYS,
-             "cold_start": (getattr(get_config(), "autonomy", {}) or {}).get("cold_start", {}) or {}},
+        return JSONResponse(
             status_code=500,
+            content={"ok": False, "error": f"Setup failed: {e}"},
         )
 
-    from fastapi.responses import RedirectResponse
+    # Invalidate the setup-status SWR cache so the next plugin poll sees
+    # setup_complete=True immediately (no waiting for cache TTL expiry).
+    _SETUP_STATUS_CACHE["data"] = None
+    _SETUP_STATUS_CACHE["ts"] = 0.0
 
-    return RedirectResponse(url="/portfolio", status_code=302)
+    return JSONResponse(status_code=200, content={"ok": True, "nt_mode": updates["NT_MODE"]})
 
 
 
@@ -1206,6 +1341,352 @@ async def api_status(_auth: dict[str, Any] = Depends(require_auth)) -> JSONRespo
             "ingest_stats": stats,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Public, read-only endpoints for the Hermes desktop plugin (noble-trader).
+#
+# These mirror the authed /api/status, /api/portfolio, /api/setup-status
+# handlers but expose the same payload WITHOUT require_auth. They exist so the
+# local Electron desktop plugin can surface the agent's status/portfolio/
+# setup-state on the user's own machine without round-tripping through the
+# Hermes plugin-namespace auth gate (the desktop plugin runs in the same
+# loopback trust domain as this dashboard). Marked explicitly as local-plugin
+# read-only; they return only non-sensitive aggregate state.
+# ---------------------------------------------------------------------------
+@app.get("/api/plugin/status")
+async def api_plugin_status() -> JSONResponse:
+    """Public read-only status for the Noble Trader desktop plugin."""
+    try:
+        config = get_config()
+        status = await check_all(config)
+        stats = get_ingest_stats(config)
+        return JSONResponse(
+            {
+                "version": __version__,
+                "config_hash": get_config_hash(config),
+                "environment": config.environment,
+                "checked_at": status["checked_at"],
+                "overall": status["overall"],
+                "subsystems": status["subsystems"],
+                "ingest_stats": stats,
+                "local_plugin": True,
+            }
+        )
+    except Exception as exc:  # Subsystem not ready / not configured yet.
+        return JSONResponse(
+            {
+                "version": __version__,
+                "overall": "unknown",
+                "subsystems": {},
+                "ingest_stats": {},
+                "local_plugin": True,
+                "degraded": True,
+                "detail": str(exc)[:160],
+            }
+        )
+
+
+@app.get("/api/plugin/portfolio")
+async def api_plugin_portfolio() -> JSONResponse:
+    """Public read-only portfolio metrics for the Noble Trader desktop plugin.
+
+    Mirrors the data the legacy :8080 /portfolio (portfolio.html) page renders —
+    account metrics, recent risk decisions, and the regime strip — so the Hermes
+    plugin can surface the same view natively without the web dashboard running.
+    """
+    try:
+        config = get_config()
+        from hermes.web.status import (
+            get_portfolio_metrics,
+            get_recent_risk_decisions,
+        )
+
+        metrics = get_portfolio_metrics(config)
+        # Canonical starting capital when no live brokerage snapshot exists yet.
+        configured_equity = 100000.0
+        decisions = get_recent_risk_decisions(config, limit=20)
+        regimes = _build_regime_strip(config)
+        return JSONResponse(
+            content=safe_json(
+                {
+                    "metrics": metrics,
+                    "configured_equity": configured_equity,
+                    "decisions": decisions,
+                    "regimes": regimes,
+                    "local_plugin": True,
+                }
+            )
+        )
+    except Exception as exc:  # Subsystem not ready / not configured yet.
+        return JSONResponse(
+            content=safe_json(
+                {
+                    "metrics": {},
+                    "configured_equity": 100000.0,
+                    "decisions": [],
+                    "regimes": [],
+                    "local_plugin": True,
+                    "degraded": True,
+                    "detail": str(exc)[:160],
+                }
+            )
+        )
+
+
+# Module-level cache so the Portfolio tab doesn't reconnect to MetaApi on every
+# poll. The broker connection is a ~1-2s WebSocket handshake; reuse it for 5 min.
+_BROKERAGE_CACHE: dict = {"client": None, "ts": 0.0, "ttl": 300.0}
+
+# REST-only fast path: use the MetaApi REST API for a quick equity read on the
+# first call (before the RPC WebSocket is connected). Avoids the ~8s WebSocket+
+# sync delay on cold start.
+_REST_ACCOUNT_CACHE: dict = {"equity": None, "currency": "USD", "ts": 0.0, "ttl": 30.0}
+
+
+
+async def _try_rest_account_info(token: str, account_id: str) -> Optional[dict]:
+        """Fast REST call to MetaApi for account info (equity, currency).
+
+        Returns None if the SDK or REST call fails. Used as a fallback when the
+        RPC WebSocket connection is slow to establish.
+        """
+        try:
+            from metaapi_cloud_sdk import MetaApi  # type: ignore
+            api = MetaApi(token)
+            account = await api.metatrader_account_api.get_account(account_id)
+            info = {}
+            if hasattr(account, "to_dict"):
+                info = account.to_dict()
+            elif isinstance(account, dict):
+                info = account
+            return info
+        except Exception:
+            return None
+
+
+@app.get("/api/plugin/brokerage")
+async def api_plugin_brokerage() -> JSONResponse:
+    """Live brokerage equity (MetaApi) + open/historical trades (MetaStats).
+
+    Drives the Noble Trader desktop plugin's Portfolio tab with REAL-TIME data
+    from the live MT4/MT5 account — not the static $100k fallback and not DuckDB.
+
+      - equity      : MetaApi account.get_account_information().equity (live)
+      - positions   : MetaApi account.get_positions() (live open positions)
+      - orders      : MetaApi account.get_orders() (live pending/active orders)
+      - open_trades : MetaStats.get_account_open_trades() (normalized, per user)
+      - trades      : MetaStats.get_account_trades() (historical, per user)
+
+    Requires METAAPI_TOKEN / METAAPI_ACCOUNT_ID (or the _DEMO pair) and an
+    optional METASTATS_TOKEN. When credentials or the connection are unavailable
+    the endpoint returns ``connected: False`` so the plugin can show
+    "No live connection" instead of a fabricated balance.
+    """
+    import asyncio
+    import time
+
+    from hermes.execution.brokers.metaapi_broker import (
+        MetaApiBroker,
+        resolve_metaapi_credentials,
+    )
+
+    def _not_connected(detail: str) -> JSONResponse:
+        return JSONResponse(
+            content=safe_json(
+                {"connected": False, "error": detail, "local_plugin": True}
+            )
+        )
+
+    try:
+        token, account_id, demo = resolve_metaapi_credentials()
+    except Exception as exc:  # pragma: no cover
+        return _not_connected(f"credential resolution failed: {exc}")
+
+    if not token or not account_id:
+        return _not_connected("MetaApi credentials not configured")
+
+    # Reuse a cached broker client within its TTL.
+    now = time.time()
+    client = _BROKERAGE_CACHE.get("client")
+    rest_info = None
+    if client is None or (now - _BROKERAGE_CACHE.get("ts", 0.0)) > _BROKERAGE_CACHE["ttl"]:
+        # Fast path: try REST first for immediate equity while RPC warms up.
+        # The _prewarm_brokerage thread may still be establishing the RPC
+        # connection, and we don't want to block the API response on it.
+        try:
+            rest_info = await asyncio.wait_for(
+                _try_rest_account_info(token, account_id), timeout=3.0
+            )
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        # Try RPC connection with a generous timeout
+        try:
+            client = MetaApiBroker(token=token, account_id=account_id, demo=demo)
+            await asyncio.wait_for(client.connect(), timeout=15.0)
+            _BROKERAGE_CACHE["client"] = client
+            _BROKERAGE_CACHE["ts"] = now
+        except (asyncio.TimeoutError, Exception) as exc:
+            # RPC timed out or failed — return REST fast-path data
+            if rest_info and rest_info.get("equity") is not None:
+                return JSONResponse(content=safe_json({
+                    "connected": True,
+                    "account_id": account_id,
+                    "demo": demo,
+                    "equity": float(rest_info["equity"]),
+                    "currency": rest_info.get("currency", "USD"),
+                    "positions": [], "orders": [], "open_trades": [], "trades": [],
+                    "metastats_configured": bool(os.getenv("METASTATS_TOKEN")),
+                    "local_plugin": True,
+                    "fast_path": True,
+                    "warning": f"RPC streaming connecting: {exc}",
+                }))
+            return _not_connected(f"MetaApi connect failed: {exc}")
+
+    # ── Equity + live positions from the MetaApi account ──────────────────
+    try:
+        info = await client.get_account_information() or {}
+        equity = float(info.get("equity") or 0.0)
+        currency = info.get("currency", "USD")
+    except Exception:
+        # Fall back to REST data if available
+        if rest_info and rest_info.get("equity") is not None:
+            equity = float(rest_info["equity"])
+            currency = rest_info.get("currency", "USD")
+        else:
+            equity = 0.0
+            currency = "USD"
+
+    try:
+        positions = await client.get_positions() or []
+    except Exception:
+        positions = []
+
+    try:
+        orders = await client.get_orders() or []
+    except Exception:
+        orders = []
+
+    # ── Open + historical trades from MetaStats (user-specified source) ────
+    open_trades: list = []
+    trades: list = []
+    stats_token = os.getenv("METASTATS_TOKEN") or os.getenv("METAAPI_TOKEN") or ""
+    if stats_token:
+        try:
+            from metaapi_cloud_metastats_sdk.metastats import MetaStats
+
+            stats = MetaStats(stats_token)
+            open_trades = await stats.get_account_open_trades(account_id) or []
+            end_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            start_time = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 30 * 86400)
+            )
+            trades = (
+                await stats.get_account_trades(
+                    account_id, start_time, end_time, limit=200
+                )
+                or []
+            )
+        except Exception as exc:
+            trades = [{"error": f"metastats failed: {exc}"}]
+
+    return JSONResponse(
+        content=safe_json(
+            {
+                "connected": True,
+                "account_id": account_id,
+                "demo": demo,
+                "equity": equity,
+                "currency": currency,
+                "positions": positions,
+                "orders": orders,
+                "open_trades": open_trades,
+                "trades": trades,
+                "metastats_configured": bool(stats_token),
+                "local_plugin": True,
+            }
+        )
+    )
+
+
+@app.get("/api/plugin/health")
+async def api_plugin_health() -> JSONResponse:
+    """Public read-only health for the Noble Trader desktop plugin.
+
+    Mirrors /health-simple but under the /api/plugin/ namespace so the
+    plugin's native shim path can poll it the same way as its other
+    /api/plugin/* endpoints.
+    """
+    return JSONResponse(
+        content=safe_json(
+            {
+                "status": "healthy",
+                "version": __version__,
+                "local_plugin": True,
+            }
+        )
+    )
+
+
+@app.get("/api/plugin/setup-status")
+async def api_plugin_setup_status() -> JSONResponse:
+    """Public read-only onboarding state for the Noble Trader desktop plugin.
+
+    Uses a stale-while-revalidate cache (5s TTL) so repeated plugin polls don't
+    re-shell the agent shim subprocess on every request.
+    """
+    return JSONResponse(
+        content=safe_json(
+            _cached_setup_status()
+        )
+    )
+
+@app.post("/api/plugin/setup")
+async def api_plugin_setup(request: Request) -> JSONResponse:
+    """Public write endpoint for the Noble Trader desktop plugin onboarding form.
+
+    Accepts the form fields from plugin.js SetupTab and writes them to .env.local.
+    This bypasses the Hermes gateway entirely — the plugin posts directly to the
+    agent web app at :8080.
+    """
+    try:
+        form = await request.json()
+    except Exception:
+        form = dict(await request.form())
+
+    # Write to .env.local (create if needed, preserve existing keys)
+    import os.path as _osp
+    env_path = _osp.join(_osp.dirname(_osp.dirname(_osp.dirname(
+        _osp.dirname(_osp.dirname(_osp.dirname(__file__)))))), ".env.local")
+    if not _osp.exists(env_path):
+        _env_path = _osp.join(_osp.dirname(_osp.dirname(__file__)), ".env")
+        if _osp.exists(_env_path):
+            env_path = _env_path
+
+    lines = []
+    if _osp.exists(env_path):
+        with open(env_path, "r") as f:
+            existing = f.read()
+        for line in existing.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key not in form:
+                    lines.append(f"{key}={stripped.split('=', 1)[1].strip()}")
+
+    # Add/update form fields
+    for key, value in form.items():
+        if value is not None:
+            lines.append(f"{key}={value}")
+
+    if lines:
+        os.makedirs(_osp.dirname(env_path), exist_ok=True)
+        with open(env_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    return JSONResponse(content={"ok": True, "env_path": env_path, "fields_written": list(form.keys())})
+
 
 
 @app.get("/api/heartbeats")

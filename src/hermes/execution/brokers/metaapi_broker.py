@@ -66,6 +66,46 @@ _SUCCESS_CODES: frozenset[int] = frozenset({
 })
 
 
+def resolve_metaapi_credentials(mode: str | None = None) -> tuple[str, str, bool]:
+    """Resolve (token, account_id, demo) for the requested mode.
+
+    Dual-mode model (see onboarding wizard):
+      - NT_MODE = "demo"  -> METAAPI_TOKEN_DEMO / METAAPI_ACCOUNT_ID_DEMO
+      - NT_MODE = "live"  -> METAAPI_TOKEN / METAAPI_ACCOUNT_ID
+
+    `mode` defaults to NT_MODE env (falling back to the legacy METAAPI_DEMO
+    boolean: "true" -> demo).
+
+    Auto-detect fallback: if the selected pair is empty but the *other* pair
+    is populated, use the non-empty pair. This handles the common migration
+    case where a user set live keys first (NT_MODE empty) and the legacy
+    METAAPI_DEMO=true defaults to demo — which would surface "credentials not
+    configured" even though live keys exist.
+    """
+    mode = (mode or os.getenv("NT_MODE") or "").strip().lower()
+    if not mode:
+        # Legacy fallback: METAAPI_DEMO=true (default) -> demo.
+        mode = "demo" if _parse_bool(os.getenv("METAAPI_DEMO"), default=True) else "live"
+    if mode == "live":
+        token = os.getenv("METAAPI_TOKEN") or ""
+        account_id = os.getenv("METAAPI_ACCOUNT_ID") or ""
+        # Auto-detect fallback: live keys empty, demo keys set → use demo
+        if not token or not account_id:
+            token = os.getenv("METAAPI_TOKEN_DEMO") or ""
+            account_id = os.getenv("METAAPI_ACCOUNT_ID_DEMO") or ""
+            return token, account_id, True
+        return token, account_id, False
+    # demo (default)
+    token = os.getenv("METAAPI_TOKEN_DEMO") or ""
+    account_id = os.getenv("METAAPI_ACCOUNT_ID_DEMO") or ""
+    # Auto-detect fallback: demo keys empty, live keys set → use live
+    if not token or not account_id:
+        token = os.getenv("METAAPI_TOKEN") or ""
+        account_id = os.getenv("METAAPI_ACCOUNT_ID") or ""
+        return token, account_id, False
+    return token, account_id, True
+
+
 def _as_int(v: Any) -> int | None:
     try:
         return int(v)
@@ -90,9 +130,17 @@ class MetaApiBroker(ExecutionBroker):
         fill_poll_sec: float = 5.0,
         symbol_map: dict[str, str] | None = None,
     ) -> None:
-        self._token = token or os.getenv("METAAPI_TOKEN") or ""
-        self._account_id = account_id or os.getenv("METAAPI_ACCOUNT_ID") or ""
-        self._demo = _parse_bool(os.getenv("METAAPI_DEMO"), default=True) if demo is None else demo
+        # Explicit args win (used by tests / legacy callers). Otherwise resolve
+        # the demo/live credential pair from NT_MODE (see resolve_metaapi_credentials).
+        if token or account_id:
+            self._token = token or ""
+            self._account_id = account_id or ""
+            self._demo = _parse_bool(os.getenv("METAAPI_DEMO"), default=True) if demo is None else demo
+        else:
+            r_token, r_account, r_demo = resolve_metaapi_credentials()
+            self._token = r_token
+            self._account_id = r_account
+            self._demo = r_demo if demo is None else demo
         self._fill_poll_sec = max(0.0, float(fill_poll_sec))
         self._symbol_map = {**_DEFAULT_SYMBOL_MAP, **(symbol_map or {})}
 
@@ -111,7 +159,8 @@ class MetaApiBroker(ExecutionBroker):
         if not self._token or not self._account_id:
             log.warning(
                 "metaapi_broker.misconfigured",
-                note="METAAPI_TOKEN / METAAPI_ACCOUNT_ID missing — live trading disabled",
+                note="METAAPI_TOKEN[_DEMO] / METAAPI_ACCOUNT_ID[_DEMO] missing for current NT_MODE — trading disabled",
+                mode=os.getenv("NT_MODE", "demo"),
             )
 
     # ── Connection lifecycle ────────────────────────────────────────────
@@ -119,8 +168,18 @@ class MetaApiBroker(ExecutionBroker):
     async def connect(self) -> None:
         if self._connected:
             return
+        # Re-resolve at connect time so an NT_MODE flip (demo->live) mid-session
+        # takes effect on the next broker interaction without a process restart.
         if not self._token or not self._account_id:
-            raise RuntimeError("MetaApiBroker: METAAPI_TOKEN / METAAPI_ACCOUNT_ID not set")
+            r_token, r_account, r_demo = resolve_metaapi_credentials()
+            self._token = r_token
+            self._account_id = r_account
+            self._demo = r_demo
+        if not self._token or not self._account_id:
+            raise RuntimeError(
+                "MetaApiBroker: no MetaApi credentials resolved for "
+                f"NT_MODE={os.getenv('NT_MODE', 'demo')}"
+            )
 
         # Lazy import so the module imports even where the SDK isn't installed.
         from metaapi_cloud_sdk import MetaApi  # type: ignore
@@ -474,6 +533,21 @@ class MetaApiBroker(ExecutionBroker):
         except Exception as err:  # pragma: no cover
             log.warning("metaapi_broker.get_account_failed", error=self._format_error(err))
             return None
+
+    async def get_orders(self) -> list[dict]:
+        """Return open orders for the MT4/MT5 account (MetaApi RPC get_orders).
+
+        Maps to the MetaApi REST endpoint
+        GET /users/current/accounts/:accountId/orders.
+        Returns [] if not connected or on failure.
+        """
+        if not self._connected or self._conn is None:
+            return []
+        try:
+            return await self._conn.get_orders() or []
+        except Exception as err:  # pragma: no cover
+            log.warning("metaapi_broker.get_orders_failed", error=self._format_error(err))
+            return []
 
     async def get_order(self, order_id: str) -> dict | None:
         """Return a broker order by id (None if unknown/unavailable)."""
