@@ -1629,6 +1629,47 @@ async def api_plugin_health() -> JSONResponse:
     )
 
 
+@app.get("/api/plugin/admin/lookback/{path:path}")
+async def api_plugin_admin_lookback(path: str) -> JSONResponse:
+    """Proxy the backend's read-only /api/lookback/* for the admin plugin.
+
+    The noble-trader-admin desktop plugin fetches EOD signal-lookback +
+    paper-portfolio data through this loopback endpoint (CORS-open on the
+    agent dashboard, same trust domain as /api/plugin/*). The actual
+    Supabase service-role key stays on the BACKEND; this route only relays
+    the backend's read-only aggregate JSON.
+
+    Backend URL is configurable via NOBLE_TRADER_BACKEND_URL (defaults to
+    the Render fallback host). Best-effort: any failure returns an empty
+    payload so the admin dashboard degrades gracefully.
+    """
+    import urllib.request
+
+    backend = (os.environ.get("NOBLE_TRADER_BACKEND_URL")
+               or "https://noble-trader-fastapi-backend.onrender.com").rstrip("/")
+    url = f"{backend}/api/lookback/{path}"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+        import json as _json
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            data = {"raw": raw[:2000]}
+        return JSONResponse(content=safe_json(data))
+    except Exception as exc:
+        return JSONResponse(
+            content=safe_json(
+                {
+                    "degraded": True,
+                    "detail": str(exc)[:200],
+                    "path": path,
+                }
+            )
+        )
+
+
 @app.get("/api/plugin/setup-status")
 async def api_plugin_setup_status() -> JSONResponse:
     """Public read-only onboarding state for the Noble Trader desktop plugin.
