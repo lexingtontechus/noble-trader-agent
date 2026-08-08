@@ -80,9 +80,9 @@ globalThis.fetch = async (url) => {
   }
   if (u.includes('/rest/v1/nt_symbol')) {
     return jsonResp([
-      { symbol: 'XAUUSD' },
-      { symbol: 'EURUSD' },
-      { symbol: 'BTCUSD' },
+      { symbol: 'XAUUSD', asset_class: 'commodities' },
+      { symbol: 'EURUSD', asset_class: 'forex' },
+      { symbol: 'BTCUSD', asset_class: 'crypto' },
     ])
   }
   if (u.includes('/rest/v1/nt_sweep_result')) {
@@ -119,6 +119,27 @@ globalThis.fetch = async (url) => {
   }
   if (u.includes('/rest/v1/v_paper_equity')) {
     return jsonResp([{ day: '2026-08-06', realized_pnl: 12.34, cumulative_pnl: 88.4 }])
+  }
+  if (u.includes('/rest/v1/v_talaria_signal_health')) {
+    return jsonResp([
+      { symbol: 'XAUUSD', n_resolved: 42, n_tp: 27, n_sl: 15, n_expired: 3, win_rate: 0.6429, avg_predicted_p_win: 0.61, bias: -0.0329, avg_pnl_bricks: 1.24, avg_pnl_dollars: 18.5, total_pnl: 777.0, profit_factor: 1.82, avg_ev: 0.21, avg_hold_bars: 9.5, last_signal_ts: nowIso() },
+      { symbol: 'EURUSD', n_resolved: 35, n_tp: 14, n_sl: 21, n_expired: 5, win_rate: 0.4, avg_predicted_p_win: 0.52, bias: 0.12, avg_pnl_bricks: -0.4, avg_pnl_dollars: -6.2, total_pnl: -217.0, profit_factor: 0.71, avg_ev: 0.08, avg_hold_bars: 11.2, last_signal_ts: nowIso() },
+    ])
+  }
+  if (u.includes('/rest/v1/v_talaria_portfolio_stats')) {
+    return jsonResp([{ n_days: 14, n_trades: 31, win_rate: 0.5484, avg_r: 0.92, profit_factor: 1.44, total_pnl: 885.2, total_return_pct: 0.0885, sharpe: 1.72, sortino: 2.41, calmar: 1.05, max_dd_pct: 0.084, vol_annual_pct: 0.184 }])
+  }
+  if (u.includes('/rest/v1/v_eod_calibration_bias')) {
+    return jsonResp([
+      { day: '2026-08-06', symbol: 'XAUUSD', avg_predicted_p_win: 0.61, realized_win_rate: 0.64, bias: -0.03, status: 'CALIBRATED' },
+      { day: '2026-08-06', symbol: 'EURUSD', avg_predicted_p_win: 0.52, realized_win_rate: 0.4, bias: 0.12, status: 'OVERCONFIDENT' },
+    ])
+  }
+  if (u.includes('/rest/v1/v_paper_vs_optimized_daily')) {
+    return jsonResp([
+      { day: '2026-08-06', paper_pnl: 12.34, equal_wt_pnl: 9.1, paper_minus_equal_wt: 3.24 },
+      { day: '2026-08-05', paper_pnl: -4.2, equal_wt_pnl: -2.0, paper_minus_equal_wt: -2.2 },
+    ])
   }
   throw new Error('Unexpected fetch URL: ' + u)
 }
@@ -162,7 +183,13 @@ function useEffect(cb, deps) {
   const i = cursor++
   const slot = hookSlots[i] || (hookSlots[i] = {})
   const key = deps ? JSON.stringify(deps) : undefined
-  if (!slot.ran || slot.key !== key) {
+  // Function deps stringify to null → can't distinguish a changed load
+  // callback. Real React compares by reference; emulate that: re-run the
+  // effect whenever a function dep is present (the load cb is recreated on
+  // each render pass, so this mirrors React). The gated fetches (bricks:
+  // enabled only after symbols/sweeps load) depend on this.
+  const hasFnDep = Array.isArray(deps) && deps.some((d) => typeof d === 'function')
+  if (!slot.ran || slot.key !== key || hasFnDep) {
     slot.ran = true
     slot.key = key
     const cleanup = cb()
@@ -308,10 +335,24 @@ assert(hasText('Hot signals'), 'hot-signal banner + stat render')
 assert(acc.classes.some((c) => c.includes('tla-hot-card')), 'banner visible (seed signal within 10m TTL)')
 assert(hasText('Kelly by symbol'), 'kelly histogram card renders')
 assert(hasText('Renko bricks'), 'renko chart card renders')
+assert(hasText('10 bricks'), 'renko chart window hint renders')
+assert(hasText('levels:'), 'renko pricing legend row renders (all symbols)')
+assert(hasText('ENTRY'), 'renko legend shows ENTRY level')
 assert(hasText('Paper portfolio'), 'Pro-only paper section renders (precision_pro claim)')
 assert(hasText('Precision Pro'), 'plan stat shows Precision Pro')
 assert(hasText('XAUUSD'), 'symbol list / chips render symbols')
 assert(hasText('Connecting') || hasText('Live'), 'realtime stat reflects socket state')
+
+// --- NEW analytics sections (Phase 1-3) ---
+assert(hasText('Signal health'), 'signal health scoreboard renders (all plans)')
+assert(hasText('Calibration bias'), 'calibration bias card renders (all plans)')
+assert(hasText('Markov + pattern') || hasText('Markov'), 'markov + brick-pattern card renders (all plans)')
+assert(hasText('Sizing what-if'), 'sizing what-if card renders (all plans)')
+assert(hasText('Portfolio stats'), 'portfolio stats card renders (Pro)')
+assert(hasText('What this is'), 'paper/portfolio header explainers render (disconnect clarity)')
+assert(hasText('Paper vs equal'), 'paper vs equal-weight card renders (Pro)')
+assert(hasText('Sharpe'), 'tear-sheet sharpe metric renders (Pro)')
+assert(hasText('profit factor') || hasText('Profit factor'), 'profit factor metric renders')
 
 // --- Scenario 2: no config → Connect tab ---
 globalThis.localStorage = makeLocalStorage({})

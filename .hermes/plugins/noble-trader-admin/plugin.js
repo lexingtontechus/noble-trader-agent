@@ -120,6 +120,7 @@ function useSupabaseData(config, table, params, enabled) {
 // Styles — theme variables only (no hardcoded colors)
 // ---------------------------------------------------------------------------
 const STYLE_ID = 'noble-trader-admin-style'
+const DAISY_CSS = `.dui-badge{display:inline-flex;align-items:center;justify-content:center;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,-webkit-backdrop-filter;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,backdrop-filter;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,backdrop-filter,-webkit-backdrop-filter;transition-timing-function:cubic-bezier(.4,0,.2,1);transition-timing-function:cubic-bezier(0,0,.2,1);transition-duration:.2s;height:1.25rem;font-size:.875rem;line-height:1.25rem;width:-moz-fit-content;width:fit-content;padding-left:.563rem;padding-right:.563rem;border-radius:var(--rounded-badge,1.9rem);border-width:1px;--tw-border-opacity:1;border-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-border-opacity)));--tw-bg-opacity:1;background-color:var(--fallback-b1,oklch(var(--b1)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)))}@media (hover:hover){.dui-menu li>:not(ul,.dui-menu-title,details,.dui-btn).dui-active,.dui-menu li>:not(ul,.dui-menu-title,details,.dui-btn):active,.dui-menu li>details>summary:active{--tw-bg-opacity:1;background-color:var(--fallback-n,oklch(var(--n)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-nc,oklch(var(--nc)/var(--tw-text-opacity)))}.dui-table tr.dui-hover:hover,.dui-table tr.dui-hover:nth-child(2n):hover{--tw-bg-opacity:1;background-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-bg-opacity)))}.dui-table-zebra tr.dui-hover:hover,.dui-table-zebra tr.dui-hover:nth-child(2n):hover{--tw-bg-opacity:1;background-color:var(--fallback-b3,oklch(var(--b3)/var(--tw-bg-opacity)))}}.dui-btn{display:inline-flex;height:3rem;min-height:3rem;flex-shrink:0;cursor:pointer;-webkit-user-select:none;-moz-user-select:none;user-select:none;flex-wrap:wrap;align-items:center;justify-content:center;border-radius:var(--rounded-btn,.5rem);border-color:transparent;border-color:oklch(var(--btn-color,var(--b2))/var(--tw-border-opacity));padding-left:1rem;padding-right:1rem;text-align:center;font-size:.875rem;line-height:1em;gap:.5rem;font-weight:600;text-decoration-line:none;transition-duration:.2s;transition-timing-function:cubic-bezier(0,0,.2,1);border-width:var(--border-btn,1px);transition-property:color,background-color,border-color,opacity,box-shadow,transform;--tw-text-opacity:1;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)));--tw-shadow:0 1px 2px 0 rgba(0,0,0,.05);--tw-shadow-colored:0 1px 2px 0 var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow);outline-color:var(--fallback-bc,oklch(var(--bc)/1));background-color:oklch(var(--btn-color,var(--b2))/var(--tw-bg-opacity));--tw-bg-opacity:1;--tw-border-opacity:1}.dui-btn-disabled,.dui-btn:disabled,.dui-btn[disabled]{pointer-events:none}:where(.dui-btn:is(input[type=checkbox])),:where(.dui-btn:is(input[type=radio])){width:auto;-webkit-appearance:none;-moz-appearance:none;appearance:none}.dui-btn:is(input[type=checkbox]):after,.dui-btn:is(input[type=radio]):after{--tw-content:attr(aria-label);content:var(--tw-content)}@media (hover:hover){.dui-btn:hover{--tw-border-opacity:1;border-color:var(--fallback-b3,oklch(var(--b3)/var(--tw-border-opacity)));--tw-bg-opacity:1;background-color:var(--fallback-b3,oklch(var(--b3)/var(--tw-bg-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn:hover{background-color:color-mix(in oklab,oklch(var(--btn-color,var(--b2))/var(--tw-bg-opacity,1)) 90%,#000);border-color:color-mix(in oklab,oklch(var(--btn-color,var(--b2))/var(--tw-border-opacity,1)) 90%,#000)}}@supports not (color:oklch(0% 0 0)){.dui-btn:hover{background-color:var(--btn-color,var(--fallback-b2));border-color:var(--btn-color,var(--fallback-b2))}}.dui-btn.dui-glass:hover{--glass-opacity:25%;--glass-border-opacity:15%}.dui-btn-ghost:hover{border-color:transparent}@supports (color:oklch(0% 0 0)){.dui-btn-ghost:hover{background-color:var(--fallback-bc,oklch(var(--bc)/.2))}}.dui-btn-outline:hover{--tw-border-opacity:1;border-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-border-opacity)));--tw-bg-opacity:1;background-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-b1,oklch(var(--b1)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-primary:hover{--tw-text-opacity:1;color:var(--fallback-pc,oklch(var(--pc)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-primary:hover{background-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-secondary:hover{--tw-text-opacity:1;color:var(--fallback-sc,oklch(var(--sc)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-secondary:hover{background-color:color-mix(in oklab,var(--fallback-s,oklch(var(--s)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-s,oklch(var(--s)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-accent:hover{--tw-text-opacity:1;color:var(--fallback-ac,oklch(var(--ac)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-accent:hover{background-color:color-mix(in oklab,var(--fallback-a,oklch(var(--a)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-a,oklch(var(--a)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-success:hover{--tw-text-opacity:1;color:var(--fallback-suc,oklch(var(--suc)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-success:hover{background-color:color-mix(in oklab,var(--fallback-su,oklch(var(--su)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-su,oklch(var(--su)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-info:hover{--tw-text-opacity:1;color:var(--fallback-inc,oklch(var(--inc)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-info:hover{background-color:color-mix(in oklab,var(--fallback-in,oklch(var(--in)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-in,oklch(var(--in)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-warning:hover{--tw-text-opacity:1;color:var(--fallback-wac,oklch(var(--wac)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-warning:hover{background-color:color-mix(in oklab,var(--fallback-wa,oklch(var(--wa)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-wa,oklch(var(--wa)/1)) 90%,#000)}}.dui-btn-outline.dui-btn-error:hover{--tw-text-opacity:1;color:var(--fallback-erc,oklch(var(--erc)/var(--tw-text-opacity)))}@supports (color:color-mix(in oklab,black,black)){.dui-btn-outline.dui-btn-error:hover{background-color:color-mix(in oklab,var(--fallback-er,oklch(var(--er)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-er,oklch(var(--er)/1)) 90%,#000)}}.dui-btn-disabled:hover,.dui-btn:disabled:hover,.dui-btn[disabled]:hover{--tw-border-opacity:0;background-color:var(--fallback-n,oklch(var(--n)/var(--tw-bg-opacity)));--tw-bg-opacity:0.2;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)));--tw-text-opacity:0.2}@supports (color:color-mix(in oklab,black,black)){.dui-btn:is(input[type=checkbox]:checked):hover,.dui-btn:is(input[type=radio]:checked):hover{background-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000)}}:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>:not(ul,details,.dui-menu-title)):not(.dui-active,.dui-btn):hover,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>details>summary:not(.dui-menu-title)):not(.dui-active,.dui-btn):hover{cursor:pointer;outline:2px solid transparent;outline-offset:2px}@supports (color:oklch(0% 0 0)){:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>:not(ul,details,.dui-menu-title)):not(.dui-active,.dui-btn):hover,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>details>summary:not(.dui-menu-title)):not(.dui-active,.dui-btn):hover{background-color:var(--fallback-bc,oklch(var(--bc)/.1))}}}.dui-join{display:inline-flex;align-items:stretch;border-radius:var(--rounded-btn,.5rem)}.dui-join :where(.dui-join-item){border-start-end-radius:0;border-end-end-radius:0;border-end-start-radius:0;border-start-start-radius:0}.dui-join .dui-join-item:not(:first-child):not(:last-child),.dui-join :not(:first-child):not(:last-child) .dui-join-item{border-start-end-radius:0;border-end-end-radius:0;border-end-start-radius:0;border-start-start-radius:0}.dui-join .dui-join-item:first-child:not(:last-child),.dui-join :first-child:not(:last-child) .dui-join-item{border-start-end-radius:0;border-end-end-radius:0}.dui-join .dui-dropdown .dui-join-item:first-child:not(:last-child),.dui-join :first-child:not(:last-child) .dui-dropdown .dui-join-item{border-start-end-radius:inherit;border-end-end-radius:inherit}.dui-join :where(.dui-join-item:first-child:not(:last-child)),.dui-join :where(:first-child:not(:last-child) .dui-join-item){border-end-start-radius:inherit;border-start-start-radius:inherit}.dui-join .dui-join-item:last-child:not(:first-child),.dui-join :last-child:not(:first-child) .dui-join-item{border-end-start-radius:0;border-start-start-radius:0}.dui-join :where(.dui-join-item:last-child:not(:first-child)),.dui-join :where(:last-child:not(:first-child) .dui-join-item){border-start-end-radius:inherit;border-end-end-radius:inherit}@supports not selector(:has(*)){:where(.dui-join *){border-radius:inherit}}@supports selector(:has(*)){:where(.dui-join :has(.dui-join-item)){border-radius:inherit}}.dui-menu{display:flex;flex-direction:column;flex-wrap:wrap;font-size:.875rem;line-height:1.25rem;padding:.5rem}.dui-menu :where(li ul){position:relative;white-space:nowrap;margin-inline-start:1rem;padding-inline-start:.5rem}.dui-menu :where(li:not(.dui-menu-title)>:not(ul,details,.dui-menu-title,.dui-btn)),.dui-menu :where(li:not(.dui-menu-title)>details>summary:not(.dui-menu-title)){display:grid;grid-auto-flow:column;align-content:flex-start;align-items:center;gap:.5rem;grid-auto-columns:minmax(auto,max-content) auto max-content;-webkit-user-select:none;-moz-user-select:none;user-select:none}.dui-menu li.dui-disabled{cursor:not-allowed;-webkit-user-select:none;-moz-user-select:none;user-select:none;color:var(--fallback-bc,oklch(var(--bc)/.3))}.dui-menu :where(li>.dui-menu-dropdown:not(.dui-menu-dropdown-show)){display:none}:where(.dui-menu li){position:relative;display:flex;flex-shrink:0;flex-direction:column;flex-wrap:wrap;align-items:stretch}:where(.dui-menu li) .dui-badge{justify-self:end}.dui-table{position:relative;width:100%;border-radius:var(--rounded-box,1rem);text-align:left;font-size:.875rem;line-height:1.25rem}.dui-table :where(.dui-table-pin-rows thead tr){position:sticky;top:0;z-index:1;--tw-bg-opacity:1;background-color:var(--fallback-b1,oklch(var(--b1)/var(--tw-bg-opacity)))}.dui-table :where(.dui-table-pin-rows tfoot tr){position:sticky;bottom:0;z-index:1;--tw-bg-opacity:1;background-color:var(--fallback-b1,oklch(var(--b1)/var(--tw-bg-opacity)))}.dui-table :where(.dui-table-pin-cols tr th){position:sticky;left:0;right:0;--tw-bg-opacity:1;background-color:var(--fallback-b1,oklch(var(--b1)/var(--tw-bg-opacity)))}.dui-table-zebra tbody tr:nth-child(2n) :where(.dui-table-pin-cols tr th){--tw-bg-opacity:1;background-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-bg-opacity)))}.dui-btm-nav>:where(.dui-active){border-top-width:2px;--tw-bg-opacity:1;background-color:var(--fallback-b1,oklch(var(--b1)/var(--tw-bg-opacity)))}@media (prefers-reduced-motion:no-preference){.dui-btn{animation:button-pop var(--animation-btn,.25s) ease-out}}.dui-btn:active:focus,.dui-btn:active:hover{animation:button-pop 0s ease-out;transform:scale(var(--btn-focus-scale,.97))}@supports not (color:oklch(0% 0 0)){.dui-btn{background-color:var(--btn-color,var(--fallback-b2));border-color:var(--btn-color,var(--fallback-b2))}.dui-btn-primary{--btn-color:var(--fallback-p)}}@supports (color:color-mix(in oklab,black,black)){.dui-btn-active{background-color:color-mix(in oklab,oklch(var(--btn-color,var(--b3))/var(--tw-bg-opacity,1)) 90%,#000);border-color:color-mix(in oklab,oklch(var(--btn-color,var(--b3))/var(--tw-border-opacity,1)) 90%,#000)}.dui-btn-outline.dui-btn-primary.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-p,oklch(var(--p)/1)) 90%,#000)}.dui-btn-outline.dui-btn-secondary.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-s,oklch(var(--s)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-s,oklch(var(--s)/1)) 90%,#000)}.dui-btn-outline.dui-btn-accent.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-a,oklch(var(--a)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-a,oklch(var(--a)/1)) 90%,#000)}.dui-btn-outline.dui-btn-success.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-su,oklch(var(--su)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-su,oklch(var(--su)/1)) 90%,#000)}.dui-btn-outline.dui-btn-info.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-in,oklch(var(--in)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-in,oklch(var(--in)/1)) 90%,#000)}.dui-btn-outline.dui-btn-warning.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-wa,oklch(var(--wa)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-wa,oklch(var(--wa)/1)) 90%,#000)}.dui-btn-outline.dui-btn-error.dui-btn-active{background-color:color-mix(in oklab,var(--fallback-er,oklch(var(--er)/1)) 90%,#000);border-color:color-mix(in oklab,var(--fallback-er,oklch(var(--er)/1)) 90%,#000)}}.dui-btn:focus-visible{outline-style:solid;outline-width:2px;outline-offset:2px}.dui-btn-primary{--tw-text-opacity:1;color:var(--fallback-pc,oklch(var(--pc)/var(--tw-text-opacity)));outline-color:var(--fallback-p,oklch(var(--p)/1))}@supports (color:oklch(0% 0 0)){.dui-btn-primary{--btn-color:var(--p)}}.dui-btn.dui-glass{--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;box-shadow:var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow);outline-color:currentColor}.dui-btn.dui-glass.dui-btn-active{--glass-opacity:25%;--glass-border-opacity:15%}.dui-btn-ghost{border-width:1px;border-color:transparent;background-color:transparent;color:currentColor;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;box-shadow:var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow);outline-color:currentColor}.dui-btn-ghost.dui-btn-active{border-color:transparent;background-color:var(--fallback-bc,oklch(var(--bc)/.2))}.dui-btn-link.dui-btn-active{border-color:transparent;background-color:transparent;text-decoration-line:underline}.dui-btn-outline{border-color:currentColor;background-color:transparent;--tw-text-opacity:1;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)));--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;box-shadow:var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow)}.dui-btn-outline.dui-btn-active{--tw-border-opacity:1;border-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-border-opacity)));--tw-bg-opacity:1;background-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-b1,oklch(var(--b1)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-primary{--tw-text-opacity:1;color:var(--fallback-p,oklch(var(--p)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-primary.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-pc,oklch(var(--pc)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-secondary{--tw-text-opacity:1;color:var(--fallback-s,oklch(var(--s)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-secondary.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-sc,oklch(var(--sc)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-accent{--tw-text-opacity:1;color:var(--fallback-a,oklch(var(--a)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-accent.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-ac,oklch(var(--ac)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-success{--tw-text-opacity:1;color:var(--fallback-su,oklch(var(--su)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-success.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-suc,oklch(var(--suc)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-info{--tw-text-opacity:1;color:var(--fallback-in,oklch(var(--in)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-info.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-inc,oklch(var(--inc)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-warning{--tw-text-opacity:1;color:var(--fallback-wa,oklch(var(--wa)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-warning.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-wac,oklch(var(--wac)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-error{--tw-text-opacity:1;color:var(--fallback-er,oklch(var(--er)/var(--tw-text-opacity)))}.dui-btn-outline.dui-btn-error.dui-btn-active{--tw-text-opacity:1;color:var(--fallback-erc,oklch(var(--erc)/var(--tw-text-opacity)))}.dui-btn.dui-btn-disabled,.dui-btn:disabled,.dui-btn[disabled]{--tw-border-opacity:0;background-color:var(--fallback-n,oklch(var(--n)/var(--tw-bg-opacity)));--tw-bg-opacity:0.2;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)));--tw-text-opacity:0.2}.dui-btn:is(input[type=checkbox]:checked),.dui-btn:is(input[type=radio]:checked){--tw-border-opacity:1;border-color:var(--fallback-p,oklch(var(--p)/var(--tw-border-opacity)));--tw-bg-opacity:1;background-color:var(--fallback-p,oklch(var(--p)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-pc,oklch(var(--pc)/var(--tw-text-opacity)))}.dui-btn:is(input[type=checkbox]:checked):focus-visible,.dui-btn:is(input[type=radio]:checked):focus-visible{outline-color:var(--fallback-p,oklch(var(--p)/1))}@keyframes button-pop{0%{transform:scale(var(--btn-focus-scale,.98))}40%{transform:scale(1.02)}to{transform:scale(1)}}@keyframes checkmark{0%{background-position-y:5px}50%{background-position-y:-2px}to{background-position-y:0}}.dui-join>:where(:not(:first-child)){margin-top:0;margin-bottom:0;margin-inline-start:-1px}.dui-join>:where(:not(:first-child)):is(.dui-btn){margin-inline-start:calc(var(--border-btn)*-1)}.dui-join-item:focus{isolation:isolate}:where(.dui-menu li:empty){--tw-bg-opacity:1;background-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-bg-opacity)));opacity:.1;margin:.5rem 1rem;height:1px}.dui-menu :where(li ul):before{position:absolute;bottom:.75rem;inset-inline-start:0;top:.75rem;width:1px;--tw-bg-opacity:1;background-color:var(--fallback-bc,oklch(var(--bc)/var(--tw-bg-opacity)));opacity:.1;content:""}.dui-menu :where(li:not(.dui-menu-title)>:not(ul,details,.dui-menu-title,.dui-btn)),.dui-menu :where(li:not(.dui-menu-title)>details>summary:not(.dui-menu-title)){border-radius:var(--rounded-btn,.5rem);padding:.5rem 1rem;text-align:start;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,-webkit-backdrop-filter;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,backdrop-filter;transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,backdrop-filter,-webkit-backdrop-filter;transition-timing-function:cubic-bezier(.4,0,.2,1);transition-timing-function:cubic-bezier(0,0,.2,1);transition-duration:.2s;text-wrap:balance}:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>:not(ul,details,.dui-menu-title)):is(summary):not(.dui-active,.dui-btn):focus-visible,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>:not(ul,details,.dui-menu-title)):not(summary,.dui-active,.dui-btn).dui-focus,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>:not(ul,details,.dui-menu-title)):not(summary,.dui-active,.dui-btn):focus,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>details>summary:not(.dui-menu-title)):is(summary):not(.dui-active,.dui-btn):focus-visible,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>details>summary:not(.dui-menu-title)):not(summary,.dui-active,.dui-btn).dui-focus,:where(.dui-menu li:not(.dui-menu-title,.dui-disabled)>details>summary:not(.dui-menu-title)):not(summary,.dui-active,.dui-btn):focus{cursor:pointer;background-color:var(--fallback-bc,oklch(var(--bc)/.1));--tw-text-opacity:1;color:var(--fallback-bc,oklch(var(--bc)/var(--tw-text-opacity)));outline:2px solid transparent;outline-offset:2px}.dui-menu li>:not(ul,.dui-menu-title,details,.dui-btn).dui-active,.dui-menu li>:not(ul,.dui-menu-title,details,.dui-btn):active,.dui-menu li>details>summary:active{--tw-bg-opacity:1;background-color:var(--fallback-n,oklch(var(--n)/var(--tw-bg-opacity)));--tw-text-opacity:1;color:var(--fallback-nc,oklch(var(--nc)/var(--tw-text-opacity)))}.dui-menu :where(li>details>summary)::-webkit-details-marker{display:none}.dui-menu :where(li>.dui-menu-dropdown-toggle):after,.dui-menu :where(li>details>summary):after{justify-self:end;display:block;margin-top:-.5rem;height:.5rem;width:.5rem;transform:rotate(45deg);transition-property:transform,margin-top;transition-duration:.3s;transition-timing-function:cubic-bezier(.4,0,.2,1);content:"";transform-origin:75% 75%;box-shadow:2px 2px;pointer-events:none}.dui-menu :where(li>.dui-menu-dropdown-toggle.dui-menu-dropdown-show):after,.dui-menu :where(li>details[open]>summary):after{transform:rotate(225deg);margin-top:0}@keyframes modal-pop{0%{opacity:0}}@keyframes progress-loading{50%{background-position-x:-115%}}@keyframes radiomark{0%{box-shadow:0 0 0 12px var(--fallback-b1,oklch(var(--b1)/1)) inset,0 0 0 12px var(--fallback-b1,oklch(var(--b1)/1)) inset}50%{box-shadow:0 0 0 3px var(--fallback-b1,oklch(var(--b1)/1)) inset,0 0 0 3px var(--fallback-b1,oklch(var(--b1)/1)) inset}to{box-shadow:0 0 0 4px var(--fallback-b1,oklch(var(--b1)/1)) inset,0 0 0 4px var(--fallback-b1,oklch(var(--b1)/1)) inset}}@keyframes rating-pop{0%{transform:translateY(-.125em)}40%{transform:translateY(-.125em)}to{transform:translateY(0)}}@keyframes skeleton{0%{background-position:150%}to{background-position:-50%}}.dui-table:where([dir=rtl],[dir=rtl] *){text-align:right}.dui-table :where(th,td){padding:.75rem 1rem;vertical-align:middle}.dui-table tr.dui-active,.dui-table tr.dui-active:nth-child(2n),.dui-table-zebra tbody tr:nth-child(2n){--tw-bg-opacity:1;background-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-bg-opacity)))}.dui-table-zebra tr.dui-active,.dui-table-zebra tr.dui-active:nth-child(2n),.dui-table-zebra-zebra tbody tr:nth-child(2n){--tw-bg-opacity:1;background-color:var(--fallback-b3,oklch(var(--b3)/var(--tw-bg-opacity)))}.dui-table :where(thead tr,tbody tr:not(:last-child),tbody tr:first-child:last-child){border-bottom-width:1px;--tw-border-opacity:1;border-bottom-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-border-opacity)))}.dui-table :where(thead,tfoot){white-space:nowrap;font-size:.75rem;line-height:1rem;font-weight:700;color:var(--fallback-bc,oklch(var(--bc)/.6))}.dui-table :where(tfoot){border-top-width:1px;--tw-border-opacity:1;border-top-color:var(--fallback-b2,oklch(var(--b2)/var(--tw-border-opacity)))}@keyframes toast-pop{0%{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}.dui-glass,.dui-glass.dui-btn-active{border:none;-webkit-backdrop-filter:blur(var(--glass-blur,40px));backdrop-filter:blur(var(--glass-blur,40px));background-color:transparent;background-image:linear-gradient(135deg,rgb(255 255 255/var(--glass-opacity,30%)) 0,transparent 100%),linear-gradient(var(--glass-reflex-degree,100deg),rgb(255 255 255/var(--glass-reflex-opacity,10%)) 25%,transparent 25%);box-shadow:0 0 0 1px rgb(255 255 255/var(--glass-border-opacity,10%)) inset,0 0 0 2px rgb(0 0 0/5%);text-shadow:0 1px rgb(0 0 0/var(--glass-text-shadow-opacity,5%))}@media (hover:hover){.dui-glass.dui-btn-active{border:none;-webkit-backdrop-filter:blur(var(--glass-blur,40px));backdrop-filter:blur(var(--glass-blur,40px));background-color:transparent;background-image:linear-gradient(135deg,rgb(255 255 255/var(--glass-opacity,30%)) 0,transparent 100%),linear-gradient(var(--glass-reflex-degree,100deg),rgb(255 255 255/var(--glass-reflex-opacity,10%)) 25%,transparent 25%);box-shadow:0 0 0 1px rgb(255 255 255/var(--glass-border-opacity,10%)) inset,0 0 0 2px rgb(0 0 0/5%);text-shadow:0 1px rgb(0 0 0/var(--glass-text-shadow-opacity,5%))}}.dui-badge-sm{height:1rem;font-size:.75rem;line-height:1rem;padding-left:.438rem;padding-right:.438rem}.dui-btm-nav-xs>:where(.dui-active){border-top-width:1px}.dui-btm-nav-sm>:where(.dui-active){border-top-width:2px}.dui-btm-nav-md>:where(.dui-active){border-top-width:2px}.dui-btm-nav-lg>:where(.dui-active){border-top-width:4px}.dui-btn-sm{height:2rem;min-height:2rem;padding-left:.75rem;padding-right:.75rem;font-size:.875rem}.dui-btn-square:where(.dui-btn-sm){height:2rem;width:2rem;padding:0}.dui-btn-circle:where(.dui-btn-sm){height:2rem;width:2rem;border-radius:9999px;padding:0}.dui-join.dui-join-vertical{flex-direction:column}.dui-join.dui-join-vertical .dui-join-item:first-child:not(:last-child),.dui-join.dui-join-vertical :first-child:not(:last-child) .dui-join-item{border-end-start-radius:0;border-end-end-radius:0;border-start-start-radius:inherit;border-start-end-radius:inherit}.dui-join.dui-join-vertical .dui-join-item:last-child:not(:first-child),.dui-join.dui-join-vertical :last-child:not(:first-child) .dui-join-item{border-start-start-radius:0;border-start-end-radius:0;border-end-start-radius:inherit;border-end-end-radius:inherit}.dui-join.dui-join-horizontal{flex-direction:row}.dui-join.dui-join-horizontal .dui-join-item:first-child:not(:last-child),.dui-join.dui-join-horizontal :first-child:not(:last-child) .dui-join-item{border-end-end-radius:0;border-start-end-radius:0;border-end-start-radius:inherit;border-start-start-radius:inherit}.dui-join.dui-join-horizontal .dui-join-item:last-child:not(:first-child),.dui-join.dui-join-horizontal :last-child:not(:first-child) .dui-join-item{border-end-start-radius:0;border-start-start-radius:0;border-end-end-radius:inherit;border-start-end-radius:inherit}.dui-join.dui-join-vertical>:where(:not(:first-child)){margin-left:0;margin-right:0;margin-top:-1px}.dui-join.dui-join-vertical>:where(:not(:first-child)):is(.dui-btn){margin-top:calc(var(--border-btn)*-1)}.dui-join.dui-join-horizontal>:where(:not(:first-child)){margin-top:0;margin-bottom:0;margin-inline-start:-1px}.dui-join.dui-join-horizontal>:where(:not(:first-child)):is(.dui-btn){margin-inline-start:calc(var(--border-btn)*-1);margin-top:0}.dui-table-sm :not(thead):not(tfoot) tr{font-size:.875rem;line-height:1.25rem}.dui-table-sm :where(th,td){padding:.5rem .75rem}.dui-table{display:table}`
 const CSS = [
   '.nta-root{display:flex;flex-direction:column;height:100%;gap:12px;padding:16px;overflow:auto;}',
   '.nta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}',
@@ -177,6 +178,11 @@ function ensureStyle() {
   }
   // Always refresh textContent — hot-reloads keep the OLD css otherwise and
   // new classes (brick tabs etc.) silently never apply.
+  if (globalThis.__DAISY_INJECTED__ !== "noble-trader-admin-style") {
+    const ds = document.getElementById('daisy-noble-trader-admin-style')
+    if (!ds) { const d = document.createElement('style'); d.id = 'daisy-noble-trader-admin-style'; d.textContent = DAISY_CSS; document.head.appendChild(d) }
+    globalThis.__DAISY_INJECTED__ = "noble-trader-admin-style"
+  }
   style.textContent = CSS
 }
 
@@ -437,7 +443,7 @@ function StatCard({ title, value, sub, tone }) {
 function OutcomeBadge({ outcome }) {
   const cls = outcome === 'tp_hit' ? 'tp' : outcome === 'sl_hit' ? 'sl' : outcome === 'expired' ? 'exp' : 'open'
   const label = outcome || 'open'
-  return React.createElement('span', { className: cn('nta-badge', cls) }, label)
+  return React.createElement('span', { className: cn('nta-badge', 'dui-badge', 'dui-badge-sm', cls) }, label)
 }
 
 // Adaptive price formatter: fewer decimals for large prices (XAU ~4095 → 2dp),
@@ -450,6 +456,18 @@ function fmtPrice(v) {
   if (abs >= 100) return n.toFixed(3)
   if (abs >= 10) return n.toFixed(4)
   return n.toFixed(5)
+}
+
+// Full-decimal USD price formatter (full-value rule): 6dp → rstrip trailing
+// zeros → keep ≥2dp → "$" prefix. XAU 4032.2 → $4032.20, XAG 57.0568 →
+// $57.0568, FX 1.13896 → $1.13896 (no 1dp truncation for large prices).
+function fmtUsd(v) {
+  if (v == null || isNaN(Number(v))) return '—'
+  const n = Number(v)
+  let s = n.toFixed(6).replace(/\.?0+$/, '')
+  if (!s.includes('.')) s += '.00'
+  else if (s.split('.')[1].length < 2) s = n.toFixed(2)
+  return '$' + s
 }
 
 // ---------------------------------------------------------------------------
@@ -510,9 +528,9 @@ function ConnectTab({ config, onSave }) {
           onChange: (e) => setKey(e.target.value),
         })),
       React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-        React.createElement('button', { className: 'nta-btn', onClick: save }, 'Save & Connect'),
+        React.createElement('button', { className: cn('nta-btn', 'dui-btn', 'dui-btn-primary', 'dui-btn-sm'), onClick: save }, 'Save & Connect'),
         React.createElement('button', {
-          className: 'nta-btn', onClick: testConnection, disabled: testing,
+          className: cn('nta-btn', 'dui-btn', 'dui-btn-ghost', 'dui-btn-sm'), onClick: testConnection, disabled: testing,
         }, testing ? 'Testing…' : 'Test connection'),
       ),
       testResult && React.createElement('div', {
@@ -559,10 +577,15 @@ function brickStep(total, target = 8) {
 }
 
 function fmtBrickPrice(p) {
-  if (p >= 10000) return p.toFixed(0)
-  if (p >= 100) return p.toFixed(1)
-  if (p >= 1) return p.toFixed(2)
-  return p.toFixed(4)
+  const n = Number(p)
+  if (n == null || isNaN(n)) return '—'
+  // Full-value format (6dp → rstrip trailing zeros → keep ≥2dp): BTC 64900 →
+  // $64900.00, XAU 4072.5 → $4072.50, FX 1.137 → $1.137, XAG 57.0568 →
+  // $57.0568 (no magnitude-based truncation).
+  let s = n.toFixed(6).replace(/\.?0+$/, '')
+  if (!s.includes('.')) s += '.00'
+  else if (s.split('.')[1].length < 2) s = n.toFixed(2)
+  return '$' + s
 }
 
 // bricks: [{ open_price, close_price, direction }] ordered by brick_index asc.
@@ -571,6 +594,10 @@ function RenkoBrickChart({ bricks, height = 300, levels }) {
   if (!bricks || !bricks.length) {
     return React.createElement('div', { className: 'nta-hint' }, 'No bricks yet')
   }
+  // Y-scale from BRICKS ONLY — levels no longer stretch the price range, so a
+  // far-away ENTRY/SL/TP can't crush the bricks into a flat band (the BTCUSD
+  // 6420-6468 mess). Level lines are drawn only when inside the visible range,
+  // and all pricing lives in the legend row BELOW the chart (2026-08-08).
   let minP = Infinity
   let maxP = -Infinity
   for (const b of bricks) {
@@ -578,12 +605,6 @@ function RenkoBrickChart({ bricks, height = 300, levels }) {
     const hi = Math.max(b.open_price, b.close_price)
     if (lo < minP) minP = lo
     if (hi > maxP) maxP = hi
-  }
-  for (const lv of (levels || [])) {
-    if (lv.price != null && Number(lv.price) > 0) {
-      if (lv.price < minP) minP = lv.price
-      if (lv.price > maxP) maxP = lv.price
-    }
   }
   const range = maxP - minP || 1
   const pad = range * 0.12
@@ -664,9 +685,11 @@ function RenkoBrickChart({ bricks, height = 300, levels }) {
     }, 'Brick index'),
   ]
 
-  // Level lines (entry/sl/tp) — dashed horizontal + right label
+  // Level lines — dashed horizontal, drawn ONLY when inside the visible brick
+  // range. No on-chart labels (pricing is in the legend row below).
   const levelEls = (levels || [])
     .filter((lv) => lv.price != null && Number(lv.price) > 0)
+    .filter((lv) => Number(lv.price) >= pMin && Number(lv.price) <= pMax)
     .map((lv) => {
       const y = priceToY(Number(lv.price))
       const color = lv.color || 'var(--ui-text-tertiary,#888)'
@@ -676,11 +699,19 @@ function RenkoBrickChart({ bricks, height = 300, levels }) {
           y1: y, y2: y,
           stroke: color, strokeWidth: 1, strokeDasharray: '5 3', strokeOpacity: 0.8,
         }),
-        React.createElement('text', {
-          x: BRICK_LEFT_PAD + bricks.length * BRICK_STEP + 5, y: y - 2,
-          fill: color, fontSize: 9, fontFamily: 'monospace', fontWeight: 600,
-        }, `${lv.label} ${fmtBrickPrice(Number(lv.price))}`),
       )
+    })
+
+  // Pricing legend (for ALL symbols) — colored ENTRY/SL/TP with full-value
+  // prices, rendered below the chart so nothing overlaps the bricks.
+  const levelLegend = (levels || [])
+    .filter((lv) => lv.price != null && Number(lv.price) > 0)
+    .map((lv) => {
+      const color = lv.color || 'var(--ui-text-tertiary,#888)'
+      return React.createElement('span', {
+        key: 'lg' + lv.label,
+        style: { color, fontWeight: 600, marginRight: 14, fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' },
+      }, `${lv.label} ${fmtBrickPrice(Number(lv.price))}`)
     })
 
   return React.createElement('div', null,
@@ -696,12 +727,17 @@ function RenkoBrickChart({ bricks, height = 300, levels }) {
       idxEls,
       axisTitles,
     ),
+    levelLegend.length
+      ? React.createElement('div', { style: { marginTop: 6, display: 'flex', flexWrap: 'wrap', alignItems: 'center' } },
+          React.createElement('span', { style: { marginRight: 4, fontSize: 11, color: 'var(--ui-text-quaternary,#666)' } }, 'levels:'),
+          levelLegend,
+        )
+      : null,
     React.createElement('div', { className: 'nta-hint', style: { marginTop: 4 } },
       `${bricks.length} bricks (last ${bricks.length} of series) · up = buy (blue) · down = sell (red) · last brick index ${bricks[bricks.length - 1].brick_index != null ? bricks[bricks.length - 1].brick_index : bricks.length - 1}`),
   )
 }
 
-// ---------------------------------------------------------------------------
 // Hot signals banner — qualified, most-recent signals ranked by effective kelly
 // TTL: only signals with ts within HOT_TTL_MS of the newest signal are shown,
 // so stale chips drop off automatically on the next poll.
@@ -745,6 +781,134 @@ function HotSignalsBanner({ signals }) {
 }
 
 // ---------------------------------------------------------------------------
+// Markov + pattern + sizing helpers (ported from talaria, 2026-08-08)
+// ---------------------------------------------------------------------------
+function brickPattern(bricks) {
+  const dirs = (bricks || [])
+    .map((b) => String(b.direction || '').toLowerCase())
+    .filter((d) => d === 'up' || d === 'down')
+  const win = dirs.slice(-10)
+  if (win.length < 3) return 'neutral'
+  // 3 consecutive same-direction (any position in the window)
+  for (let i = 0; i + 2 < win.length; i++) {
+    if (win[i] === win[i + 1] && win[i + 1] === win[i + 2]) return '3-push'
+  }
+  // 2 up then 1 down (pullback after an up-push)
+  if (win.length >= 3 && win[win.length - 3] === 'up' && win[win.length - 2] === 'up' && win[win.length - 1] === 'down') {
+    return 'pullback'
+  }
+  // Strictly alternating = chop
+  let alt = true
+  for (let i = 1; i < win.length; i++) {
+    if (win[i] === win[i - 1]) { alt = false; break }
+  }
+  if (alt) return 'chop'
+  return 'neutral'
+}
+
+// Map a backend regime label to the sizing rule table. Mirrors the
+// MetaRegimeClassifier display logic (sizing_multiplier + aggressiveness).
+// Returns { mult, aggressiveness, tone } with tone 'pos'|'neg'|'warn'|undefined.
+const META_REGIME_TABLE = {
+  calm_trend: { mult: 1.0, aggressiveness: 'normal' },
+  choppy_range: { mult: 0.5, aggressiveness: 'patient' },
+  high_vol_breakout: { mult: 1.5, aggressiveness: 'aggressive' },
+  regime_transition: { mult: 0.3, aggressiveness: 'standby' },
+  risk_off: { mult: -1.0, aggressiveness: 'standby' },
+  funding_stress: { mult: -0.5, aggressiveness: 'standby' },
+  liquidity_drained: { mult: -0.3, aggressiveness: 'standby' },
+  strong_trend: { mult: 1.2, aggressiveness: 'normal' },
+  low_vol_range: { mult: 0.8, aggressiveness: 'patient' },
+  high_vol_chop: { mult: 0.6, aggressiveness: 'patient' },
+}
+function metaRegimeInfo(regimeLabel) {
+  const r = META_REGIME_TABLE[String(regimeLabel || '').trim()] || { mult: 1.0, aggressiveness: 'normal' }
+  let tone
+  if (r.mult <= 0) tone = 'neg'
+  else if (r.mult >= 1.5) tone = 'pos'
+  else if (r.mult < 1.0) tone = 'warn'
+  return { mult: r.mult, aggressiveness: r.aggressiveness, tone }
+}
+
+// Fit a 3-state (UP/DOWN/FLAT) Markov chain on the brick close prices and
+// compute P(UP after 3 steps) from the last state's row of the transition
+// matrix raised to the 3rd power (hand-rolled matrix multiply — no libs).
+// FLAT is a real state (|delta| <= 1e-4), not dropped. Returns
+// { pUp, pDown, n } or null when fewer than 10 closes.
+function markovUpProbability(closes) {
+  const cs = (closes || []).map(Number).filter((v) => isFinite(v))
+  if (cs.length < 10) return null
+  const EPS = 0.0001
+  const stateOf = (a, b) => {
+    const d = a - b
+    return Math.abs(d) <= EPS ? 2 : d > 0 ? 0 : 1
+  }
+  // Transition counts: T[from][to], states 0=UP 1=DOWN 2=FLAT
+  const T = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+  for (let i = 2; i < cs.length; i++) {
+    T[stateOf(cs[i - 1], cs[i - 2])][stateOf(cs[i], cs[i - 1])] += 1
+  }
+  // Normalize rows; an unvisited state falls back to uniform transitions.
+  const P = T.map((row) => {
+    const s = row[0] + row[1] + row[2]
+    return s > 0 ? [row[0] / s, row[1] / s, row[2] / s] : [1 / 3, 1 / 3, 1 / 3]
+  })
+  const last = stateOf(cs[cs.length - 1], cs[cs.length - 2])
+  // v = e_last · P³  (row-vector × P, three times)
+  let v = P[last]
+  for (let step = 0; step < 3; step++) {
+    const nv = [0, 0, 0]
+    for (let j = 0; j < 3; j++) {
+      for (let k = 0; k < 3; k++) nv[k] += v[j] * P[j][k]
+    }
+    v = nv
+  }
+  return { pUp: v[0], pDown: v[1], n: cs.length }
+}
+
+function sizingWhatIf(equityUsd, effectiveKelly, regimeLabel, dd = 0.15) {
+  const eq = Number(equityUsd) > 0 ? Number(equityUsd) : 1000
+  const kelly = isFinite(Number(effectiveKelly)) && Number(effectiveKelly) > 0 ? Number(effectiveKelly) : 0
+  const reg = metaRegimeInfo(regimeLabel)
+  const baseline = eq * kelly * reg.mult
+  const maxDd = 0.15
+  const ddClip = Math.min(1, Math.max(0.25, 1 - dd / maxDd))
+  let final = baseline * ddClip
+  const cap = eq * 0.05
+  let capHit = false
+  if (final > cap) { final = cap; capHit = true }
+  return { baseline, final, capHit, cap, ddClip }
+}
+
+// ---------------------------------------------------------------------------
+// Pager — daisyUI join pagination with active button (2026-08-08)
+// ---------------------------------------------------------------------------
+const PAGE_SIZE = 8
+
+function Pager({ page, pages, onChange }) {
+  if (!pages || pages <= 1) return null
+  const btns = []
+  for (let i = 1; i <= pages; i++) {
+    btns.push(React.createElement('button', {
+      key: 'pg' + i,
+      className: cn('dui-join-item', 'dui-btn', 'dui-btn-sm', i === page ? 'dui-btn-active' : ''),
+      onClick: () => onChange(i),
+    }, String(i)))
+  }
+  return React.createElement('div', { className: cn('dui-join', 'dui-join-horizontal'), style: { marginTop: 8, flexWrap: 'wrap' } },
+    React.createElement('button', {
+      className: cn('dui-join-item', 'dui-btn', 'dui-btn-sm'),
+      onClick: () => onChange(Math.max(1, page - 1)),
+    }, '«'),
+    ...btns,
+    React.createElement('button', {
+      className: cn('dui-join-item', 'dui-btn', 'dui-btn-sm'),
+      onClick: () => onChange(Math.min(pages, page + 1)),
+    }, '»'),
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Admin Component
 // ---------------------------------------------------------------------------
 function NobleTraderAdmin() {
@@ -763,9 +927,17 @@ function NobleTraderAdmin() {
   const calibration = useSupabaseData(config, 'v_eod_calibration_bias', { select: 'day,symbol,avg_predicted_p_win,realized_win_rate,bias,status', order: 'day.desc', limit: '14' }, connected)
   const optimized = useSupabaseData(config, 'v_paper_vs_optimized_daily', { select: 'day,paper_pnl,equal_wt_pnl,paper_minus_equal_wt', order: 'day.desc', limit: '30' }, connected)
   const sweeps = useSupabaseData(config, 'nt_sweep_result', { select: 'symbol,sweep_timestamp,regime,regime_conf,markov_p_up,markov_p_dn,p_timesfm,kelly_f,effective_kelly,brick_size,sl_bricks,tp_bricks,signal,entry_price,stop_loss,take_profit,qualified', order: 'sweep_timestamp.desc', limit: '200' }, connected)
+  // Stable ordering source: nt_symbol asset_class (sweep order changes every
+  // refresh → the picker must be sorted by asset_class then symbol, not by
+  // sweep recency). All-plan symbols; inactive rows are filtered out by the
+  // active-symbol intersection below.
+  const symMeta = useSupabaseData(config, 'nt_symbol', { select: 'symbol,asset_class' }, connected)
 
   // Renko brick chart: pick a symbol from the latest sweep, fetch its bricks.
   const [brickSym, setBrickSym] = React.useState(null)
+  // Pagination state for the recent tables (daisyUI join pager).
+  const [posPage, setPosPage] = React.useState(1)
+  const [sigPage, setSigPage] = React.useState(1)
   const latestSyms = []
   {
     const seen = {}
@@ -773,11 +945,30 @@ function NobleTraderAdmin() {
       if (!seen[r.symbol]) { seen[r.symbol] = true; latestSyms.push(r.symbol) }
     }
   }
+  // Stable order: asset_class (commodities → forex → crypto → stocks) then
+  // symbol ASC. Symbol order must NOT change between refreshes.
+  {
+    const assetClassOf = {}
+    for (const r of (symMeta.data || [])) assetClassOf[r.symbol] = r.asset_class || 'other'
+    const CLASS_RANK = { commodities: 0, forex: 1, crypto: 2, stocks: 3 }
+    latestSyms.sort((a, b) => {
+      const ra = CLASS_RANK[assetClassOf[a]] != null ? CLASS_RANK[assetClassOf[a]] : 9
+      const rb = CLASS_RANK[assetClassOf[b]] != null ? CLASS_RANK[assetClassOf[b]] : 9
+      return (ra - rb) || a.localeCompare(b)
+    })
+  }
   const activeBrickSym = brickSym || (latestSyms[0] || '')
   // Fetch ONLY when a symbol is known (default = 1st latest-sweep symbol).
-  // Never fetch unfiltered — a 200-row all-symbols grab renders a jumbled mix.
+  // Fetch the LAST 10 bricks (brick_index DESC limit 10, reversed to ascending
+  // for the chart) — the previous asc+limit-200+slice(-10) returned bricks
+  // 190-199 for series with >200 bricks (XAUUSD 2350, BTCUSD 17351) instead
+  // of the latest 10 (2026-08-08 fix).
   const bricks = useSupabaseData(config, 'nt_renko_bricks',
-    { select: 'symbol,direction,brick_size,open_price,close_price,high,low,brick_index,ts', order: 'brick_index.asc', limit: '200', symbol: 'eq.' + activeBrickSym },
+    { select: 'symbol,direction,brick_size,open_price,close_price,high,low,brick_index,ts', order: 'brick_index.desc', limit: '10', symbol: 'eq.' + activeBrickSym },
+    connected && !!activeBrickSym)
+  // Longer brick series (≤200) for the Markov fit on the selected symbol.
+  const brickSeries = useSupabaseData(config, 'nt_renko_bricks',
+    { select: 'symbol,direction,brick_size,open_price,close_price,high,low,brick_index,ts', order: 'brick_index.desc', limit: '200', symbol: 'eq.' + activeBrickSym },
     connected && !!activeBrickSym)
 
   const loading = signals.loading || positions.loading || recentPositions.loading
@@ -787,7 +978,7 @@ function NobleTraderAdmin() {
     return React.createElement('div', { className: 'nta-root' },
       React.createElement('div', { className: 'nta-err' },
         `Supabase read failed: ${err.message}`),
-      React.createElement('button', { className: 'nta-btn', onClick: () => updateConfig({ supabase_url: '', supabase_key: '' }) },
+      React.createElement('button', { className: cn('nta-btn', 'dui-btn', 'dui-btn-ghost', 'dui-btn-sm'), onClick: () => updateConfig({ supabase_url: '', supabase_key: '' }) },
         'Disconnect / reconfigure'),
     )
   }
@@ -932,7 +1123,7 @@ function NobleTraderAdmin() {
         latestSyms.map((s) =>
           React.createElement('button', {
             key: s,
-            className: cn('nta-brick-btn', s === activeBrickSym ? 'nta-brick-btn-active' : ''),
+            className: cn('nta-brick-btn', 'dui-btn', 'dui-btn-sm', s === activeBrickSym ? 'nta-brick-btn-active' : ''),
             onClick: () => setBrickSym(s),
           }, s),
         ),
@@ -940,7 +1131,8 @@ function NobleTraderAdmin() {
       (() => {
         // Last ~10 bricks of the active symbol's series (the dashboard window)
         const all = (bricks.data || []).filter((b) => b.symbol === activeBrickSym)
-        const window = all.slice(-10)
+        // Fetch is brick_index DESC limit 10 → reverse to ascending for the chart.
+        const window = all.slice().reverse()
         // Entry / SL / TP levels from the latest sweep row for this symbol
         const sweepRow = (sweeps.data || []).find((r) => r.symbol === activeBrickSym)
         const levels = []
@@ -956,9 +1148,75 @@ function NobleTraderAdmin() {
       })(),
     ),
 
+    // Markov + pattern — same layout as talaria: right below the renko chart,
+    // analyzing the SAME selected symbol (activeBrickSym).
+    React.createElement('div', { className: 'nta-card' },
+      React.createElement('h3', null, `Markov + pattern — ${activeBrickSym || 'select a symbol'}`),
+      (() => {
+        const sweepRow = (sweeps.data || []).find((r) => r.symbol === activeBrickSym)
+        const brickWindow = ((bricks.data || []).filter((b) => b.symbol === activeBrickSym)).reverse()
+        const brickSeriesAsc = (brickSeries.data || []).slice().reverse()
+        const pattern = brickPattern(brickWindow)
+        const markov = markovUpProbability(brickSeriesAsc.map((b) => Number(b.close_price)))
+        return React.createElement('div', null,
+          React.createElement('div', { className: 'nta-grid' },
+            React.createElement(StatCard, {
+              title: 'Brick pattern',
+              value: pattern || '—',
+              sub: `last ${brickWindow.length} bricks · ${(sweepRow && sweepRow.regime) || 'regime n/a'}`,
+            }),
+            React.createElement(StatCard, {
+              title: 'Markov P(up in 3)',
+              value: markov ? (markov.pUp * 100).toFixed(1) + '%' : '—',
+              sub: markov ? `P(down) ${(markov.pDown * 100).toFixed(1)}% · ${markov.n} bricks` : 'needs ≥10 bricks',
+              tone: markov && markov.pUp > 0.5 ? 'pos' : markov && markov.pUp < 0.5 ? 'neg' : undefined,
+            }),
+          ),
+          React.createElement('div', { className: 'nta-hint' },
+            `Analyzes the symbol selected in the chart above (${activeBrickSym || 'none'}). Nuance: Brick pattern = the last 10 bricks only (short-term shape: 3-push / pullback / chop). Markov P(up in 3) = a 3-state UP/DOWN/FLAT Markov chain fitted on up to 200 brick closes (longer statistical fit) — the probability the next 3-brick move is UP. A 50% value means no edge; >50% leans bullish, <50% leans bearish.`),
+        )
+      })(),
+    ),
+
+    // Sizing what-if — same layout as talaria: follows the SELECTED symbol's
+    // newest sweep row (kelly + regime), paper equity, portfolio drawdown.
+    React.createElement('div', { className: 'nta-card' },
+      React.createElement('h3', null, `Sizing what-if — ${activeBrickSym || 'select a symbol'}`),
+      (() => {
+        const sweepRow = (sweeps.data || []).find((r) => r.symbol === activeBrickSym)
+        const kellyIn = sweepRow && sweepRow.effective_kelly != null
+          ? Number(sweepRow.effective_kelly)
+          : (sweepRow && sweepRow.kelly_f != null ? Number(sweepRow.kelly_f) : null)
+        const regimeLabel = (sweepRow && sweepRow.regime) || ''
+        const eqRowSizing = (equity.data || [])[0]
+        const eqUsd = eqRowSizing && Number(eqRowSizing.cumulative_pnl) > 0 ? Number(eqRowSizing.cumulative_pnl) : 1000
+        const portRow = (optimized.data || [])[0]
+        const portDd = portRow && Number(portRow.paper_minus_equal_wt) > 0 ? 0.05 : 0.15
+        const sizing = sizingWhatIf(eqUsd, kellyIn, regimeLabel, portDd)
+        const regInfo = metaRegimeInfo(regimeLabel)
+        return React.createElement('div', null,
+          React.createElement('div', { className: 'nta-grid' },
+            React.createElement(StatCard, {
+              title: 'Baseline size',
+              value: kellyIn != null ? `$${Number(sizing.baseline).toFixed(2)}` : '—',
+              sub: `equity $${Number(eqUsd).toFixed(2)} × kelly ${kellyIn != null ? Number(kellyIn).toFixed(3) : 'n/a'} × regime ${regInfo.mult.toFixed(2)}`,
+            }),
+            React.createElement(StatCard, {
+              title: 'Final size (capped)',
+              value: kellyIn != null ? `$${Number(sizing.final).toFixed(2)}` : '—',
+              sub: sizing.capHit ? '5% equity cap hit' : `regime ${regInfo.aggressiveness} · dd clip ${(portDd * 100).toFixed(1)}%`,
+              tone: kellyIn != null ? (sizing.final > 0 ? 'pos' : 'neg') : undefined,
+            }),
+          ),
+          React.createElement('div', { className: 'nta-hint' },
+            `Sizing for the symbol selected above (${activeBrickSym || 'none'}) — SizingEngine arithmetic: baseline = equity × effective_kelly × regime multiplier, clipped by drawdown, capped at 5% of equity`),
+        )
+      })(),
+    ),
+
     React.createElement('div', { className: 'nta-card' },
       React.createElement('h3', null, 'Latest sweep — HMM × Renko detail'),
-      React.createElement('table', { className: 'nta-table' },
+      React.createElement('table', { className: cn('nta-table', 'dui-table', 'dui-table-sm') },
         React.createElement('thead', null,
           React.createElement('tr', null,
             React.createElement('th', null, 'Symbol'),
@@ -990,9 +1248,9 @@ function NobleTraderAdmin() {
                 React.createElement('td', null, (r.effective_kelly != null ? Number(r.effective_kelly) : Number(r.kelly_f || 0)).toFixed(3)),
                 React.createElement('td', null, r.brick_size),
                 React.createElement('td', null, `${r.sl_bricks}/${r.tp_bricks}`),
-                React.createElement('td', { className: 'nta-sm' }, fmtPrice(r.entry_price)),
-                React.createElement('td', { className: 'nta-sm' }, fmtPrice(r.stop_loss)),
-                React.createElement('td', { className: 'nta-sm' }, fmtPrice(r.take_profit)),
+                React.createElement('td', { className: 'nta-sm' }, fmtUsd(r.entry_price)),
+                React.createElement('td', { className: 'nta-sm' }, fmtUsd(r.stop_loss)),
+                React.createElement('td', { className: 'nta-sm' }, fmtUsd(r.take_profit)),
                 React.createElement('td', {
                   className: r.signal === 'sell' ? 'nta-neg' : 'nta-pos',
                 }, r.signal || '—'),
@@ -1005,7 +1263,7 @@ function NobleTraderAdmin() {
 
     React.createElement('div', { className: 'nta-card' },
       React.createElement('h3', null, 'Recent paper positions'),
-      React.createElement('table', { className: 'nta-table' },
+      React.createElement('table', { className: cn('nta-table', 'dui-table', 'dui-table-sm') },
         React.createElement('thead', null,
           React.createElement('tr', null,
             React.createElement('th', null, 'Symbol'),
@@ -1015,7 +1273,7 @@ function NobleTraderAdmin() {
             React.createElement('th', null, 'PnL'),
             React.createElement('th', null, 'Opened'))),
         React.createElement('tbody', null,
-          (recentPositions.data || []).map((p) => (
+          (recentPositions.data || []).slice((posPage - 1) * PAGE_SIZE, posPage * PAGE_SIZE).map((p) => (
             React.createElement('tr', { key: p.position_id || (p.symbol + p.open_ts) },
               React.createElement('td', null, p.symbol),
               React.createElement('td', null, p.direction),
@@ -1029,11 +1287,16 @@ function NobleTraderAdmin() {
             )
           ))),
       ),
+      React.createElement(Pager, {
+        page: posPage,
+        pages: Math.max(1, Math.ceil((recentPositions.data || []).length / PAGE_SIZE)),
+        onChange: (p) => setPosPage(p),
+      }),
     ),
 
     React.createElement('div', { className: 'nta-card' },
       React.createElement('h3', null, 'Recent signals'),
-      React.createElement('table', { className: 'nta-table' },
+      React.createElement('table', { className: cn('nta-table', 'dui-table', 'dui-table-sm') },
         React.createElement('thead', null,
           React.createElement('tr', null,
             React.createElement('th', null, 'Symbol'),
@@ -1041,20 +1304,29 @@ function NobleTraderAdmin() {
             React.createElement('th', null, 'Outcome'),
             React.createElement('th', null, 'Q'),
             React.createElement('th', null, 'Entry'),
+            React.createElement('th', null, 'SL'),
+            React.createElement('th', null, 'TP'),
             React.createElement('th', null, 'Ts'))),
         React.createElement('tbody', null,
-          (recentSignals.data || []).map((sig) => (
+          (recentSignals.data || []).slice((sigPage - 1) * PAGE_SIZE, sigPage * PAGE_SIZE).map((sig) => (
             React.createElement('tr', { key: sig.signal_id || (sig.symbol + sig.ts) },
               React.createElement('td', null, sig.symbol),
               React.createElement('td', null, sig.signal),
               React.createElement('td', null,
                 React.createElement(OutcomeBadge, { outcome: sig.outcome })),
               React.createElement('td', null, sig.qualified ? '✓' : ''),
-              React.createElement('td', null, sig.entry_price != null ? Number(sig.entry_price).toFixed(5) : '—'),
+              React.createElement('td', null, sig.entry_price != null ? fmtUsd(sig.entry_price) : '—'),
+              React.createElement('td', null, sig.stop_loss != null ? fmtUsd(sig.stop_loss) : '—'),
+              React.createElement('td', null, sig.take_profit != null ? fmtUsd(sig.take_profit) : '—'),
               React.createElement('td', null, String(sig.ts || '').slice(0, 16)),
             )
           ))),
       ),
+      React.createElement(Pager, {
+        page: sigPage,
+        pages: Math.max(1, Math.ceil((recentSignals.data || []).length / PAGE_SIZE)),
+        onChange: (p) => setSigPage(p),
+      }),
     ),
 
     React.createElement('div', { className: 'nta-hint' },

@@ -1,0 +1,10 @@
+name: talaria-tools
+version: "1.0.0"
+description: "Talaria in-chat analytics tools — signal health, portfolio stats, calibration (reads Supabase views via public anon key; config from TALARIA_SUPABASE_URL/KEY/CLAIM_TOKEN env)"
+author: "Lexington Tech"
+requires_env: []
+provides_tools:
+  - talaria_health
+  - talaria_stats
+  - talaria_calibration
+hooks: []

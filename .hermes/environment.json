@@ -1,0 +1,18 @@
+{
+  "source": "saved",
+  "recipe": {
+    "name": "noble-trader-agent (Hermes desktop plugins + Python plugin)",
+    "kind": "python",
+    "bootstrap": [],
+    "build": [],
+    "test": [
+      "set PYTHONPATH=%CD%\\src&& .venv\\Scripts\\python.exe -m pytest tests/test_noble_trader_plugin.py -q -p no:cacheprovider"
+    ],
+    "start": "set PYTHONPATH=%CD%\\src&& .venv\\Scripts\\python.exe -c \"import sys; print('start-ok')\"",
+    "port": 0,
+    "readinessPath": null,
+    "evidence": [
+      "Saved manifest: repo .venv + PYTHONPATH=src (the auto-detected recipe resolved to the broken global hermes-agent venv: pydantic_core._pydantic_core missing). hermes verify spawns via cmd.exe, so commands use cmd-native 'set PYTHONPATH=%CD%\\src&&'. Test scope = plugin suite (the changed surface is .hermes/plugins/* desktop plugin.js ESM + Python plugin, verified by node --check + render harness). Start is a no-op python -c (NEVER boot the trading engine as a verify step — it would open broker connections)."
+    ]
+  }
+}

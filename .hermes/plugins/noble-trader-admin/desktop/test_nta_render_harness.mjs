@@ -56,10 +56,27 @@ globalThis.localStorage = {
 }
 const SB = 'https://test.supabase.co'
 const DATA = {
+  'nt_symbol': [
+    { symbol: 'XAUUSD', asset_class: 'commodities' },
+    { symbol: 'USDJPY', asset_class: 'forex' },
+    { symbol: 'USDCAD', asset_class: 'forex' },
+    { symbol: 'BTCUSD', asset_class: 'crypto' },
+    { symbol: 'EURUSD', asset_class: 'forex' },
+    { symbol: 'AUDUSD', asset_class: 'forex' },
+  ],
   'nt_signal_sim': [
-    { signal_id: 's1', symbol: 'AUDUSD', signal: 'buy', ts: '2026-08-06T20:25:22+00:00', qualified: true, outcome: null, entry_price: 0.700212, source: 'sweep-light', kelly_f: 0.04, effective_kelly: 0.04 },
-    { signal_id: 's2', symbol: 'BTCUSD', signal: 'sell', ts: '2026-08-06T20:25:09+00:00', qualified: true, outcome: 'tp_hit', entry_price: 104500.12, source: 'sweep-light', kelly_f: 0.16, effective_kelly: 0.16 },
-    { signal_id: 's3', symbol: 'EURUSD', signal: 'buy', ts: '2026-08-06T20:25:16+00:00', qualified: false, outcome: 'sl_hit', entry_price: 1.0821, source: 'sweep-light', kelly_f: 0.04, effective_kelly: 0.04 },
+    { signal_id: 's1', symbol: 'AUDUSD', signal: 'buy', ts: '2026-08-06T20:25:22+00:00', qualified: true, outcome: null, entry_price: 0.700212, stop_loss: 0.6952, take_profit: 0.7112, source: 'sweep-light', kelly_f: 0.04, effective_kelly: 0.04 },
+    { signal_id: 's2', symbol: 'BTCUSD', signal: 'sell', ts: '2026-08-06T20:25:09+00:00', qualified: true, outcome: 'tp_hit', entry_price: 104500.12, stop_loss: 104650.5, take_profit: 104100.5, source: 'sweep-light', kelly_f: 0.16, effective_kelly: 0.16 },
+    { signal_id: 's3', symbol: 'EURUSD', signal: 'buy', ts: '2026-08-06T20:25:16+00:00', qualified: false, outcome: 'sl_hit', entry_price: 1.0821, stop_loss: 1.0788, take_profit: 1.089, source: 'sweep-light', kelly_f: 0.04, effective_kelly: 0.04 },
+    { signal_id: 's4', symbol: 'GBPUSD', signal: 'buy', ts: '2026-08-06T20:24:50+00:00', qualified: true, outcome: 'open', entry_price: 1.3294, stop_loss: 1.3264, take_profit: 1.3364, source: 'sweep-light', kelly_f: 0.08, effective_kelly: 0.08 },
+    { signal_id: 's5', symbol: 'USDJPY', signal: 'sell', ts: '2026-08-06T20:24:38+00:00', qualified: true, outcome: 'tp_hit', entry_price: 155.3, stop_loss: 155.6, take_profit: 154.7, source: 'sweep-light', kelly_f: 0.12, effective_kelly: 0.12 },
+    { signal_id: 's6', symbol: 'XAUUSD', signal: 'buy', ts: '2026-08-06T20:24:26+00:00', qualified: true, outcome: 'sl_hit', entry_price: 4090.5, stop_loss: 4085.5, take_profit: 4100.5, source: 'sweep-light', kelly_f: 0.04, effective_kelly: 0.04 },
+    { signal_id: 's7', symbol: 'XAGUSD', signal: 'buy', ts: '2026-08-06T20:24:15+00:00', qualified: false, outcome: null, entry_price: 57.05, stop_loss: 56.65, take_profit: 57.95, source: 'sweep-light', kelly_f: 0.0, effective_kelly: 0.0 },
+    { signal_id: 's8', symbol: 'USDCHF', signal: 'buy', ts: '2026-08-06T20:24:04+00:00', qualified: true, outcome: 'open', entry_price: 0.8192, stop_loss: 0.8162, take_profit: 0.8252, source: 'sweep-light', kelly_f: 0.06, effective_kelly: 0.06 },
+    { signal_id: 's9', symbol: 'USDCAD', signal: 'sell', ts: '2026-08-06T20:23:52+00:00', qualified: true, outcome: 'tp_hit', entry_price: 1.4102, stop_loss: 1.4132, take_profit: 1.4042, source: 'sweep-light', kelly_f: 0.1, effective_kelly: 0.1 },
+    { signal_id: 's10', symbol: 'EURUSD', signal: 'sell', ts: '2026-08-06T20:23:40+00:00', qualified: true, outcome: 'open', entry_price: 1.0831, stop_loss: 1.0861, take_profit: 1.0771, source: 'sweep-light', kelly_f: 0.08, effective_kelly: 0.08 },
+    { signal_id: 's11', symbol: 'AUDUSD', signal: 'buy', ts: '2026-08-06T20:23:28+00:00', qualified: true, outcome: 'tp_hit', entry_price: 0.6992, stop_loss: 0.6942, take_profit: 0.7092, source: 'sweep-light', kelly_f: 0.1, effective_kelly: 0.1 },
+    { signal_id: 's12', symbol: 'BTCUSD', signal: 'buy', ts: '2026-08-06T20:23:16+00:00', qualified: false, outcome: null, entry_price: 104800.5, stop_loss: 104650.5, take_profit: 105100.5, source: 'sweep-light', kelly_f: 0.0, effective_kelly: 0.0 },
   ],
   'nt_paper_positions': [
     { position_id: 'p1', symbol: 'USDCAD', direction: 'buy', size_notional: 200, size_units: 142.1, status: 'open', realized_pnl: null, open_ts: '2026-08-06T09:45:29+00:00', close_ts: null },
@@ -167,6 +184,12 @@ let dashSeen = 0
 let sweepSeen = 0
 let hotSeen = 0
 let brickSeen = 0
+let posSeen = 0
+let sigSeen = 0
+let slSeen = 0
+let tpSeen = 0
+let markovSeen = 0
+let sizingSeen = 0
 function findText(el, needle, depth = 0) {
   if (!el || depth > 10) return false
   if (typeof el === 'string') {
@@ -213,6 +236,12 @@ const ctx = {
         if (findH3(out, 'Latest sweep')) sweepSeen++
         if (findText(out, 'Hot signals')) hotSeen++
         if (findH3(out, 'Renko bricks') || findText(out, 'bricks')) brickSeen++
+        if (findH3(out, 'Recent paper positions')) posSeen++
+        if (findH3(out, 'Recent signals')) sigSeen++
+        if (findText(out, 'SL')) slSeen++
+        if (findText(out, 'TP')) tpSeen++
+        if (findH3(out, 'Markov + pattern')) markovSeen++
+        if (findH3(out, 'Sizing what-if')) sizingSeen++
       }
     }
   },
@@ -221,10 +250,14 @@ plugin.register(ctx)
 if (dashSeen < 1) throw new Error('Dashboard never rendered with config set')
 if (sweepSeen < 1) throw new Error('Sweep histogram section never rendered')
 if (brickSeen < 1) throw new Error('Renko bricks section never rendered')
+if (posSeen < 1) throw new Error('Recent paper positions section never rendered')
+if (sigSeen < 1) throw new Error('Recent signals section never rendered')
+if (slSeen < 1 || tpSeen < 1) throw new Error('Recent signals SL/TP columns never rendered')
+if (markovSeen < 1 || sizingSeen < 1) throw new Error('Markov+pattern / Sizing what-if sections never rendered')
 // Hot banner is conditionally hidden when no hot signals (display/hidden by
 // design). The react stub's useState setter is a no-op, so data stays null and
 // the banner correctly hides — assert it didn't CRASH, not that it rendered.
-console.log('CONNECTED DASHBOARD OK — statCard=' + dashSeen + ' sweepHistogram=' + sweepSeen + ' hotBanner=' + hotSeen + ' brickChart=' + brickSeen + ' (hot hidden-when-empty: expected)')
+console.log('CONNECTED DASHBOARD OK — statCard=' + dashSeen + ' sweepHistogram=' + sweepSeen + ' hotBanner=' + hotSeen + ' brickChart=' + brickSeen + ' posTable=' + posSeen + ' sigTable=' + sigSeen + ' slTp=' + (slSeen && tpSeen) + ' (hot hidden-when-empty: expected)')
 `
 
 const dir = mkdtempSync(join(tmpdir(), 'nta-harness-'))
